@@ -1,3 +1,5 @@
+.PHONY: bootstrap up down logs format lint test check backend-test frontend-test
+
 bootstrap:
 	bash scripts/bootstrap.sh
 
@@ -10,6 +12,21 @@ down:
 logs:
 	docker compose logs -f --tail=200
 
-test:
-	echo "Tests will be added by Codex in Phase 1"
+format:
+	python3 -m ruff format services/orchestrator packages/contracts/python
 
+lint:
+	python3 -m ruff check services/orchestrator packages/contracts/python
+	npm --prefix apps/web run lint
+
+test: backend-test frontend-test
+
+backend-test:
+	PYTHONPATH=services/orchestrator:. python3 -m pytest services/orchestrator/tests packages/contracts/python/test_models.py
+
+frontend-test:
+	npm --prefix apps/web run test:smoke
+
+check: lint test
+	npm --prefix apps/web run typecheck
+	npm --prefix apps/web run build

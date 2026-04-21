@@ -2,17 +2,43 @@
 
 Initial state: repository seeded.
 
-Bootstrap completed from runbook document:
-- Created monorepo directory skeleton.
-- Added seed configuration, docs, Docker files, scripts, and minimal app stubs.
-- Added FastAPI `/health` endpoint and Next.js landing shell.
+## Phase 1 bootstrap execution
 
-Progress update:
-- Created `.env` from `.env.example`.
-- Confirmed Docker daemon and Compose are available.
-- Ran `scripts/bootstrap.sh` successfully and built/started `postgres`, `redis`, `orchestrator`, and `web`.
-- Verified orchestrator health response: `{"status":"ok"}`.
-- Verified web shell returns the seeded page containing "Agent Workforce OS".
+Completed the requested Phase 1 sequence from the runbook prompt.
 
-Notes:
-- Compose warns that `version` in `docker-compose.yml` is obsolete, but services run successfully.
+### 1) Repository structure validation
+- Verified monorepo layout and filled missing files/directories.
+- Added service/app docs and shared contracts layout.
+
+### 2) Local developer setup improvements
+- Updated `docker-compose.yml` to use health checks and healthy dependency ordering.
+- Updated `.env.example` with `NEXT_PUBLIC_API_BASE_URL`.
+- Improved bootstrap scripts to wait for PostgreSQL and orchestrator health.
+- Verified `bash scripts/bootstrap.sh` brings up `postgres`, `redis`, `orchestrator`, and `web`.
+
+### 3) FastAPI orchestrator expansion
+- Refactored into app package structure under `services/orchestrator/app/`.
+- Added configuration (`pydantic-settings`), lifecycle wiring, and a typed `/health` route.
+- Added backend tests for health endpoint behavior.
+
+### 4) Next.js shell expansion
+- Added environment-aware API base config in `apps/web/lib/config.ts`.
+- Updated landing page to display API base URL and load orchestrator health.
+- Added frontend smoke test and TypeScript project config.
+
+### 5) Dependency manifests and scripts
+- Added backend dev dependencies and `pyproject.toml` for `pytest`/`ruff` config.
+- Added frontend scripts for lint/typecheck/build/smoke test.
+- Updated root `Makefile` with `format`, `lint`, `test`, and `check` targets.
+
+### 6) Typed contracts
+- Added typed contracts for tasks, baton packets, and project events:
+  - Python pydantic models in `packages/contracts/python/models.py`
+  - TypeScript interfaces in `packages/contracts/ts/index.ts`
+- Added contract validation tests.
+
+### 7) Validation run
+- `make check` passes.
+- `bash scripts/bootstrap.sh` succeeds.
+- `curl http://localhost:8000/health` returns `{"status":"ok","service":"orchestrator","environment":"development"}`.
+- `curl http://localhost:3000` returns the web shell page.

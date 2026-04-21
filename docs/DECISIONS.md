@@ -1,7 +1,9 @@
 # Decisions
 
-- Local-first bootstrap before AWS deployment
-- Monorepo structure
-- PostgreSQL as durable memory source of truth
-- Redis for short-lived coordination
-
+- Local-first bootstrap before AWS deployment.
+- Monorepo structure with phased delivery.
+- PostgreSQL as durable memory source of truth.
+- Redis for short-lived coordination.
+- FastAPI orchestrator follows explicit app-package layout (`app/config.py`, `app/lifecycle.py`, `app/api/routes`).
+- Shared contracts live in `packages/contracts` with Python (pydantic) and TypeScript representations.
+- Docker Compose uses service health checks and dependency gating for cleaner local startup.

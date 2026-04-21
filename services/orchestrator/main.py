@@ -1,9 +1,3 @@
-from fastapi import FastAPI
+from app.main import app
 
-app = FastAPI(title="Agent Workforce Orchestrator")
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
+__all__ = ["app"]
