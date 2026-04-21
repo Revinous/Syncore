@@ -122,3 +122,38 @@ Executed Phase 3 only from the runbook prompt.
 - `bash scripts/bootstrap.sh` succeeds.
 - `curl http://localhost:8000/health/services` reports dependency health.
 - `curl http://localhost:8000/analyst/digest/{task_id}` returns executive digest payload.
+
+## Phase 4 milestone execution
+
+Executed Phase 4 only from the runbook prompt.
+
+### 1) Terraform AWS structure
+- Added Terraform scaffolding for AWS deployment in `infra/terraform/`:
+  - VPC, subnets, routing, and security groups.
+  - ECS cluster + Fargate services for orchestrator and web.
+  - RDS PostgreSQL placeholder.
+  - ElastiCache Redis placeholder.
+  - ECR repositories.
+  - Secrets Manager placeholder.
+- Added staged variable files:
+  - `infra/terraform/environments/staging.tfvars`
+  - `infra/terraform/environments/production.tfvars`
+
+### 2) CI/CD workflows
+- Added build/test workflow: `.github/workflows/build-test.yml`.
+- Added image publish workflow: `.github/workflows/publish-images.yml`.
+- Added Terraform validation workflow: `.github/workflows/infra-validate.yml`.
+
+### 3) Environment documentation
+- Added `docs/ENVIRONMENTS.md` covering local, staging, and production execution.
+- Documented runtime expectations, commands, and secret placeholders.
+
+### 4) Local workflow protection
+- Preserved local Docker Compose development path.
+- Re-ran local bootstrap and health checks after Phase 4 changes.
+
+### 5) Validation run
+- `make check` passes.
+- `bash scripts/bootstrap.sh` succeeds.
+- `curl http://localhost:8000/health` and `curl http://localhost:8000/health/services` succeed.
+- `curl http://localhost:8000/analyst/digest/{task_id}` returns typed digest payload.
