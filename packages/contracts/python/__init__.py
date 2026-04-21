@@ -1,6 +1,7 @@
 from .models import (
     BatonPacket,
     BatonPacketCreate,
+    ExecutiveDigest,
     MemoryLookupRequest,
     ProjectEvent,
     ProjectEventCreate,
@@ -20,4 +21,5 @@ __all__ = [
     "MemoryLookupRequest",
     "RoutingRequest",
     "RoutingDecision",
+    "ExecutiveDigest",
 ]

@@ -13,10 +13,10 @@ logs:
 	docker compose logs -f --tail=200
 
 format:
-	python3 -m ruff format services/orchestrator services/router services/memory packages/contracts/python
+	python3 -m ruff format services/orchestrator services/router services/memory services/analyst packages/contracts/python
 
 lint:
-	python3 -m ruff check services/orchestrator services/router services/memory packages/contracts/python
+	python3 -m ruff check services/orchestrator services/router services/memory services/analyst packages/contracts/python
 	npm --prefix apps/web run lint
 
 test: backend-test frontend-test
@@ -26,6 +26,7 @@ backend-test:
 		services/orchestrator/tests \
 		services/router/tests \
 		services/memory/tests \
+		services/analyst/tests \
 		packages/contracts/python/test_models.py
 
 frontend-test:

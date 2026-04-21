@@ -9,6 +9,7 @@ export type TaskType =
 export type ComplexityLevel = "low" | "medium" | "high";
 export type WorkerRole = "analyst" | "orchestrator" | "memory";
 export type ModelTier = "economy" | "balanced" | "premium";
+export type RiskLevel = "low" | "medium" | "high";
 
 export interface TaskCreate {
   title: string;
@@ -73,4 +74,15 @@ export interface RoutingDecision {
   workerRole: WorkerRole;
   modelTier: ModelTier;
   reasoning: string;
+}
+
+export interface ExecutiveDigest {
+  taskId: string;
+  generatedAt: string;
+  headline: string;
+  summary: string;
+  highlights: string[];
+  eventBreakdown: Record<string, number>;
+  riskLevel: RiskLevel;
+  totalEvents: number;
 }

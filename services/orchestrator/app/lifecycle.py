@@ -1,17 +1,15 @@
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 
 from app.config import get_settings
-
-logger = logging.getLogger(__name__)
+from app.observability import log_event
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    logger.info("starting orchestrator in %s", settings.environment)
+    log_event("app.startup", environment=settings.environment)
     yield
-    logger.info("stopping orchestrator")
+    log_event("app.shutdown", environment=settings.environment)

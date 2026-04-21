@@ -6,5 +6,8 @@ COPY services/orchestrator/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY services/orchestrator /app
+COPY services/memory /app/services/memory
+COPY services/analyst /app/services/analyst
+COPY packages /app/packages
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

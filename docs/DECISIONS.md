@@ -10,3 +10,7 @@
 - Routing is deterministic in Phase 2: task type selects worker role, complexity selects model tier.
 - Memory persistence uses PostgreSQL JSONB-backed baton/event records with task/time indexes for retrieval.
 - Router and memory services stay as explicit modules first; orchestration wiring can expand in later phases.
+- Phase 3 uses a dedicated analyst module to generate deterministic, auditable executive digests from structured events.
+- Observability baseline includes structured logs and end-to-end request IDs on every HTTP response.
+- Service health is split into basic app liveness (`/health`) and dependency readiness (`/health/services`).
+- Container runtime for orchestrator explicitly uses service DNS (`postgres`, `redis`) for internal dependency connectivity.

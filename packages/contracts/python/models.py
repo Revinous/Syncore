@@ -17,6 +17,7 @@ TaskType = Literal[
 ComplexityLevel = Literal["low", "medium", "high"]
 WorkerRole = Literal["analyst", "orchestrator", "memory"]
 ModelTier = Literal["economy", "balanced", "premium"]
+RiskLevel = Literal["low", "medium", "high"]
 
 
 class TaskCreate(BaseModel):
@@ -82,3 +83,14 @@ class RoutingDecision(BaseModel):
     worker_role: WorkerRole
     model_tier: ModelTier
     reasoning: str = Field(min_length=1)
+
+
+class ExecutiveDigest(BaseModel):
+    task_id: UUID
+    generated_at: datetime
+    headline: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    highlights: list[str]
+    event_breakdown: dict[str, int]
+    risk_level: RiskLevel
+    total_events: int = Field(ge=0)

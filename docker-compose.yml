@@ -37,6 +37,8 @@ services:
       - .env
     environment:
       ENVIRONMENT: development
+      POSTGRES_DSN: postgresql://agentos:agentos@postgres:5432/agentos
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
         condition: service_healthy

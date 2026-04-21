@@ -6,6 +6,8 @@ Typed contracts shared across worker services.
 - Task definitions
 - Baton packet handoffs
 - Project events
+- Routing decisions
+- Executive digest responses
 
 ## Layout
 - `python/` contains pydantic models used by backend services.

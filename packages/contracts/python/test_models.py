@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from .models import (
     BatonPacket,
     BatonPacketCreate,
+    ExecutiveDigest,
     ProjectEvent,
     ProjectEventCreate,
     RoutingRequest,
@@ -86,3 +87,21 @@ def test_routing_request_validates_complexity() -> None:
 
     assert request.complexity == "high"
     assert request.requires_memory is True
+
+
+def test_executive_digest_requires_headline() -> None:
+    try:
+        ExecutiveDigest(
+            task_id=uuid4(),
+            generated_at=datetime.now(timezone.utc),
+            headline="",
+            summary="summary",
+            highlights=[],
+            event_breakdown={},
+            risk_level="low",
+            total_events=0,
+        )
+    except ValidationError:
+        return
+
+    raise AssertionError("ExecutiveDigest validation should fail for empty headline")

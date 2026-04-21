@@ -81,3 +81,44 @@ Executed Phase 2 only from the runbook prompt.
 - `make check` passes (ruff, pytest, frontend smoke, typecheck, next build).
 - Backend test suite: 13 passed.
 - Orchestrator health remains green at `http://localhost:8000/health`.
+
+## Phase 3 milestone execution
+
+Executed Phase 3 only from the runbook prompt.
+
+### 1) Analyst service module
+- Added dedicated analyst service module in `services/analyst/digest.py`.
+- Implemented deterministic executive digest generation from project events.
+- Added analyst service tests in `services/analyst/tests/test_digest.py`.
+
+### 2) Analyst digest endpoint
+- Added `GET /analyst/digest/{task_id}` endpoint.
+- Endpoint loads task events via `MemoryStore` and returns typed `ExecutiveDigest` response.
+- Added endpoint tests for successful digest output and memory-store failure handling.
+
+### 3) Observability basics
+- Added structured JSON logging utilities in `services/orchestrator/app/observability.py`.
+- Added request middleware that:
+  - Preserves incoming `x-request-id` or generates one.
+  - Returns request id in response headers.
+  - Logs structured request metrics (`method`, `path`, `status_code`, `duration_ms`).
+- Added observability tests for request-id behavior.
+
+### 4) Service-level health checks
+- Expanded health API with `GET /health/services`.
+- Health check now reports per-dependency status for PostgreSQL and Redis.
+- Added tests for healthy and degraded dependency scenarios.
+
+### 5) Runtime integration and config updates
+- Updated orchestrator Docker image to include shared contracts plus analyst and memory modules.
+- Updated Compose orchestrator environment to use container-local dependency addresses:
+  - `POSTGRES_DSN=postgresql://agentos:agentos@postgres:5432/agentos`
+  - `REDIS_URL=redis://redis:6379/0`
+- Updated `.env.example` with explicit `POSTGRES_DSN`.
+
+### 6) Validation run
+- `make check` passes.
+- Backend test suite: 23 passed.
+- `bash scripts/bootstrap.sh` succeeds.
+- `curl http://localhost:8000/health/services` reports dependency health.
+- `curl http://localhost:8000/analyst/digest/{task_id}` returns executive digest payload.
