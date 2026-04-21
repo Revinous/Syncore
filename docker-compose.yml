@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agent-postgres
+    environment:
+      POSTGRES_DB: agentos
+      POSTGRES_USER: agentos
+      POSTGRES_PASSWORD: agentos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+
+  redis:
+    image: redis:7
+    container_name: agent-redis
+    ports:
+      - "6379:6379"
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: infra/docker/orchestrator.Dockerfile
+    container_name: agent-orchestrator
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    container_name: agent-web
+    env_file:
+      - .env
+    depends_on:
+      - orchestrator
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cp -n .env.example .env || true
+
+docker compose up -d postgres redis
+
+echo "Waiting for PostgreSQL to become available..."
+until docker exec agent-postgres pg_isready -U agentos >/dev/null 2>&1; do
+  sleep 2
+done
+
+echo "PostgreSQL is ready."
+
+docker compose up -d --build orchestrator web
+docker compose ps
+

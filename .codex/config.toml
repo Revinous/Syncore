@@ -1,0 +1,11 @@
+model = "gpt-5.4"
+
+[tools]
+web_search = true
+
+[project]
+trusted = true
+
+[profiles.default]
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
