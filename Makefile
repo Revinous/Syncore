@@ -1,4 +1,4 @@
-.PHONY: bootstrap up down logs format lint test check backend-test frontend-test
+.PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -31,6 +31,9 @@ backend-test:
 
 frontend-test:
 	npm --prefix apps/web run test:smoke
+
+demo-local:
+	bash scripts/demo_local_flow.sh
 
 check: lint test
 	npm --prefix apps/web run typecheck

@@ -10,9 +10,24 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type TEXT NOT NULL DEFAULT 'analysis';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS complexity TEXT NOT NULL DEFAULT 'medium';
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  input_summary TEXT,
+  output_summary TEXT,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS baton_packets (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   from_agent TEXT NOT NULL,
   to_agent TEXT,
   summary TEXT NOT NULL,
@@ -22,14 +37,44 @@ CREATE TABLE IF NOT EXISTS baton_packets (
 
 CREATE TABLE IF NOT EXISTS project_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   event_type TEXT NOT NULL,
   event_data JSONB NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS context_references (
+  ref_id TEXT PRIMARY KEY,
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  content_type TEXT NOT NULL,
+  original_content TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  retrieval_hint TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS context_bundles (
+  bundle_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  target_agent TEXT NOT NULL,
+  target_model TEXT NOT NULL,
+  token_budget INTEGER NOT NULL,
+  optimized_context JSONB NOT NULL,
+  included_refs TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
+  ON agent_runs (task_id, created_at ASC);
+
 CREATE INDEX IF NOT EXISTS idx_baton_packets_task_id_created_at
   ON baton_packets (task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_project_events_task_id_created_at
-  ON project_events (task_id, created_at DESC);
+  ON project_events (task_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_context_references_task_id_created_at
+  ON context_references (task_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_context_bundles_task_id_created_at
+  ON context_bundles (task_id, created_at DESC);

@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from uuid import UUID, uuid4
+
+import pytest
+from packages.contracts.python.models import (
+    AgentRun,
+    AgentRunCreate,
+    AgentRunUpdate,
+    RunExecutionRequest,
+)
+
+from app.context.schemas import OptimizedContextBundle
+from app.services.run_execution_service import RunExecutionService
+
+
+class FakeContextService:
+    def __init__(self, *, task_id: UUID, included_refs: list[str] | None = None) -> None:
+        self._task_id = task_id
+        self._included_refs = included_refs or []
+        self.called = False
+
+    def assemble_optimized_context(
+        self,
+        *,
+        task_id: UUID,
+        target_agent: str,
+        target_model: str,
+        token_budget: int,
+    ) -> OptimizedContextBundle:
+        self.called = True
+        assert task_id == self._task_id
+        return OptimizedContextBundle(
+            bundle_id=uuid4(),
+            task_id=task_id,
+            target_agent=target_agent,
+            target_model=target_model,
+            token_budget=token_budget,
+            estimated_token_count=120,
+            optimized_context={
+                "rendered_prompt": "## Critical Constraints\nDO NOT remove failing tests.",
+                "section_count": 1,
+            },
+            sections=[],
+            included_refs=self._included_refs,
+            warnings=["context compressed"],
+            created_at=datetime.now(timezone.utc),
+        )
+
+
+class FakeProvider:
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.last_prompt = ""
+        self.should_fail = False
+
+    def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        max_output_tokens: int,
+        temperature: float,
+    ):
+        del model, system_prompt, max_output_tokens, temperature
+        self.last_prompt = prompt
+        if self.should_fail:
+            raise RuntimeError("provider boom")
+        return type(
+            "ProviderResult", (), {"output_text": "model output", "finish_reason": "stop"}
+        )()
+
+    def stream(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        max_output_tokens: int,
+        temperature: float,
+    ):
+        del model, system_prompt, max_output_tokens, temperature
+        self.last_prompt = prompt
+        if self.should_fail:
+            raise RuntimeError("provider boom")
+        yield "chunk-a"
+        yield "chunk-b"
+
+
+@dataclass
+class FakeStore:
+    task_id: UUID
+    runs: dict[UUID, AgentRun] = field(default_factory=dict)
+    events: list[dict[str, str | int | float | bool | None]] = field(default_factory=list)
+
+    def create_agent_run(self, run: AgentRunCreate) -> AgentRun:
+        now = datetime.now(timezone.utc)
+        created = AgentRun(
+            id=uuid4(),
+            task_id=run.task_id,
+            role=run.role,
+            status=run.status,
+            input_summary=run.input_summary,
+            output_summary=None,
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+        )
+        self.runs[created.id] = created
+        return created
+
+    def update_agent_run(self, run_id: UUID, update: AgentRunUpdate) -> AgentRun | None:
+        existing = self.runs.get(run_id)
+        if existing is None:
+            return None
+        updated = AgentRun(
+            id=existing.id,
+            task_id=existing.task_id,
+            role=existing.role,
+            status=update.status or existing.status,
+            input_summary=existing.input_summary,
+            output_summary=update.output_summary
+            if update.output_summary is not None
+            else existing.output_summary,
+            error_message=update.error_message
+            if update.error_message is not None
+            else existing.error_message,
+            created_at=existing.created_at,
+            updated_at=datetime.now(timezone.utc),
+        )
+        self.runs[run_id] = updated
+        return updated
+
+    def save_project_event(self, event) -> None:
+        self.events.append(
+            {
+                "task_id": str(event.task_id),
+                "event_type": event.event_type,
+                **event.event_data,
+            }
+        )
+
+
+def _request(task_id: UUID) -> RunExecutionRequest:
+    return RunExecutionRequest(
+        task_id=task_id,
+        prompt="Implement run endpoint with context compression",
+        target_agent="coder",
+        target_model="gpt-4.1-mini",
+        provider="fake",
+        token_budget=1600,
+    )
+
+
+def test_execute_uses_context_and_marks_run_completed() -> None:
+    task_id = uuid4()
+    store = FakeStore(task_id=task_id)
+    provider = FakeProvider()
+    context_service = FakeContextService(task_id=task_id, included_refs=["ctxref_abc123"])
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"fake": provider},
+        default_provider="fake",
+    )
+
+    result = service.execute(_request(task_id))
+
+    assert context_service.called is True
+    assert "## Optimized Context" in provider.last_prompt
+    assert "DO NOT remove failing tests." in provider.last_prompt
+    assert result.status == "completed"
+    assert result.included_refs == ["ctxref_abc123"]
+    assert result.total_estimated_tokens >= result.estimated_input_tokens
+    assert any(event["event_type"] == "run.started" for event in store.events)
+    assert any(event["event_type"] == "run.completed" for event in store.events)
+
+
+def test_execute_marks_failed_on_provider_error() -> None:
+    task_id = uuid4()
+    store = FakeStore(task_id=task_id)
+    provider = FakeProvider()
+    provider.should_fail = True
+    context_service = FakeContextService(task_id=task_id)
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"fake": provider},
+        default_provider="fake",
+    )
+
+    with pytest.raises(RuntimeError):
+        service.execute(_request(task_id))
+
+    assert any(run.status == "failed" for run in store.runs.values())
+    assert any(event["event_type"] == "run.failed" for event in store.events)
+
+
+def test_stream_execute_emits_started_chunks_and_completed() -> None:
+    task_id = uuid4()
+    store = FakeStore(task_id=task_id)
+    provider = FakeProvider()
+    context_service = FakeContextService(task_id=task_id)
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"fake": provider},
+        default_provider="fake",
+    )
+
+    events = list(service.stream_execute(_request(task_id)))
+    assert events[0].event == "started"
+    assert any(event.event == "chunk" for event in events)
+    assert events[-1].event == "completed"
+    assert any(run.status == "completed" for run in store.runs.values())

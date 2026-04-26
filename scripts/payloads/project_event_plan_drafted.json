@@ -1,0 +1,7 @@
+{
+  "event_type": "analysis.plan_drafted",
+  "event_data": {
+    "status": "in_progress",
+    "title": "Drafted technical plan"
+  }
+}

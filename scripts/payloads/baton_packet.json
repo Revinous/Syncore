@@ -1,0 +1,24 @@
+{
+  "from_agent": "planner",
+  "to_agent": "coder",
+  "summary": "Planner to coder handoff for implementation",
+  "payload": {
+    "objective": "Implement full local API and validation flow",
+    "completed_work": [
+      "Defined local acceptance criteria",
+      "Prepared API sequence"
+    ],
+    "constraints": [
+      "Do not add AWS work in this run",
+      "Keep flow locally testable"
+    ],
+    "open_questions": [
+      "Any missing failure cases in demo?"
+    ],
+    "next_best_action": "Implement and verify /tasks, /agent-runs, /baton-packets, /project-events",
+    "relevant_artifacts": [
+      "README.md",
+      "docs/LOCAL_VALIDATION.md"
+    ]
+  }
+}

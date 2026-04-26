@@ -16,3 +16,10 @@
 - Container runtime for orchestrator explicitly uses service DNS (`postgres`, `redis`) for internal dependency connectivity.
 - Phase 4 introduces AWS deployment scaffolding (Terraform + CI workflows) while preserving local-first operation as a non-negotiable workflow.
 - Terraform in Phase 4 is intentionally placeholder-oriented and requires environment-specific hardening before production apply.
+
+- Local validation run introduces explicit workflow APIs (tasks, runs, baton packets, events, routing) as the canonical MVP surface.
+- Baton packets are strongly typed to enforce minimum handoff fidelity (`objective`, `next_best_action`, and context lists).
+- The repository now includes a canonical deterministic demo runner (`make demo-local`) as the primary proof-of-concept artifact.
+- Developer visibility is provided through both API output and a server-rendered local console page at `/?taskId=<id>`.
+- Local MVP route semantics prioritize workflow retrieval by task id (for baton packets/events) and explicit context endpoints (`/memory/lookup`, `/context/{task_id}`).
+- Operator debuggability is treated as a first-class gate with a dedicated troubleshooting document and diagnostics endpoint (`/diagnostics/task/{task_id}`).

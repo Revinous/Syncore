@@ -1,0 +1,7 @@
+{
+  "event_type": "analysis.started",
+  "event_data": {
+    "status": "in_progress",
+    "title": "Planner analysis"
+  }
+}

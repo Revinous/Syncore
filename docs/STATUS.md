@@ -157,3 +157,106 @@ Executed Phase 4 only from the runbook prompt.
 - `bash scripts/bootstrap.sh` succeeds.
 - `curl http://localhost:8000/health` and `curl http://localhost:8000/health/services` succeed.
 - `curl http://localhost:8000/analyst/digest/{task_id}` returns typed digest payload.
+
+
+## Local Prototype Validation runbook execution
+
+Executed the `Syncore_Local_Prototype_Validation_Runbook` against the current repository state.
+
+### Documentation and usability
+- Rewrote `README.md` as an operator-first local usage guide.
+- Clarified `.env.example` with local defaults and variable purpose.
+- Added `docs/LOCAL_VALIDATION.md` with commands, checklist, and readiness decision.
+
+### API completion
+- Added full local route surface for tasks, agent runs, baton packets, project events, and routing decisions.
+- Kept analyst digest generation backed by persisted project events.
+- Added service modules under `services/orchestrator/app/services` to keep business logic separate from route handlers.
+
+### Canonical demo flow
+- Added `scripts/demo_local_flow.sh` and `make demo-local`.
+- Demo performs: task create -> planner run -> events -> baton handoff -> coder run -> update -> digest.
+- Script exits non-zero on failure and prints inspection URLs for API/UI.
+
+### Validation and hardening
+- Added API and contract coverage for happy path and failure cases.
+- Added end-to-end API workflow test in `services/orchestrator/tests/test_workflow_api.py`.
+- Updated DB init schema with `agent_runs` table and relevant indexes.
+
+### Visibility
+- Upgraded web home page into a local prototype console.
+- Console surfaces health/dependency status, recent tasks, selected task detail, baton history, and digest output.
+
+### Verification run
+- `bash scripts/bootstrap.sh` passes.
+- `make demo-local` passes.
+- `make check` passes.
+- `curl /health` and `curl /health/services` pass.
+
+### Current gating
+- Local MVP validation checklist is green.
+- This run intentionally does not perform AWS apply/hardening tasks.
+
+## Local MVP Productization runbook execution
+
+Executed the `Syncore_Next_Pathway_Runbook` to complete local MVP productization gates.
+
+### API surface and workflow completion
+- Added/verified public workflow routes for tasks, runs, baton packets, project events, routing decisions, memory lookup, and context assembly.
+- Wired all local MVP routes in orchestrator app startup.
+- Added task-level diagnostics endpoint for fast operator checks.
+
+### Deterministic local demo
+- Added canonical shell demo runner: `scripts/demo_local_flow.sh`.
+- Added payload fixtures under `scripts/payloads/` for task, run, event, baton, routing, and memory requests.
+- Fixed JSON id extraction in demo script to correctly parse API responses.
+
+### UI/developer console
+- Upgraded `apps/web/pages/index.tsx` into an interactive local operator console.
+- Console now supports task creation/loading and displays routing, memory lookup, context bundle, and digest output.
+
+### Documentation and operability
+- Updated `README.md` as local MVP operator guide with current route surface and sample calls.
+- Added `docs/TROUBLESHOOTING.md` with log, DB inspection, and common failure guidance.
+- Added `docs/LOCAL_MVP_CHECKLIST.md` and marked items green only after verification.
+- Updated `docs/LOCAL_VALIDATION.md` with latest validation date and endpoint evidence.
+
+### Environment hygiene
+- Kept `.env.example` free of provider/API secrets; sensitive values remain local `.env` only.
+
+### Verification run (April 22, 2026)
+- `make format` passes.
+- `make check` passes.
+- `bash scripts/bootstrap.sh` passes.
+- `make demo-local` passes with end-to-end task -> route -> events -> baton -> context -> digest flow.
+
+## Run execution process (context-first prompt runtime)
+
+Added a first usable prompt execution path so Syncore can execute user prompts through the internal context optimizer before model invocation.
+
+### What changed
+- Added typed run contracts:
+  - `RunExecutionRequest`
+  - `RunExecutionResponse`
+  - `RunStreamEvent`
+- Added provider abstraction with deterministic local adapter and optional OpenAI adapter:
+  - `services/orchestrator/app/runs/providers.py`
+- Added run execution service:
+  - `services/orchestrator/app/services/run_execution_service.py`
+- Added run APIs:
+  - `POST /runs/execute`
+  - `POST /runs/execute/stream` (SSE)
+- Wired run router into app startup.
+- Updated docs/routes in `README.md` and `services/orchestrator/README.md`.
+- Updated `.env.example` with local LLM runtime settings (no secrets committed).
+
+### Behavior
+- Every run first calls internal optimized context assembly.
+- Prompt execution then uses selected provider adapter (`local_echo` by default).
+- Agent run state and project events are persisted for started/completed/failed runs.
+- Large context artifacts continue to be retrievable via `GET /context/references/{ref_id}`.
+
+### Validation added
+- `services/orchestrator/tests/test_run_execution_service.py`
+- `services/orchestrator/tests/test_runs_api.py`
+- Extended contract schema tests for run request/response models.

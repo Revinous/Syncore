@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -18,6 +18,9 @@ ComplexityLevel = Literal["low", "medium", "high"]
 WorkerRole = Literal["analyst", "orchestrator", "memory"]
 ModelTier = Literal["economy", "balanced", "premium"]
 RiskLevel = Literal["low", "medium", "high"]
+AgentRole = Literal["planner", "coder", "reviewer", "analyst", "memory"]
+AgentRunStatus = Literal["queued", "running", "blocked", "completed", "failed"]
+RunStreamEventType = Literal["started", "chunk", "completed", "error"]
 
 
 class TaskCreate(BaseModel):
@@ -36,12 +39,21 @@ class Task(BaseModel):
     updated_at: datetime
 
 
+class BatonPayload(BaseModel):
+    objective: str = Field(min_length=1)
+    completed_work: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    next_best_action: str = Field(min_length=1)
+    relevant_artifacts: list[str] = Field(default_factory=list)
+
+
 class BatonPacketCreate(BaseModel):
     task_id: UUID
     from_agent: str = Field(min_length=1)
     to_agent: str | None = None
     summary: str = Field(min_length=1)
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: BatonPayload
 
 
 class BatonPacket(BaseModel):
@@ -50,27 +62,84 @@ class BatonPacket(BaseModel):
     from_agent: str = Field(min_length=1)
     to_agent: str | None = None
     summary: str = Field(min_length=1)
-    payload: dict[str, Any]
+    payload: BatonPayload
     created_at: datetime
 
 
 class ProjectEventCreate(BaseModel):
     task_id: UUID
     event_type: str = Field(min_length=1)
-    event_data: dict[str, Any] = Field(default_factory=dict)
+    event_data: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class ProjectEvent(BaseModel):
     id: UUID
     task_id: UUID
     event_type: str = Field(min_length=1)
-    event_data: dict[str, Any]
+    event_data: dict[str, str | int | float | bool | None]
     created_at: datetime
+
+
+class AgentRunCreate(BaseModel):
+    task_id: UUID
+    role: AgentRole
+    status: AgentRunStatus = "queued"
+    input_summary: str | None = None
+
+
+class AgentRunUpdate(BaseModel):
+    status: AgentRunStatus | None = None
+    output_summary: str | None = None
+    error_message: str | None = None
+
+
+class AgentRun(BaseModel):
+    id: UUID
+    task_id: UUID
+    role: AgentRole
+    status: AgentRunStatus
+    input_summary: str | None = None
+    output_summary: str | None = None
+    error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskDetail(BaseModel):
+    task: Task
+    agent_runs: list[AgentRun]
+    baton_packets: list[BatonPacket]
+    event_count: int = Field(ge=0)
+    digest_path: str
 
 
 class MemoryLookupRequest(BaseModel):
     task_id: UUID
     limit: int = Field(default=20, ge=1, le=200)
+
+
+class MemoryLookupResponse(BaseModel):
+    task_id: UUID
+    latest_baton_packet: BatonPacket | None
+    recent_events: list[ProjectEvent]
+    event_count: int = Field(ge=0)
+
+
+class ContextAssembleRequest(BaseModel):
+    task_id: UUID
+    event_limit: int = Field(default=20, ge=1, le=200)
+
+
+class ContextBundle(BaseModel):
+    task: Task
+    latest_baton_packet: BatonPacket | None
+    recent_events: list[ProjectEvent]
+    objective: str | None = None
+    completed_work: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    open_issues: list[str] = Field(default_factory=list)
+    next_best_action: str | None = None
+    relevant_artifacts: list[str] = Field(default_factory=list)
 
 
 class RoutingRequest(BaseModel):
@@ -94,3 +163,45 @@ class ExecutiveDigest(BaseModel):
     event_breakdown: dict[str, int]
     risk_level: RiskLevel
     total_events: int = Field(ge=0)
+
+
+class RunExecutionRequest(BaseModel):
+    task_id: UUID
+    prompt: str = Field(min_length=1)
+    target_agent: str = Field(min_length=1)
+    target_model: str = Field(min_length=1)
+    token_budget: int = Field(default=8_000, ge=256, le=200_000)
+    provider: str | None = None
+    agent_role: AgentRole = "coder"
+    system_prompt: str | None = None
+    max_output_tokens: int = Field(default=1_200, ge=64, le=64_000)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+
+
+class RunExecutionResponse(BaseModel):
+    run_id: UUID
+    task_id: UUID
+    status: AgentRunStatus
+    provider: str = Field(min_length=1)
+    target_agent: str = Field(min_length=1)
+    target_model: str = Field(min_length=1)
+    output_text: str
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_output_tokens: int = Field(ge=0)
+    total_estimated_tokens: int = Field(ge=0)
+    optimized_bundle_id: UUID | None = None
+    included_refs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+    completed_at: datetime
+
+
+class RunStreamEvent(BaseModel):
+    event: RunStreamEventType
+    run_id: UUID | None = None
+    task_id: UUID | None = None
+    provider: str | None = None
+    target_model: str | None = None
+    content: str | None = None
+    estimated_output_tokens: int | None = Field(default=None, ge=0)
+    error: str | None = None

@@ -9,6 +9,8 @@ do {
 } until ($LASTEXITCODE -eq 0)
 
 Write-Host "PostgreSQL is ready."
+Write-Host "Applying database initialization/migration script..."
+Get-Content scripts/init_db.sql | docker exec -i agent-postgres psql -U agentos -d agentos
 
 docker compose up -d --build orchestrator web
 

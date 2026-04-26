@@ -11,6 +11,8 @@ until docker exec agent-postgres pg_isready -U agentos >/dev/null 2>&1; do
 done
 
 echo "PostgreSQL is ready."
+echo "Applying database initialization/migration script..."
+docker exec -i agent-postgres psql -U agentos -d agentos < scripts/init_db.sql
 
 docker compose up -d --build orchestrator web
 

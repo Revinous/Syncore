@@ -1,7 +1,14 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from packages.contracts.python.models import BatonPacketCreate, ProjectEventCreate
+from packages.contracts.python.models import (
+    AgentRunCreate,
+    AgentRunUpdate,
+    BatonPacketCreate,
+    BatonPayload,
+    ProjectEventCreate,
+    TaskCreate,
+)
 from services.memory.store import MemoryStore
 
 
@@ -45,15 +52,46 @@ class FakeConnection:
         return False
 
 
+def test_create_task_persists_record(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": uuid4(),
+        "title": "Plan prototype",
+        "status": "new",
+        "task_type": "analysis",
+        "complexity": "medium",
+        "created_at": now,
+        "updated_at": now,
+    }
+    fake_cursor = FakeCursor(fetchone_result=row)
+    fake_connection = FakeConnection(fake_cursor)
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect", lambda *_, **__: fake_connection
+    )
+
+    store = MemoryStore("postgresql://unused")
+    task = store.create_task(TaskCreate(title="Plan prototype", task_type="analysis"))
+
+    assert task.title == "Plan prototype"
+    assert any("INSERT INTO tasks" in sql for sql, _ in fake_cursor.statements)
+
+
 def test_save_baton_packet_inserts_record(monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     row = {
         "id": uuid4(),
         "task_id": uuid4(),
-        "from_agent": "router",
-        "to_agent": "analyst",
+        "from_agent": "planner",
+        "to_agent": "coder",
         "summary": "handoff",
-        "payload": {"key": "value"},
+        "payload": {
+            "objective": "Ship local MVP",
+            "completed_work": ["Created task"],
+            "constraints": ["No AWS"],
+            "open_questions": ["Need UI details"],
+            "next_best_action": "Implement API routes",
+            "relevant_artifacts": ["README.md"],
+        },
         "created_at": now,
     }
     fake_cursor = FakeCursor(fetchone_result=row)
@@ -67,14 +105,22 @@ def test_save_baton_packet_inserts_record(monkeypatch) -> None:
     saved = store.save_baton_packet(
         BatonPacketCreate(
             task_id=row["task_id"],
-            from_agent="router",
-            to_agent="analyst",
+            from_agent="planner",
+            to_agent="coder",
             summary="handoff",
-            payload={"key": "value"},
+            payload=BatonPayload(
+                objective="Ship local MVP",
+                completed_work=["Created task"],
+                constraints=["No AWS"],
+                open_questions=["Need UI details"],
+                next_best_action="Implement API routes",
+                relevant_artifacts=["README.md"],
+            ),
         )
     )
 
     assert saved.task_id == row["task_id"]
+    assert saved.payload.objective == "Ship local MVP"
     assert any("INSERT INTO baton_packets" in sql for sql, _ in fake_cursor.statements)
     assert fake_connection.committed is True
 
@@ -136,3 +182,53 @@ def test_save_project_event_uses_event_payload(monkeypatch) -> None:
 
     assert event.event_data["status"] == "in_progress"
     assert any("INSERT INTO project_events" in sql for sql, _ in fake_cursor.statements)
+
+
+def test_create_and_update_agent_run(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    task_id = uuid4()
+    create_row = {
+        "id": uuid4(),
+        "task_id": task_id,
+        "role": "planner",
+        "status": "queued",
+        "input_summary": "Start plan",
+        "output_summary": None,
+        "error_message": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    fake_cursor = FakeCursor(fetchone_result=create_row)
+    fake_connection = FakeConnection(fake_cursor)
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect", lambda *_, **__: fake_connection
+    )
+
+    store = MemoryStore("postgresql://unused")
+    run = store.create_agent_run(
+        AgentRunCreate(task_id=task_id, role="planner", input_summary="Start plan")
+    )
+
+    assert run.role == "planner"
+    assert any("INSERT INTO agent_runs" in sql for sql, _ in fake_cursor.statements)
+
+    update_row = {
+        **create_row,
+        "status": "completed",
+        "output_summary": "Plan complete",
+    }
+    fake_cursor_update = FakeCursor(fetchone_result=update_row)
+    fake_connection_update = FakeConnection(fake_cursor_update)
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect", lambda *_, **__: fake_connection_update
+    )
+
+    updated = store.update_agent_run(
+        run.id,
+        AgentRunUpdate(status="completed", output_summary="Plan complete"),
+    )
+
+    assert updated is not None
+    assert updated.status == "completed"
+    assert any("UPDATE agent_runs" in sql for sql, _ in fake_cursor_update.statements)
