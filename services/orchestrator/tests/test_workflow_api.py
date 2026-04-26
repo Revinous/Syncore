@@ -27,6 +27,7 @@ from app.api.routes.context import get_context_service as get_context_bundle_ser
 from app.api.routes.memory import get_context_service as get_memory_lookup_service
 from app.api.routes.project_events import get_event_service
 from app.api.routes.tasks import get_task_service
+from app.context.schemas import ContextReference, ContextSection, OptimizedContextBundle
 from app.main import create_app
 
 
@@ -36,6 +37,7 @@ class WorkflowState:
     runs: dict[UUID, AgentRun] = field(default_factory=dict)
     packets: dict[UUID, BatonPacket] = field(default_factory=dict)
     events: list[ProjectEvent] = field(default_factory=list)
+    context_references: dict[str, ContextReference] = field(default_factory=dict)
 
 
 class FakeTaskService:
@@ -218,6 +220,46 @@ class FakeContextService:
             next_best_action=latest.payload.next_best_action if latest else None,
             relevant_artifacts=latest.payload.relevant_artifacts if latest else [],
         )
+
+    def assemble_optimized_context(
+        self,
+        *,
+        task_id: UUID,
+        target_agent: str,
+        target_model: str,
+        token_budget: int,
+    ) -> OptimizedContextBundle:
+        task = self.state.tasks.get(task_id)
+        if task is None:
+            raise LookupError("Task not found")
+
+        packets = [packet for packet in self.state.packets.values() if packet.task_id == task_id]
+        latest = packets[-1] if packets else None
+        summary = latest.payload.next_best_action if latest else "No baton payload available"
+        section = ContextSection(
+            section_id=f"optimized-{task_id}",
+            title="Optimized Context",
+            section_type="summary",
+            content=summary,
+            source="fake-context-service",
+            priority=80,
+        )
+        return OptimizedContextBundle(
+            task_id=task_id,
+            target_agent=target_agent,
+            target_model=target_model,
+            token_budget=token_budget,
+            estimated_token_count=max(1, len(summary) // 4),
+            optimized_context={"rendered_prompt": summary},
+            sections=[section],
+            included_refs=[],
+        )
+
+    def retrieve_context_reference(self, ref_id: str) -> ContextReference:
+        reference = self.state.context_references.get(ref_id)
+        if reference is None:
+            raise LookupError("Context reference not found")
+        return reference
 
 
 def build_client() -> TestClient:
@@ -429,3 +471,61 @@ def test_end_to_end_demo_workflow() -> None:
     digest = client.get(f"/analyst/digest/{task_id}")
     assert digest.status_code == 200
     assert digest.json()["total_events"] >= 2
+
+
+def test_api_smoke_task_event_baton_context_and_digest() -> None:
+    client = build_client()
+
+    task_response = client.post(
+        "/tasks",
+        json={"title": "Smoke test task", "task_type": "implementation", "complexity": "medium"},
+    )
+    assert task_response.status_code == 201
+    task_id = task_response.json()["id"]
+
+    event_response = client.post(
+        "/project-events",
+        json={
+            "task_id": task_id,
+            "event_type": "analysis.started",
+            "event_data": {"status": "in_progress"},
+        },
+    )
+    assert event_response.status_code == 201
+
+    baton_response = client.post(
+        "/baton-packets",
+        json={
+            "task_id": task_id,
+            "from_agent": "planner",
+            "to_agent": "coder",
+            "summary": "handoff",
+            "payload": {
+                "objective": "Ship smoke-test path",
+                "completed_work": ["Created task", "Logged event"],
+                "constraints": ["Keep local deterministic flow"],
+                "open_questions": ["None"],
+                "next_best_action": "Call /context/assemble",
+                "relevant_artifacts": ["README.md"],
+            },
+        },
+    )
+    assert baton_response.status_code == 201
+
+    context_response = client.post(
+        "/context/assemble",
+        json={
+            "task_id": task_id,
+            "target_agent": "coder",
+            "target_model": "gpt-4.1-mini",
+            "token_budget": 1600,
+        },
+    )
+    assert context_response.status_code == 200
+    context_payload = context_response.json()
+    assert context_payload["task_id"] == task_id
+    assert context_payload["estimated_token_count"] <= 1600
+
+    digest_response = client.get(f"/analyst/digest/{task_id}")
+    assert digest_response.status_code == 200
+    assert digest_response.json()["total_events"] >= 1

@@ -2,6 +2,74 @@
 
 Initial state: repository seeded.
 
+## Local MVP reachability update (April 26, 2026)
+
+Completed an end-to-end reachability pass focused on the local MVP surface.
+
+### Routes now wired and reachable
+- Confirmed `services/orchestrator/app/main.py` includes all local MVP routers:
+  - `health`, `analyst`
+  - `tasks`
+  - `agent_runs`
+  - `baton_packets`
+  - `project_events`
+  - `routing`
+  - `runs`
+  - `memory`
+  - `context`
+  - `diagnostics`
+- Verified live acceptance checks against running orchestrator:
+  - `GET /health` -> `200`
+  - `POST /tasks` -> `201`
+  - `POST /routing/decide` -> `200`
+  - `POST /context/assemble` -> `200`
+
+### README consistency
+- Confirmed local `README.md` already contains the full **Syncore Local MVP Operator Guide** (not the old one-line bootstrap README).
+
+### DB schema and bootstrap validation
+- Confirmed `scripts/init_db.sql` defines:
+  - `tasks`
+  - `agent_runs`
+  - `baton_packets`
+  - `project_events`
+  - `context_references`
+  - `context_bundles`
+- Ran clean startup sequence:
+  - `docker compose down -v`
+  - `make bootstrap`
+- Result: PostgreSQL init script executed successfully and all services came up healthy.
+
+### Canonical demo-local result
+- Ran `make demo-local`.
+- Result: completed successfully through full workflow:
+  - task -> agent run -> event -> baton -> routing -> context -> digest
+- Verified output URLs and payloads were produced without route/service/payload failures.
+
+### API smoke test coverage
+- Added smoke workflow test in `services/orchestrator/tests/test_workflow_api.py`:
+  - `test_api_smoke_task_event_baton_context_and_digest`
+- Test verifies:
+  - create task
+  - create event
+  - create baton
+  - assemble context (`POST /context/assemble`)
+  - fetch analyst digest
+- Validation status:
+  - `make check` passes
+  - Backend suite: `43 passed`
+
+### Remaining limitations
+- Local-first deterministic MVP only; no auth or multi-tenant isolation yet.
+- Context optimization is internal and deterministic; no external proxy runtime.
+- Run execution providers are still minimal and not production-hardened.
+
+### Next milestone
+- Stabilize local run-execution quality gates:
+  - richer failure-mode assertions in demo/test paths
+  - improved context resume ergonomics for multi-worker chains
+  - staged readiness hardening after local acceptance remains consistently green
+
 ## Phase 1 bootstrap execution
 
 Completed the requested Phase 1 sequence from the runbook prompt.
