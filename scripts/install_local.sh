@@ -3,13 +3,16 @@ set -euo pipefail
 
 cp -n .env.example .env || true
 
-python3 -m venv .venv
-source .venv/bin/activate
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[install-local] missing required tool: uv"
+  echo "Install uv first: https://docs.astral.sh/uv/getting-started/installation/"
+  exit 1
+fi
 
-python -m pip install --upgrade pip
-python -m pip install -r services/orchestrator/requirements.txt
-python -m pip install -r services/orchestrator/requirements-dev.txt
+uv venv .venv
+uv pip install --python .venv/bin/python -r services/orchestrator/requirements.txt
+uv pip install --python .venv/bin/python -r services/orchestrator/requirements-dev.txt
 
 npm --prefix apps/web ci
 
-echo "[install-local] dependencies installed"
+echo "[install-local] dependencies installed via uv-managed .venv"

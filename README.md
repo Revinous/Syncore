@@ -59,6 +59,7 @@ Install and verify:
 - `node` (20+)
 - `npm`
 - `python3` (3.10+; 3.11 preferred)
+- `uv` (for native Python virtualenv + dependency install)
 - `docker` + `docker compose` (required for Docker lane only)
 
 Verify quickly:
