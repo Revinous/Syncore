@@ -1,15 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
 from packages.contracts.python.models import MemoryLookupRequest, MemoryLookupResponse
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
 from app.services.context_service import ContextService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
 
 def get_context_service(settings: Settings = Depends(get_settings)) -> ContextService:
-    return ContextService(MemoryStore(settings.postgres_dsn))
+    return ContextService(build_memory_store(settings))
 
 
 @router.post("/lookup", response_model=MemoryLookupResponse)

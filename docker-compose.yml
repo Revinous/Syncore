@@ -37,8 +37,11 @@ services:
       - .env
     environment:
       ENVIRONMENT: development
+      SYNCORE_RUNTIME_MODE: docker
+      SYNCORE_DB_BACKEND: postgres
       POSTGRES_DSN: postgresql://agentos:agentos@postgres:5432/agentos
       REDIS_URL: redis://redis:6379/0
+      REDIS_REQUIRED: "true"
     depends_on:
       postgres:
         condition: service_healthy

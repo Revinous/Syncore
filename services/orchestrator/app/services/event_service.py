@@ -1,11 +1,11 @@
 from uuid import UUID
 
 from packages.contracts.python.models import ProjectEvent, ProjectEventCreate
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 
 class EventService:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStoreProtocol) -> None:
         self._store = store
 
     def create_event(self, payload: ProjectEventCreate) -> ProjectEvent:

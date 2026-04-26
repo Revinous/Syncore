@@ -1,7 +1,26 @@
-.PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local
+.PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
+	install-local db-local-init dev-local bootstrap-local local-test
 
 bootstrap:
 	bash scripts/bootstrap.sh
+
+install-local:
+	bash scripts/install_local.sh
+
+db-local-init:
+	bash scripts/init_local_sqlite.sh
+
+dev-local:
+	bash scripts/dev_local.sh
+
+bootstrap-local: install-local db-local-init
+
+local-test:
+	SYNCORE_DB_BACKEND=sqlite SQLITE_DB_PATH=.syncore/test.db REDIS_REQUIRED=false \
+		bash scripts/init_local_sqlite.sh
+	PYTHONPATH=services/orchestrator:. SYNCORE_DB_BACKEND=sqlite \
+	SQLITE_DB_PATH=.syncore/test.db REDIS_REQUIRED=false \
+	python3 -m pytest services/orchestrator/tests services/memory/tests -q
 
 up:
 	docker compose up -d --build

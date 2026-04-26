@@ -3,13 +3,13 @@ from typing import Any
 from uuid import UUID
 
 from packages.contracts.python.models import BatonPacket, ProjectEvent, Task
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 from app.context.schemas import ContextSection, RawContextBundle
 
 
 class ContextAssembler:
-    def __init__(self, store: MemoryStore, event_limit: int = 80) -> None:
+    def __init__(self, store: MemoryStoreProtocol, event_limit: int = 80) -> None:
         self._store = store
         self._event_limit = max(10, min(event_limit, 200))
 

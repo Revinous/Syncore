@@ -2,16 +2,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from packages.contracts.python.models import Task, TaskCreate, TaskDetail
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
 from app.services.task_service import TaskService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 def get_task_service(settings: Settings = Depends(get_settings)) -> TaskService:
-    return TaskService(MemoryStore(settings.postgres_dsn))
+    return TaskService(build_memory_store(settings))
 
 
 @router.post("", response_model=Task, status_code=201)

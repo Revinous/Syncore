@@ -13,7 +13,7 @@ from packages.contracts.python.models import (
     RunExecutionResponse,
     RunStreamEvent,
 )
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
 from app.context.retrieval_refs import estimate_tokens
@@ -25,7 +25,7 @@ class RunExecutionService:
     def __init__(
         self,
         *,
-        store: MemoryStore,
+        store: MemoryStoreProtocol,
         context_service: ContextService,
         providers: dict[str, LlmProvider],
         default_provider: str,
@@ -37,7 +37,11 @@ class RunExecutionService:
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RunExecutionService":
-        store = MemoryStore(settings.postgres_dsn)
+        store = create_memory_store(
+            db_backend=settings.syncore_db_backend,
+            postgres_dsn=settings.postgres_dsn,
+            sqlite_db_path=settings.sqlite_db_path,
+        )
         context_service = ContextService(store)
         providers: dict[str, LlmProvider] = {
             "local_echo": LocalEchoProvider(),

@@ -1,6 +1,6 @@
 # Syncore Local MVP Operator Guide
 
-Syncore is a local-first orchestration platform prototype where specialized agent roles hand off work through structured baton packets, persist durable state in PostgreSQL, and generate analyst digests from real project events.
+Syncore is a local-first orchestration platform prototype where specialized agent roles hand off work through structured baton packets, persist durable state, and generate analyst digests from real project events.
 
 This guide is intentionally focused on **local MVP validation only**. It does not add AWS, staging hardening, or production scope.
 
@@ -32,9 +32,9 @@ This repository is optimized for one believable local workflow:
             │                               │
             ▼                               ▼
 ┌───────────────────────┐         ┌───────────────────────┐
-│ PostgreSQL 16         │         │ Redis 7               │
-│ durable workflow data │         │ short-lived cache      │
-│ tasks/runs/events/... │         │ and coordination       │
+│ PostgreSQL or SQLite  │         │ Redis (optional in     │
+│ durable workflow data │         │ native mode)           │
+│ tasks/runs/events/... │         │ coordination/cache     │
 └───────────────────────┘         └───────────────────────┘
 ```
 
@@ -42,7 +42,7 @@ This repository is optimized for one believable local workflow:
 
 - `apps/web` – Next.js local console for workflow visibility.
 - `services/orchestrator` – FastAPI API + orchestration service layer.
-- `services/memory` – PostgreSQL-backed data store methods.
+- `services/memory` – PostgreSQL + SQLite store implementations behind a shared factory.
 - `services/router` – deterministic routing policy engine.
 - `services/analyst` – digest generation from stored events.
 - `packages/contracts` – shared typed contracts (Python + TypeScript).
@@ -59,7 +59,7 @@ Install and verify:
 - `node` (20+)
 - `npm`
 - `python3` (3.10+; 3.11 preferred)
-- `docker` + `docker compose`
+- `docker` + `docker compose` (required for Docker lane only)
 
 Verify quickly:
 
@@ -84,20 +84,39 @@ Key variables:
 
 - `ORCHESTRATOR_BASE_URL` – local API base (default `http://localhost:8000`)
 - `NEXT_PUBLIC_API_BASE_URL` – browser-side web app API base
-- `ORCHESTRATOR_INTERNAL_URL` – server-side web app API base (Docker internal)
-- `POSTGRES_DSN` – orchestrator DB connection string
+- `ORCHESTRATOR_INTERNAL_URL` – server-side web app API base
+- `SYNCORE_RUNTIME_MODE` – `native` or `docker`
+- `SYNCORE_DB_BACKEND` – `sqlite` or `postgres`
+- `SQLITE_DB_PATH` – sqlite database location for native mode
+- `POSTGRES_DSN` – PostgreSQL DSN for Docker/enterprise mode
 - `REDIS_URL` – redis connection string
+- `REDIS_REQUIRED` – set `false` for native mode without redis
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.
-- `.env.example` uses placeholder DB credentials; Docker Compose still boots with internal dev defaults for local MVP.
 
-## Local Quickstart
+## Startup Lanes
+
+### Enterprise / Docker Mode
+
+Uses Docker Compose with PostgreSQL + Redis.
 
 ```bash
 cp .env.example .env
 make bootstrap
 ```
 
-Then verify:
+### Solo Developer / Native Mode
+
+Runs FastAPI + Next.js directly on host, defaulting to SQLite.
+
+```bash
+cp .env.example .env
+make bootstrap-local
+make dev-local
+```
+
+Native mode initializes SQLite at `.syncore/syncore.db` and does not require Redis by default.
+
+For both lanes, verify:
 
 ```bash
 curl http://localhost:8000/health
@@ -116,6 +135,11 @@ open http://localhost:3000  # or paste in browser
 
 ```bash
 make bootstrap      # build/start stack and wait for health
+make install-local  # create .venv + install Python and Node dependencies
+make db-local-init  # initialize sqlite schema at SQLITE_DB_PATH
+make dev-local      # run orchestrator + web without Docker
+make bootstrap-local # install-local + db-local-init
+make local-test     # run backend tests with sqlite backend env
 make up             # docker compose up -d --build
 make down           # docker compose down
 make logs           # tail compose logs

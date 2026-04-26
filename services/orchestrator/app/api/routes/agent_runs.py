@@ -2,16 +2,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from packages.contracts.python.models import AgentRun, AgentRunCreate, AgentRunUpdate
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
 from app.services.agent_run_service import AgentRunService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 
 
 def get_agent_run_service(settings: Settings = Depends(get_settings)) -> AgentRunService:
-    return AgentRunService(MemoryStore(settings.postgres_dsn))
+    return AgentRunService(build_memory_store(settings))
 
 
 @router.post("", response_model=AgentRun, status_code=201)

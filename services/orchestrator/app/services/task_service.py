@@ -1,11 +1,11 @@
 from uuid import UUID
 
 from packages.contracts.python.models import Task, TaskCreate, TaskDetail
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 
 class TaskService:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStoreProtocol) -> None:
         self._store = store
 
     def create_task(self, payload: TaskCreate) -> Task:

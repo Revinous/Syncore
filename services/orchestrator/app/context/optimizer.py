@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from textwrap import shorten
 
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 from app.context.retrieval_refs import (
     build_ref_id,
@@ -39,7 +39,7 @@ class SimpleContextOptimizer(ContextOptimizer):
     LOG_LIKE_TYPES = {"log_output", "tool_output", "file_content"}
     EVENT_LIKE_TYPES = {"project_event", "memory"}
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStoreProtocol) -> None:
         self._store = store
 
     def optimize(

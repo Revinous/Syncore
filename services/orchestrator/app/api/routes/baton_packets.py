@@ -2,16 +2,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from packages.contracts.python.models import BatonPacket, BatonPacketCreate
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
 from app.services.baton_service import BatonService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/baton-packets", tags=["baton-packets"])
 
 
 def get_baton_service(settings: Settings = Depends(get_settings)) -> BatonService:
-    return BatonService(MemoryStore(settings.postgres_dsn))
+    return BatonService(build_memory_store(settings))
 
 
 @router.post("", response_model=BatonPacket, status_code=201)

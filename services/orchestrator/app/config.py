@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -6,8 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Agent Workforce Orchestrator"
     environment: str = "development"
+    syncore_runtime_mode: Literal["docker", "native"] = "docker"
+    syncore_db_backend: Literal["postgres", "sqlite"] = "postgres"
     postgres_dsn: str = "postgresql://agentos:agentos@localhost:5432/agentos"
+    sqlite_db_path: str = ".syncore/syncore.db"
     redis_url: str = "redis://localhost:6379/0"
+    redis_required: bool = True
     default_llm_provider: str = "local_echo"
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com"

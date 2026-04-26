@@ -1,11 +1,11 @@
 from uuid import UUID
 
 from packages.contracts.python.models import BatonPacket, BatonPacketCreate
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 
 class BatonService:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStoreProtocol) -> None:
         self._store = store
 
     def create_packet(self, payload: BatonPacketCreate) -> BatonPacket:

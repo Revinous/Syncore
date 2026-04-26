@@ -2,7 +2,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from packages.contracts.python.models import ContextBundle
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
 from app.context.schemas import (
@@ -11,12 +10,13 @@ from app.context.schemas import (
     OptimizedContextBundle,
 )
 from app.services.context_service import ContextService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/context", tags=["context"])
 
 
 def get_context_service(settings: Settings = Depends(get_settings)) -> ContextService:
-    return ContextService(MemoryStore(settings.postgres_dsn))
+    return ContextService(build_memory_store(settings))
 
 
 @router.get("/{task_id}", response_model=ContextBundle)

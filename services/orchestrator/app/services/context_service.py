@@ -1,7 +1,8 @@
+from datetime import datetime
 from uuid import UUID
 
 from packages.contracts.python.models import ContextBundle, MemoryLookupResponse
-from services.memory.store import MemoryStore
+from services.memory import MemoryStoreProtocol
 
 from app.context.assembler import ContextAssembler
 from app.context.compression_policy import default_context_policy
@@ -12,7 +13,7 @@ from app.context.schemas import ContextReference, OptimizedContextBundle
 class ContextService:
     def __init__(
         self,
-        store: MemoryStore,
+        store: MemoryStoreProtocol,
         assembler: ContextAssembler | None = None,
         optimizer: ContextOptimizer | None = None,
     ) -> None:
@@ -96,11 +97,25 @@ class ContextService:
         )
         return optimized.model_copy(
             update={
-                "bundle_id": row["bundle_id"],
-                "created_at": row["created_at"],
+                "bundle_id": self._as_uuid(row["bundle_id"]),
+                "created_at": self._as_datetime(row["created_at"]),
                 "included_refs": list(row["included_refs"]),
             }
         )
 
     def retrieve_context_reference(self, ref_id: str) -> ContextReference:
         return self._optimizer.retrieve(ref_id)
+
+    def _as_uuid(self, value: object) -> UUID:
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str):
+            return UUID(value)
+        raise ValueError(f"Unsupported bundle_id type: {type(value)}")
+
+    def _as_datetime(self, value: object) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        raise ValueError(f"Unsupported datetime type: {type(value)}")

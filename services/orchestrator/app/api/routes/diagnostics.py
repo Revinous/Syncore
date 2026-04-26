@@ -2,9 +2,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from services.memory.store import MemoryStore
 
 from app.config import Settings, get_settings
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
@@ -22,7 +22,7 @@ def diagnostics_for_task(
     task_id: UUID,
     settings: Settings = Depends(get_settings),
 ) -> TaskDiagnostics:
-    store = MemoryStore(settings.postgres_dsn)
+    store = build_memory_store(settings)
     task = store.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
