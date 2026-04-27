@@ -8,14 +8,19 @@ from packages.contracts.python.models import (
     BatonPayload,
     ProjectEventCreate,
     TaskCreate,
+    WorkspaceCreate,
+    WorkspaceUpdate,
 )
 from services.memory.store import MemoryStore
 
 
 class FakeCursor:
-    def __init__(self, *, fetchone_result=None, fetchall_result=None) -> None:
+    def __init__(
+        self, *, fetchone_result=None, fetchall_result=None, rowcount: int = 1
+    ) -> None:
         self.fetchone_result = fetchone_result
         self.fetchall_result = fetchall_result or []
+        self.rowcount = rowcount
         self.statements: list[tuple[str, tuple[object, ...]]] = []
 
     def execute(self, query: str, params: tuple[object, ...]) -> None:
@@ -232,3 +237,95 @@ def test_create_and_update_agent_run(monkeypatch) -> None:
     assert updated is not None
     assert updated.status == "completed"
     assert any("UPDATE agent_runs" in sql for sql, _ in fake_cursor_update.statements)
+
+
+def test_workspace_crud_sql_paths(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    workspace_id = uuid4()
+
+    create_cursor = FakeCursor(
+        fetchone_result={
+            "id": workspace_id,
+            "name": "Syncore",
+            "root_path": "/tmp/syncore",
+            "repo_url": "https://example.com/repo.git",
+            "branch": "main",
+            "runtime_mode": "native",
+            "metadata": {"owner": "dev"},
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect",
+        lambda *_, **__: FakeConnection(create_cursor),
+    )
+    store = MemoryStore("postgresql://unused")
+    created = store.create_workspace(
+        WorkspaceCreate(
+            name="Syncore",
+            root_path="/tmp/syncore",
+            repo_url="https://example.com/repo.git",
+            branch="main",
+            runtime_mode="native",
+            metadata={"owner": "dev"},
+        )
+    )
+    assert created.id == workspace_id
+    assert any("INSERT INTO workspaces" in sql for sql, _ in create_cursor.statements)
+
+    list_cursor = FakeCursor(
+        fetchall_result=[
+            {
+                "id": workspace_id,
+                "name": "Syncore",
+                "root_path": "/tmp/syncore",
+                "repo_url": "https://example.com/repo.git",
+                "branch": "main",
+                "runtime_mode": "native",
+                "metadata": {"owner": "dev"},
+                "created_at": now,
+                "updated_at": now,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect",
+        lambda *_, **__: FakeConnection(list_cursor),
+    )
+    listed = store.list_workspaces()
+    assert len(listed) == 1
+    assert any("FROM workspaces" in sql for sql, _ in list_cursor.statements)
+
+    update_cursor = FakeCursor(
+        fetchone_result={
+            "id": workspace_id,
+            "name": "Syncore Updated",
+            "root_path": "/tmp/syncore",
+            "repo_url": "https://example.com/repo.git",
+            "branch": "develop",
+            "runtime_mode": "native",
+            "metadata": {"owner": "dev"},
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect",
+        lambda *_, **__: FakeConnection(update_cursor),
+    )
+    updated = store.update_workspace(
+        workspace_id,
+        WorkspaceUpdate(name="Syncore Updated", branch="develop"),
+    )
+    assert updated is not None
+    assert updated.branch == "develop"
+    assert any("UPDATE workspaces" in sql for sql, _ in update_cursor.statements)
+
+    delete_cursor = FakeCursor(rowcount=1)
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect",
+        lambda *_, **__: FakeConnection(delete_cursor),
+    )
+    assert store.delete_workspace(workspace_id) is True
+    assert any("DELETE FROM workspaces" in sql for sql, _ in delete_cursor.statements)

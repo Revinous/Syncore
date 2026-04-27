@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS project_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  root_path TEXT NOT NULL,
+  repo_url TEXT,
+  branch TEXT,
+  runtime_mode TEXT NOT NULL DEFAULT 'native',
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS context_references (
   ref_id TEXT PRIMARY KEY,
   task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -72,6 +84,9 @@ CREATE INDEX IF NOT EXISTS idx_baton_packets_task_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_project_events_task_id_created_at
   ON project_events (task_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_root_path
+  ON workspaces (root_path);
 
 CREATE INDEX IF NOT EXISTS idx_context_references_task_id_created_at
   ON context_references (task_id, created_at DESC);

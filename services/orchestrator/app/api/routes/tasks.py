@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from packages.contracts.python.models import Task, TaskCreate, TaskDetail
+from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskUpdate
 
 from app.config import Settings, get_settings
 from app.services.task_service import TaskService
@@ -39,3 +39,19 @@ def get_task_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return detail
+
+
+@router.patch("/{task_id}", response_model=Task)
+def update_task(
+    task_id: UUID,
+    payload: TaskUpdate,
+    service: TaskService = Depends(get_task_service),
+) -> Task:
+    try:
+        updated = service.update_task(task_id, payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return updated

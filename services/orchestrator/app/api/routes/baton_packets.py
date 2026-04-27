@@ -37,6 +37,14 @@ def list_baton_packets_for_task(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
+@router.get("", response_model=list[BatonPacket])
+def list_baton_packets(
+    limit: int = Query(default=50, ge=1, le=200),
+    service: BatonService = Depends(get_baton_service),
+) -> list[BatonPacket]:
+    return service.list_packets_global(limit=limit)
+
+
 @router.get("/by-id/{packet_id}", response_model=BatonPacket)
 def get_baton_packet_by_id(
     packet_id: UUID,
@@ -46,4 +54,19 @@ def get_baton_packet_by_id(
     if packet is None:
         raise HTTPException(status_code=404, detail="Baton packet not found")
 
+    return packet
+
+
+@router.get("/task/{task_id}/latest", response_model=BatonPacket)
+def get_latest_baton_packet_for_task(
+    task_id: UUID,
+    service: BatonService = Depends(get_baton_service),
+) -> BatonPacket:
+    try:
+        packet = service.get_latest_packet_for_task(task_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    if packet is None:
+        raise HTTPException(status_code=404, detail="No baton packets found for task")
     return packet

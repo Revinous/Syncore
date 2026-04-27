@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from packages.contracts.python.models import Task, TaskCreate, TaskDetail
+from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskUpdate
 from services.memory import MemoryStoreProtocol
 
 
@@ -13,6 +13,9 @@ class TaskService:
 
     def get_task(self, task_id: UUID) -> Task | None:
         return self._store.get_task(task_id)
+
+    def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task | None:
+        return self._store.update_task(task_id, payload)
 
     def list_tasks(self, limit: int = 50) -> list[Task]:
         return self._store.list_tasks(limit=limit)

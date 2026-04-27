@@ -17,3 +17,6 @@ class EventService:
 
     def list_events(self, task_id: UUID, limit: int = 100) -> list[ProjectEvent]:
         return self._store.list_project_events(task_id=task_id, limit=limit)
+
+    def list_events_global(self, limit: int = 100) -> list[ProjectEvent]:
+        return self._store.list_project_events(task_id=None, limit=limit)

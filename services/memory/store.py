@@ -16,6 +16,10 @@ from packages.contracts.python.models import (
     ProjectEventCreate,
     Task,
     TaskCreate,
+    TaskUpdate,
+    Workspace,
+    WorkspaceCreate,
+    WorkspaceUpdate,
 )
 
 
@@ -80,6 +84,45 @@ class MemoryStore:
 
         return [Task.model_validate(row) for row in rows]
 
+    def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task | None:
+        assignments: list[str] = []
+        values: list[object] = []
+
+        if payload.title is not None:
+            assignments.append("title = %s")
+            values.append(payload.title)
+        if payload.status is not None:
+            assignments.append("status = %s")
+            values.append(payload.status)
+        if payload.task_type is not None:
+            assignments.append("task_type = %s")
+            values.append(payload.task_type)
+        if payload.complexity is not None:
+            assignments.append("complexity = %s")
+            values.append(payload.complexity)
+
+        if not assignments:
+            raise ValueError("At least one field must be provided for task update")
+
+        assignments.append("updated_at = NOW()")
+        values.append(task_id)
+
+        with self._cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE tasks
+                SET {", ".join(assignments)}
+                WHERE id = %s
+                RETURNING id, title, status, task_type, complexity, created_at, updated_at
+                """,
+                tuple(values),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+        return Task.model_validate(row)
+
     def create_agent_run(self, run: AgentRunCreate) -> AgentRun:
         with self._cursor() as cursor:
             cursor.execute(
@@ -136,20 +179,51 @@ class MemoryStore:
 
         return AgentRun.model_validate(row)
 
-    def list_agent_runs(self, task_id: UUID, limit: int = 50) -> list[AgentRun]:
-        bounded_limit = min(max(limit, 1), 200)
+    def get_agent_run(self, run_id: UUID) -> AgentRun | None:
         with self._cursor() as cursor:
             cursor.execute(
                 """
                 SELECT id, task_id, role, status, input_summary, output_summary,
                        error_message, created_at, updated_at
                 FROM agent_runs
-                WHERE task_id = %s
-                ORDER BY created_at ASC
-                LIMIT %s
+                WHERE id = %s
                 """,
-                (task_id, bounded_limit),
+                (run_id,),
             )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+        return AgentRun.model_validate(row)
+
+    def list_agent_runs(
+        self, task_id: UUID | None = None, limit: int = 50
+    ) -> list[AgentRun]:
+        bounded_limit = min(max(limit, 1), 200)
+        with self._cursor() as cursor:
+            if task_id is None:
+                cursor.execute(
+                    """
+                    SELECT id, task_id, role, status, input_summary, output_summary,
+                           error_message, created_at, updated_at
+                    FROM agent_runs
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (bounded_limit,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, task_id, role, status, input_summary, output_summary,
+                           error_message, created_at, updated_at
+                    FROM agent_runs
+                    WHERE task_id = %s
+                    ORDER BY created_at ASC
+                    LIMIT %s
+                    """,
+                    (task_id, bounded_limit),
+                )
             rows = cursor.fetchall()
 
         return [AgentRun.model_validate(row) for row in rows]
@@ -251,19 +325,32 @@ class MemoryStore:
 
         return ProjectEvent.model_validate(row)
 
-    def list_project_events(self, task_id: UUID, limit: int = 50) -> list[ProjectEvent]:
+    def list_project_events(
+        self, task_id: UUID | None = None, limit: int = 50
+    ) -> list[ProjectEvent]:
         bounded_limit = min(max(limit, 1), 200)
         with self._cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, task_id, event_type, event_data, created_at
-                FROM project_events
-                WHERE task_id = %s
-                ORDER BY created_at DESC
-                LIMIT %s
-                """,
-                (task_id, bounded_limit),
-            )
+            if task_id is None:
+                cursor.execute(
+                    """
+                    SELECT id, task_id, event_type, event_data, created_at
+                    FROM project_events
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (bounded_limit,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, task_id, event_type, event_data, created_at
+                    FROM project_events
+                    WHERE task_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (task_id, bounded_limit),
+                )
             rows = cursor.fetchall()
 
         parsed = [ProjectEvent.model_validate(row) for row in rows]
@@ -286,6 +373,156 @@ class MemoryStore:
             return 0
 
         return int(row["total"])
+
+    def create_workspace(self, payload: WorkspaceCreate) -> Workspace:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO workspaces (name, root_path, repo_url, branch, runtime_mode, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                """,
+                (
+                    payload.name,
+                    payload.root_path,
+                    payload.repo_url,
+                    payload.branch,
+                    payload.runtime_mode,
+                    Json(payload.metadata),
+                ),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to create workspace")
+        return Workspace.model_validate(row)
+
+    def get_workspace(self, workspace_id: UUID) -> Workspace | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                WHERE id = %s
+                """,
+                (workspace_id,),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+        return Workspace.model_validate(row)
+
+    def list_workspaces(self, limit: int = 100) -> list[Workspace]:
+        bounded_limit = min(max(limit, 1), 500)
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (bounded_limit,),
+            )
+            rows = cursor.fetchall()
+
+        return [Workspace.model_validate(row) for row in rows]
+
+    def update_workspace(
+        self, workspace_id: UUID, payload: WorkspaceUpdate
+    ) -> Workspace | None:
+        assignments: list[str] = []
+        values: list[object] = []
+
+        if payload.name is not None:
+            assignments.append("name = %s")
+            values.append(payload.name)
+        if payload.root_path is not None:
+            assignments.append("root_path = %s")
+            values.append(payload.root_path)
+        if payload.repo_url is not None:
+            assignments.append("repo_url = %s")
+            values.append(payload.repo_url)
+        if payload.branch is not None:
+            assignments.append("branch = %s")
+            values.append(payload.branch)
+        if payload.runtime_mode is not None:
+            assignments.append("runtime_mode = %s")
+            values.append(payload.runtime_mode)
+        if payload.metadata is not None:
+            assignments.append("metadata = %s")
+            values.append(Json(payload.metadata))
+
+        if not assignments:
+            raise ValueError("At least one field must be provided for workspace update")
+
+        assignments.append("updated_at = NOW()")
+        values.append(workspace_id)
+
+        with self._cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE workspaces
+                SET {", ".join(assignments)}
+                WHERE id = %s
+                RETURNING
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                """,
+                tuple(values),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+        return Workspace.model_validate(row)
+
+    def delete_workspace(self, workspace_id: UUID) -> bool:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM workspaces
+                WHERE id = %s
+                """,
+                (workspace_id,),
+            )
+            deleted = cursor.rowcount
+        return bool(deleted)
 
     def upsert_context_reference(
         self,

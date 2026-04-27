@@ -117,6 +117,44 @@ make dev-local
 
 Native mode initializes SQLite at `.syncore/syncore.db` and does not require Redis by default.
 
+## Interfaces
+
+Syncore has two first-class control surfaces that both use the FastAPI orchestrator API as source of truth.
+
+1. Web UI
+   - Browser-based enterprise control panel for dashboards, workspace management, task/run visibility, and diagnostics.
+   - Start in native mode:
+     - `make dev-local`
+     - open `http://localhost:3000`
+   - Start in Docker mode:
+     - `make bootstrap`
+     - open `http://localhost:3000`
+
+2. CLI / TUI
+   - Terminal-first local control surface for fast workflows and interactive monitoring.
+   - Install:
+     - `make install-cli`
+  - Common commands:
+    - `syncore status`
+    - `syncore dashboard`
+    - `syncore workspace list`
+    - `syncore task list`
+    - `syncore open my-app`
+    - `syncore tui`
+
+Environment variables used by interfaces:
+- `SYNCORE_API_URL=http://localhost:8000`
+- `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`
+
+Examples:
+- `syncore workspace add ./my-app --name my-app`
+- `syncore workspace scan my-app`
+- `syncore task create \"Analyze the auth flow\" --workspace my-app`
+- `syncore run start TASK_ID --agent-role backend`
+- `syncore open my-app`
+- `syncore my-app` (shortcut for `syncore open my-app`)
+- `syncore tui`
+
 For both lanes, verify:
 
 ```bash
@@ -149,29 +187,63 @@ make test           # backend + frontend tests
 make check          # lint + tests + typecheck + build
 ```
 
+Global CLI after `make install-local`:
+
+```bash
+syncore workspace                # start local workspace services (web + api)
+syncore workspace add . --name Syncore
+syncore workspace list
+syncore workspace scan Syncore
+syncore workspace files Syncore
+syncore task create Syncore "Implement workspace scan route tests"
+```
+
 ## API Endpoints (Local MVP)
 
 - `GET /health`
 - `GET /health/services`
+- `GET /dashboard/summary`
 - `POST /tasks`
 - `GET /tasks`
 - `GET /tasks/{task_id}`
+- `PATCH /tasks/{task_id}`
 - `POST /agent-runs`
+- `GET /agent-runs`
+- `GET /agent-runs/{run_id}`
 - `PATCH /agent-runs/{run_id}`
 - `POST /baton-packets`
+- `GET /baton-packets`
 - `GET /baton-packets/{task_id}`
 - `GET /baton-packets/by-id/{packet_id}`
 - `POST /project-events`
+- `GET /project-events`
 - `GET /project-events/{task_id}`
+- `GET /tasks/{task_id}/events`
+- `GET /tasks/{task_id}/baton-packets`
+- `GET /tasks/{task_id}/baton-packets/latest`
 - `POST /routing/decide`
 - `POST /routing/next`
+- `POST /routing/next-action`
+- `GET /tasks/{task_id}/routing`
 - `POST /runs/execute`
 - `POST /runs/execute/stream`
 - `POST /memory/lookup`
 - `GET /context/{task_id}`
 - `POST /context/assemble`
 - `GET /context/references/{ref_id}`
+- `POST /workspaces`
+- `GET /workspaces`
+- `GET /workspaces/{workspace_id}`
+- `PATCH /workspaces/{workspace_id}`
+- `DELETE /workspaces/{workspace_id}`
+- `POST /workspaces/{workspace_id}/scan`
+- `GET /workspaces/{workspace_id}/files`
 - `GET /analyst/digest/{task_id}`
+- `POST /analyst/digest`
+- `GET /tasks/{task_id}/digest`
+- `GET /diagnostics`
+- `GET /diagnostics/config`
+- `GET /diagnostics/routes`
 - `GET /diagnostics/task/{task_id}`
 
 ### Example payloads
@@ -241,6 +313,31 @@ Context reference retrieval:
 curl http://localhost:8000/context/references/<REF_ID>
 ```
 
+Create workspace:
+
+```bash
+curl -X POST http://localhost:8000/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"Syncore",
+    "root_path":"/absolute/path/to/project",
+    "runtime_mode":"native",
+    "metadata":{}
+  }'
+```
+
+Scan workspace:
+
+```bash
+curl -X POST http://localhost:8000/workspaces/<WORKSPACE_ID>/scan
+```
+
+List workspace files safely:
+
+```bash
+curl "http://localhost:8000/workspaces/<WORKSPACE_ID>/files?path=.&limit=200"
+```
+
 Run execution through Syncore:
 
 ```bash
@@ -303,6 +400,7 @@ What it does:
 - API task detail: `http://localhost:8000/tasks/<TASK_ID>`
 - API digest: `http://localhost:8000/analyst/digest/<TASK_ID>`
 - Web console: `http://localhost:3000/?taskId=<TASK_ID>`
+- Workspace console: `http://localhost:3000/workspaces`
 
 ## Testing
 

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -21,12 +21,20 @@ RiskLevel = Literal["low", "medium", "high"]
 AgentRole = Literal["planner", "coder", "reviewer", "analyst", "memory"]
 AgentRunStatus = Literal["queued", "running", "blocked", "completed", "failed"]
 RunStreamEventType = Literal["started", "chunk", "completed", "error"]
+WorkspaceRuntimeMode = Literal["docker", "native", "unknown"]
 
 
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1)
     task_type: TaskType
     complexity: ComplexityLevel = "medium"
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1)
+    status: TaskStatus | None = None
+    task_type: TaskType | None = None
+    complexity: ComplexityLevel | None = None
 
 
 class Task(BaseModel):
@@ -103,6 +111,11 @@ class AgentRun(BaseModel):
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class AnalystDigestRequest(BaseModel):
+    task_id: UUID
+    limit: int = Field(default=50, ge=1, le=200)
 
 
 class TaskDetail(BaseModel):
@@ -205,3 +218,33 @@ class RunStreamEvent(BaseModel):
     content: str | None = None
     estimated_output_tokens: int | None = Field(default=None, ge=0)
     error: str | None = None
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1)
+    root_path: str = Field(min_length=1)
+    repo_url: str | None = None
+    branch: str | None = None
+    runtime_mode: WorkspaceRuntimeMode = "native"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    root_path: str | None = Field(default=None, min_length=1)
+    repo_url: str | None = None
+    branch: str | None = None
+    runtime_mode: WorkspaceRuntimeMode | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class Workspace(BaseModel):
+    id: UUID
+    name: str = Field(min_length=1)
+    root_path: str = Field(min_length=1)
+    repo_url: str | None = None
+    branch: str | None = None
+    runtime_mode: WorkspaceRuntimeMode = "native"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime

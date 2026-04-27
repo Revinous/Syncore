@@ -18,6 +18,10 @@ from packages.contracts.python.models import (
     ProjectEventCreate,
     Task,
     TaskCreate,
+    TaskUpdate,
+    Workspace,
+    WorkspaceCreate,
+    WorkspaceUpdate,
 )
 
 
@@ -88,6 +92,51 @@ class SQLiteMemoryStore:
             ).fetchall()
         return [Task.model_validate(dict(row)) for row in rows]
 
+    def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task | None:
+        assignments: list[str] = []
+        values: list[object] = []
+
+        if payload.title is not None:
+            assignments.append("title = ?")
+            values.append(payload.title)
+        if payload.status is not None:
+            assignments.append("status = ?")
+            values.append(payload.status)
+        if payload.task_type is not None:
+            assignments.append("task_type = ?")
+            values.append(payload.task_type)
+        if payload.complexity is not None:
+            assignments.append("complexity = ?")
+            values.append(payload.complexity)
+
+        if not assignments:
+            raise ValueError("At least one field must be provided for task update")
+
+        assignments.append("updated_at = ?")
+        values.append(self._now())
+        values.append(str(task_id))
+
+        with self._connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE tasks
+                SET {", ".join(assignments)}
+                WHERE id = ?
+                """,
+                tuple(values),
+            )
+            row = connection.execute(
+                """
+                SELECT id, title, status, task_type, complexity, created_at, updated_at
+                FROM tasks
+                WHERE id = ?
+                """,
+                (str(task_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return Task.model_validate(dict(row))
+
     def create_agent_run(self, run: AgentRunCreate) -> AgentRun:
         run_id = str(uuid4())
         now = self._now()
@@ -107,7 +156,15 @@ class SQLiteMemoryStore:
                 )
                 VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
                 """,
-                (run_id, str(run.task_id), run.role, run.status, run.input_summary, now, now),
+                (
+                    run_id,
+                    str(run.task_id),
+                    run.role,
+                    run.status,
+                    run.input_summary,
+                    now,
+                    now,
+                ),
             )
             row = connection.execute(
                 """
@@ -165,26 +222,57 @@ class SQLiteMemoryStore:
             return None
         return AgentRun.model_validate(dict(row))
 
-    def list_agent_runs(self, task_id: UUID, limit: int = 50) -> list[AgentRun]:
-        bounded_limit = min(max(limit, 1), 200)
+    def get_agent_run(self, run_id: UUID) -> AgentRun | None:
         with self._connection() as connection:
-            rows = connection.execute(
+            row = connection.execute(
                 """
                 SELECT id, task_id, role, status, input_summary, output_summary,
                        error_message, created_at, updated_at
                 FROM agent_runs
-                WHERE task_id = ?
-                ORDER BY created_at ASC
-                LIMIT ?
+                WHERE id = ?
                 """,
-                (str(task_id), bounded_limit),
-            ).fetchall()
+                (str(run_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return AgentRun.model_validate(dict(row))
+
+    def list_agent_runs(
+        self, task_id: UUID | None = None, limit: int = 50
+    ) -> list[AgentRun]:
+        bounded_limit = min(max(limit, 1), 200)
+        with self._connection() as connection:
+            if task_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT id, task_id, role, status, input_summary, output_summary,
+                           error_message, created_at, updated_at
+                    FROM agent_runs
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id, task_id, role, status, input_summary, output_summary,
+                           error_message, created_at, updated_at
+                    FROM agent_runs
+                    WHERE task_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (str(task_id), bounded_limit),
+                ).fetchall()
         return [AgentRun.model_validate(dict(row)) for row in rows]
 
     def save_baton_packet(self, packet: BatonPacketCreate) -> BatonPacket:
         packet_id = str(uuid4())
         now = self._now()
-        payload = json.dumps(packet.payload.model_dump(), ensure_ascii=True, sort_keys=True)
+        payload = json.dumps(
+            packet.payload.model_dump(), ensure_ascii=True, sort_keys=True
+        )
         with self._connection() as connection:
             connection.execute(
                 """
@@ -297,19 +385,32 @@ class SQLiteMemoryStore:
         parsed["event_data"] = json.loads(parsed["event_data"])
         return ProjectEvent.model_validate(parsed)
 
-    def list_project_events(self, task_id: UUID, limit: int = 50) -> list[ProjectEvent]:
+    def list_project_events(
+        self, task_id: UUID | None = None, limit: int = 50
+    ) -> list[ProjectEvent]:
         bounded_limit = min(max(limit, 1), 200)
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, task_id, event_type, event_data, created_at
-                FROM project_events
-                WHERE task_id = ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (str(task_id), bounded_limit),
-            ).fetchall()
+            if task_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT id, task_id, event_type, event_data, created_at
+                    FROM project_events
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id, task_id, event_type, event_data, created_at
+                    FROM project_events
+                    WHERE task_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (str(task_id), bounded_limit),
+                ).fetchall()
         parsed = []
         for row in rows:
             record = dict(row)
@@ -331,6 +432,182 @@ class SQLiteMemoryStore:
         if row is None:
             return 0
         return int(row["total"])
+
+    def create_workspace(self, payload: WorkspaceCreate) -> Workspace:
+        workspace_id = str(uuid4())
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO workspaces (
+                    id, name, root_path, repo_url, branch, runtime_mode, metadata, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    workspace_id,
+                    payload.name,
+                    payload.root_path,
+                    payload.repo_url,
+                    payload.branch,
+                    payload.runtime_mode,
+                    json.dumps(payload.metadata, ensure_ascii=True, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                WHERE id = ?
+                """,
+                (workspace_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create workspace")
+        record = dict(row)
+        record["metadata"] = json.loads(record["metadata"])
+        return Workspace.model_validate(record)
+
+    def get_workspace(self, workspace_id: UUID) -> Workspace | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                WHERE id = ?
+                """,
+                (str(workspace_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["metadata"] = json.loads(record["metadata"])
+        return Workspace.model_validate(record)
+
+    def list_workspaces(self, limit: int = 100) -> list[Workspace]:
+        bounded_limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        result: list[Workspace] = []
+        for row in rows:
+            record = dict(row)
+            record["metadata"] = json.loads(record["metadata"])
+            result.append(Workspace.model_validate(record))
+        return result
+
+    def update_workspace(
+        self, workspace_id: UUID, payload: WorkspaceUpdate
+    ) -> Workspace | None:
+        assignments: list[str] = []
+        values: list[object] = []
+
+        if payload.name is not None:
+            assignments.append("name = ?")
+            values.append(payload.name)
+        if payload.root_path is not None:
+            assignments.append("root_path = ?")
+            values.append(payload.root_path)
+        if payload.repo_url is not None:
+            assignments.append("repo_url = ?")
+            values.append(payload.repo_url)
+        if payload.branch is not None:
+            assignments.append("branch = ?")
+            values.append(payload.branch)
+        if payload.runtime_mode is not None:
+            assignments.append("runtime_mode = ?")
+            values.append(payload.runtime_mode)
+        if payload.metadata is not None:
+            assignments.append("metadata = ?")
+            values.append(
+                json.dumps(payload.metadata, ensure_ascii=True, sort_keys=True)
+            )
+
+        if not assignments:
+            raise ValueError("At least one field must be provided for workspace update")
+
+        assignments.append("updated_at = ?")
+        values.append(self._now())
+        values.append(str(workspace_id))
+
+        with self._connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE workspaces
+                SET {", ".join(assignments)}
+                WHERE id = ?
+                """,
+                tuple(values),
+            )
+            row = connection.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    root_path,
+                    repo_url,
+                    branch,
+                    runtime_mode,
+                    metadata,
+                    created_at,
+                    updated_at
+                FROM workspaces
+                WHERE id = ?
+                """,
+                (str(workspace_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["metadata"] = json.loads(record["metadata"])
+        return Workspace.model_validate(record)
+
+    def delete_workspace(self, workspace_id: UUID) -> bool:
+        with self._connection() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM workspaces
+                WHERE id = ?
+                """,
+                (str(workspace_id),),
+            )
+        return cursor.rowcount > 0
 
     def upsert_context_reference(
         self,

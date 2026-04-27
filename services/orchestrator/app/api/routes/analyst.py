@@ -1,7 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from packages.contracts.python.models import ExecutiveDigest
+from packages.contracts.python.models import AnalystDigestRequest, ExecutiveDigest
 from services.analyst.digest import AnalystDigestService
 from services.memory import MemoryStoreProtocol
 
@@ -34,3 +34,19 @@ def get_task_digest(
         ) from error
 
     return digest_service.generate_digest(task_id=task_id, events=events)
+
+
+@router.post("/digest", response_model=ExecutiveDigest)
+def generate_digest(
+    payload: AnalystDigestRequest,
+    store: MemoryStoreProtocol = Depends(get_memory_store),
+    digest_service: AnalystDigestService = Depends(get_digest_service),
+) -> ExecutiveDigest:
+    try:
+        events = store.list_project_events(task_id=payload.task_id, limit=payload.limit)
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail=f"Memory service unavailable: {error}"
+        ) from error
+
+    return digest_service.generate_digest(task_id=payload.task_id, events=events)

@@ -4,7 +4,13 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from packages.contracts.python.models import BatonPacketCreate, BatonPayload, ProjectEventCreate, TaskCreate
+from packages.contracts.python.models import (
+    BatonPacketCreate,
+    BatonPayload,
+    ProjectEventCreate,
+    TaskCreate,
+)
+from packages.contracts.python.models import WorkspaceCreate, WorkspaceUpdate
 from services.memory.sqlite_store import SQLiteMemoryStore
 
 
@@ -20,7 +26,9 @@ def test_sqlite_store_task_event_and_baton_roundtrip(tmp_path) -> None:
     _init_sqlite(db_path)
 
     store = SQLiteMemoryStore(str(db_path))
-    task = store.create_task(TaskCreate(title="SQLite flow", task_type="implementation"))
+    task = store.create_task(
+        TaskCreate(title="SQLite flow", task_type="implementation")
+    )
 
     event = store.save_project_event(
         ProjectEventCreate(
@@ -82,3 +90,42 @@ def test_sqlite_store_context_refs_and_bundles(tmp_path) -> None:
     latest = store.get_latest_context_bundle(task.id)
     assert latest is not None
     assert latest["included_refs"] == [str(ref["ref_id"])]
+
+
+def test_sqlite_store_workspace_crud_roundtrip(tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    store = SQLiteMemoryStore(str(db_path))
+    created = store.create_workspace(
+        WorkspaceCreate(
+            name="Syncore",
+            root_path=str(tmp_path),
+            repo_url="https://example.com/repo.git",
+            branch="main",
+            runtime_mode="native",
+            metadata={"owner": "local-dev"},
+        )
+    )
+    assert created.name == "Syncore"
+    assert created.metadata["owner"] == "local-dev"
+
+    listed = store.list_workspaces(limit=10)
+    assert len(listed) == 1
+    assert listed[0].id == created.id
+
+    updated = store.update_workspace(
+        created.id,
+        WorkspaceUpdate(branch="develop", metadata={"owner": "updated"}),
+    )
+    assert updated is not None
+    assert updated.branch == "develop"
+    assert updated.metadata["owner"] == "updated"
+
+    fetched = store.get_workspace(created.id)
+    assert fetched is not None
+    assert fetched.branch == "develop"
+
+    deleted = store.delete_workspace(created.id)
+    assert deleted is True
+    assert store.get_workspace(created.id) is None

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import Settings, get_settings
@@ -15,6 +15,28 @@ class TaskDiagnostics(BaseModel):
     agent_run_count: int
     baton_packet_count: int
     event_count: int
+
+
+class DiagnosticsConfig(BaseModel):
+    environment: str
+    runtime_mode: str
+    db_backend: str
+    redis_required: bool
+    redis_url: str
+    postgres_dsn: str
+    sqlite_db_path: str
+
+
+class DiagnosticsOverview(BaseModel):
+    service: str
+    environment: str
+    runtime_mode: str
+    db_backend: str
+    redis_required: bool
+
+
+class DiagnosticsRoutes(BaseModel):
+    routes: list[str]
 
 
 @router.get("/task/{task_id}", response_model=TaskDiagnostics)
@@ -38,3 +60,39 @@ def diagnostics_for_task(
         baton_packet_count=len(packets),
         event_count=len(events),
     )
+
+
+@router.get("", response_model=DiagnosticsOverview)
+def diagnostics_overview(settings: Settings = Depends(get_settings)) -> DiagnosticsOverview:
+    return DiagnosticsOverview(
+        service="orchestrator",
+        environment=settings.environment,
+        runtime_mode=settings.syncore_runtime_mode,
+        db_backend=settings.syncore_db_backend,
+        redis_required=settings.redis_required,
+    )
+
+
+@router.get("/config", response_model=DiagnosticsConfig)
+def diagnostics_config(settings: Settings = Depends(get_settings)) -> DiagnosticsConfig:
+    return DiagnosticsConfig(
+        environment=settings.environment,
+        runtime_mode=settings.syncore_runtime_mode,
+        db_backend=settings.syncore_db_backend,
+        redis_required=settings.redis_required,
+        redis_url=settings.redis_url,
+        postgres_dsn=settings.postgres_dsn,
+        sqlite_db_path=settings.sqlite_db_path,
+    )
+
+
+@router.get("/routes", response_model=DiagnosticsRoutes)
+def diagnostics_routes(request: Request) -> DiagnosticsRoutes:
+    paths = sorted(
+        {
+            f"{','.join(sorted(route.methods or []))} {route.path}"
+            for route in request.app.routes
+            if getattr(route, "path", None)
+        }
+    )
+    return DiagnosticsRoutes(routes=paths)

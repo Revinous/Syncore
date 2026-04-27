@@ -38,17 +38,43 @@ case "\${1:-dev}" in
     shift
     exec bash "\${REPO_ROOT}/db-init.sh" "\$@"
     ;;
-  dev|workspace)
+  dev)
     shift
     exec bash "\${REPO_ROOT}/dev.sh" "\$@"
+    ;;
+  workspace)
+    shift
+    if [[ "\${1:-}" == "" ]]; then
+      exec bash "\${REPO_ROOT}/dev.sh"
+    fi
+    CALLER_CWD="\$PWD"
+    cd "\${REPO_ROOT}"
+    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main workspace "\$@"
+    ;;
+  task)
+    shift
+    CALLER_CWD="\$PWD"
+    cd "\${REPO_ROOT}"
+    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main task "\$@"
     ;;
   demo-local)
     shift
     exec bash "\${REPO_ROOT}/scripts/demo_local_flow.sh" "\$@"
     ;;
   *)
-    echo "Usage: syncore [install|db-init|dev|workspace|demo-local]"
-    exit 2
+    CALLER_CWD="\$PWD"
+    cd "\${REPO_ROOT}"
+    if [[ "\${1:-}" != "" ]] && [[ "\${1}" != -* ]]; then
+      case "\${1}" in
+        status|dashboard|events|baton|route|digest|diagnostics|open|tui|help|--help|-h|run)
+          exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main "\$@"
+          ;;
+        *)
+          exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main open "\$@"
+          ;;
+      esac
+    fi
+    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main "\$@"
     ;;
 esac
 EOF

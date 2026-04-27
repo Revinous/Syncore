@@ -16,6 +16,7 @@ from .models import (
     RoutingRequest,
     Task,
     TaskCreate,
+    WorkspaceCreate,
 )
 
 
@@ -167,3 +168,13 @@ def test_run_execution_response_valid() -> None:
     )
 
     assert response.status == "completed"
+
+
+def test_workspace_create_valid() -> None:
+    workspace = WorkspaceCreate(
+        name="Syncore",
+        root_path="/tmp/syncore",
+        runtime_mode="native",
+        metadata={"owner": "dev"},
+    )
+    assert workspace.name == "Syncore"

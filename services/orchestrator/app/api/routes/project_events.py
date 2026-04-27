@@ -32,3 +32,20 @@ def list_project_events(
     service: EventService = Depends(get_event_service),
 ) -> list[ProjectEvent]:
     return service.list_events(task_id=task_id, limit=limit)
+
+
+@router.get("", response_model=list[ProjectEvent])
+def list_project_events_global(
+    limit: int = Query(default=100, ge=1, le=200),
+    service: EventService = Depends(get_event_service),
+) -> list[ProjectEvent]:
+    return service.list_events_global(limit=limit)
+
+
+@router.get("/by-task/{task_id}", response_model=list[ProjectEvent])
+def list_project_events_by_task_alias(
+    task_id: UUID,
+    limit: int = Query(default=100, ge=1, le=200),
+    service: EventService = Depends(get_event_service),
+) -> list[ProjectEvent]:
+    return service.list_events(task_id=task_id, limit=limit)

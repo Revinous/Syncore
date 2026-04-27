@@ -1,5 +1,6 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
-	install-local db-local-init dev-local bootstrap-local local-test
+	install-local db-local-init dev-local bootstrap-local local-test \
+	install-cli cli-status tui web ui-check
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -21,6 +22,22 @@ local-test:
 	PYTHONPATH=services/orchestrator:. SYNCORE_DB_BACKEND=sqlite \
 	SQLITE_DB_PATH=.syncore/test.db REDIS_REQUIRED=false \
 	python3 -m pytest services/orchestrator/tests services/memory/tests -q
+
+install-cli:
+	cd apps/cli && uv pip install --python ../../.venv/bin/python -e .
+
+cli-status:
+	SYNCORE_API_URL=http://localhost:8000 syncore status
+
+tui:
+	SYNCORE_API_URL=http://localhost:8000 syncore tui
+
+web:
+	npm --prefix apps/web run dev
+
+ui-check:
+	npm --prefix apps/web run lint
+	cd apps/cli && ../../.venv/bin/python -m pytest -q
 
 up:
 	docker compose up -d --build

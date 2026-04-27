@@ -17,3 +17,9 @@ class AgentRunService:
 
     def update_run(self, run_id: UUID, payload: AgentRunUpdate) -> AgentRun | None:
         return self._store.update_agent_run(run_id, payload)
+
+    def get_run(self, run_id: UUID) -> AgentRun | None:
+        return self._store.get_agent_run(run_id)
+
+    def list_runs(self, task_id: UUID | None = None, limit: int = 50) -> list[AgentRun]:
+        return self._store.list_agent_runs(task_id=task_id, limit=limit)
