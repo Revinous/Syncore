@@ -82,3 +82,8 @@ def test_context_layering_flag_keeps_contract_and_dual_comparison(monkeypatch, t
         ).fetchone()
     assert row is not None
     assert int(row[0]) >= 1
+
+    metrics = client.get("/metrics/context-efficiency")
+    assert metrics.status_code == 200
+    metrics_payload = metrics.json()
+    assert "layering_modes" in metrics_payload

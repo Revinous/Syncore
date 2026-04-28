@@ -103,6 +103,8 @@ Key variables:
 - `AUTONOMY_PLAN_MIN_CHARS` / `AUTONOMY_EXECUTE_MIN_CHARS` / `AUTONOMY_REVIEW_MIN_CHARS` – stage output quality gates
 - `CONTEXT_LAYERING_ENABLED` – enable L0/L1/L2 context layering during optimization
 - `CONTEXT_LAYERING_DUAL_MODE` – run legacy+layered comparison and attach token deltas for rollout analysis
+- `CONTEXT_LAYERING_FALLBACK_THRESHOLD_PCT` – auto-fallback guardrail threshold when layered mode underperforms
+- `CONTEXT_LAYERING_FALLBACK_MIN_SAMPLES` – minimum dual-mode samples before fallback policy activates
 - `API_AUTH_ENABLED` / `API_AUTH_TOKEN` – optional API key protection (`x-api-key`)
 - `RATE_LIMIT_ENABLED` / `RATE_LIMIT_WINDOW_SECONDS` / `RATE_LIMIT_MAX_REQUESTS` – optional request throttling
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.

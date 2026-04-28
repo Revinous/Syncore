@@ -12,6 +12,8 @@ from app.context.schemas import ContextReference, OptimizedContextBundle
 
 
 class ContextService:
+    _layering_profile_cache: dict[str, str] = {}
+
     def __init__(
         self,
         store: MemoryStoreProtocol,
@@ -20,12 +22,16 @@ class ContextService:
         *,
         layering_enabled: bool = False,
         layering_dual_mode: bool = False,
+        layering_fallback_threshold_pct: float = 2.0,
+        layering_fallback_min_samples: int = 5,
     ) -> None:
         self._store = store
         self._assembler = assembler or ContextAssembler(store)
         self._optimizer = optimizer or SimpleContextOptimizer(store)
         self._layering_enabled = layering_enabled
         self._layering_dual_mode = layering_dual_mode
+        self._layering_fallback_threshold_pct = max(layering_fallback_threshold_pct, 0.1)
+        self._layering_fallback_min_samples = max(layering_fallback_min_samples, 1)
 
     def lookup_memory(self, task_id: UUID, limit: int = 20) -> MemoryLookupResponse:
         task = self._store.get_task(task_id)
@@ -85,21 +91,30 @@ class ContextService:
         target_model: str,
         token_budget: int,
     ) -> OptimizedContextBundle:
+        task = self._store.get_task(task_id)
+        if task is None:
+            raise LookupError("Task not found")
+
+        profile_key = (
+            f"{task.task_type}|{task.complexity}|{target_model.strip().lower()}|"
+            f"{target_agent.strip().lower()}"
+        )
         raw_bundle = self._assembler.assemble(
             task_id=task_id,
             target_agent=target_agent,
             target_model=target_model,
             token_budget=token_budget,
         )
+        use_layering = self._resolve_layering_mode(profile_key=profile_key)
         policy = default_context_policy(
             token_budget=token_budget,
-            layering_enabled=self._layering_enabled,
+            layering_enabled=use_layering,
         )
         optimized = self._optimizer.optimize(raw_bundle, policy=policy)
 
         legacy_tokens: int | None = None
         layered_tokens: int | None = None
-        if self._layering_enabled and self._layering_dual_mode:
+        if use_layering and self._layering_dual_mode:
             legacy_policy = default_context_policy(
                 token_budget=token_budget,
                 layering_enabled=False,
@@ -113,10 +128,13 @@ class ContextService:
                 "estimated_token_delta": legacy_tokens - layered_tokens,
             }
             optimized.optimized_context["layering_mode"] = "dual"
-        elif self._layering_enabled:
+        elif use_layering:
             optimized.optimized_context["layering_mode"] = "layered"
         else:
-            optimized.optimized_context["layering_mode"] = "legacy"
+            optimized.optimized_context["layering_mode"] = (
+                "legacy_fallback" if self._layering_enabled else "legacy"
+            )
+        optimized.optimized_context["rollout_profile"] = profile_key
         cost_raw = estimate_input_cost_usd(
             model=target_model, input_tokens=optimized.raw_estimated_token_count
         )
@@ -151,6 +169,42 @@ class ContextService:
                 "estimated_cost_saved_usd": row.get("estimated_cost_saved_usd"),
             }
         )
+
+    def _resolve_layering_mode(self, *, profile_key: str) -> bool:
+        if not self._layering_enabled:
+            return False
+        cached = self._layering_profile_cache.get(profile_key)
+        if cached == "legacy_fallback":
+            return False
+        if cached == "layered":
+            return True
+
+        rows = self._store.list_recent_context_bundles(limit=500)
+        deltas: list[float] = []
+        for row in rows:
+            optimized_context = row.get("optimized_context")
+            if not isinstance(optimized_context, dict):
+                continue
+            if str(optimized_context.get("rollout_profile") or "") != profile_key:
+                continue
+            comparison = optimized_context.get("layering_comparison")
+            if not isinstance(comparison, dict):
+                continue
+            legacy = comparison.get("legacy_estimated_tokens")
+            layered = comparison.get("layered_estimated_tokens")
+            if not isinstance(legacy, int) or not isinstance(layered, int) or legacy <= 0:
+                continue
+            deltas.append(((layered - legacy) / legacy) * 100.0)
+
+        if len(deltas) >= self._layering_fallback_min_samples:
+            avg_delta = sum(deltas) / len(deltas)
+            if avg_delta > self._layering_fallback_threshold_pct:
+                self._layering_profile_cache[profile_key] = "legacy_fallback"
+                return False
+            self._layering_profile_cache[profile_key] = "layered"
+            return True
+
+        return True
 
     def retrieve_context_reference(self, ref_id: str) -> ContextReference:
         return self._optimizer.retrieve(ref_id)

@@ -20,6 +20,8 @@ def get_context_service(settings: Settings = Depends(get_settings)) -> ContextSe
         build_memory_store(settings),
         layering_enabled=settings.context_layering_enabled,
         layering_dual_mode=settings.context_layering_dual_mode,
+        layering_fallback_threshold_pct=settings.context_layering_fallback_threshold_pct,
+        layering_fallback_min_samples=settings.context_layering_fallback_min_samples,
     )
 
 

@@ -41,6 +41,7 @@ def get_context_efficiency_metrics(
     total_cost_saved = 0.0
     cost_rows = 0
     by_model: dict[str, dict[str, object]] = {}
+    layering_mode_counts: dict[str, int] = {}
     dual_mode_count = 0
     dual_legacy_total = 0
     dual_layered_total = 0
@@ -95,6 +96,8 @@ def get_context_efficiency_metrics(
 
         optimized_context = row.get("optimized_context")
         if isinstance(optimized_context, dict):
+            layering_mode = str(optimized_context.get("layering_mode") or "unknown")
+            layering_mode_counts[layering_mode] = layering_mode_counts.get(layering_mode, 0) + 1
             comparison = optimized_context.get("layering_comparison")
             if isinstance(comparison, dict):
                 legacy = comparison.get("legacy_estimated_tokens")
@@ -114,6 +117,7 @@ def get_context_efficiency_metrics(
             "savings_pct": savings_pct,
         },
         "by_model": by_model,
+        "layering_modes": layering_mode_counts,
         "recent_bundles": recent[:50],
     }
     if cost_rows > 0:

@@ -57,6 +57,14 @@ export type ContextEfficiencyMetrics = {
     saved_usd: number;
   };
   by_model: Record<string, ContextEfficiencyModelBreakdown>;
+  layering_modes?: Record<string, number>;
+  layering_comparison?: {
+    bundle_count: number;
+    legacy_tokens: number;
+    layered_tokens: number;
+    saved_tokens: number;
+    savings_pct: number;
+  };
   recent_bundles: Array<{
     bundle_id: string;
     task_id: string;

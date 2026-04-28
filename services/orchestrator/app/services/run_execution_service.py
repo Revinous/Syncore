@@ -69,6 +69,8 @@ class RunExecutionService:
             store,
             layering_enabled=settings.context_layering_enabled,
             layering_dual_mode=settings.context_layering_dual_mode,
+            layering_fallback_threshold_pct=settings.context_layering_fallback_threshold_pct,
+            layering_fallback_min_samples=settings.context_layering_fallback_min_samples,
         )
         providers: dict[str, LlmProvider] = {
             "local_echo": LocalEchoProvider(),

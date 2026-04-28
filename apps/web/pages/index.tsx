@@ -123,6 +123,13 @@ export default function DashboardPage() {
                 <li>Raw tokens: {efficiency.totals.raw_tokens}</li>
                 <li>Optimized tokens: {efficiency.totals.optimized_tokens}</li>
                 <li>Saved tokens: {efficiency.totals.saved_tokens} ({efficiency.totals.savings_pct}%)</li>
+                <li>Layering modes: {JSON.stringify(efficiency.layering_modes ?? {})}</li>
+                {efficiency.layering_comparison ? (
+                  <li>
+                    Layered vs legacy: {efficiency.layering_comparison.saved_tokens} tokens
+                    ({efficiency.layering_comparison.savings_pct}%)
+                  </li>
+                ) : null}
               </ul>
             )}
           </section>

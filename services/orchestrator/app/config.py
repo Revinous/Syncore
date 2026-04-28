@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     slo_min_run_success_rate: float = 0.97
     context_layering_enabled: bool = False
     context_layering_dual_mode: bool = False
+    context_layering_fallback_threshold_pct: float = 2.0
+    context_layering_fallback_min_samples: int = 5
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
     queue_worker_enabled: bool = False

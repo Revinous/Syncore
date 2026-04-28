@@ -753,6 +753,9 @@ class SyncoreTuiApp(App[None]):
         cost_totals = (
             self._context_efficiency.get("cost_totals", {}) if self._context_efficiency else {}
         )
+        layering_modes = (
+            self._context_efficiency.get("layering_modes", {}) if self._context_efficiency else {}
+        )
         return "\n".join(
             [
                 "Context Efficiency",
@@ -762,6 +765,7 @@ class SyncoreTuiApp(App[None]):
                 f"Saved tokens: {totals.get('saved_tokens', 0)}",
                 f"Savings: {totals.get('savings_pct', 0)}%",
                 f"Cost saved: {cost_totals.get('saved_usd', 'n/a')}",
+                f"Layer modes: {layering_modes}",
             ]
         )
 
@@ -770,6 +774,7 @@ class SyncoreTuiApp(App[None]):
             return "No metrics available."
         by_model = self._context_efficiency.get("by_model", {}) or {}
         recent = self._context_efficiency.get("recent_bundles", []) or []
+        layering_comparison = self._context_efficiency.get("layering_comparison")
         lines = ["By model:"]
         if not by_model:
             lines.append("- none")
@@ -780,6 +785,14 @@ class SyncoreTuiApp(App[None]):
                     f"saved={bucket.get('saved_tokens', 0)}"
                 )
         lines.append("")
+        if isinstance(layering_comparison, dict):
+            lines.append("Layered vs Legacy:")
+            lines.append(
+                f"- bundles={layering_comparison.get('bundle_count', 0)} "
+                f"saved={layering_comparison.get('saved_tokens', 0)} "
+                f"({layering_comparison.get('savings_pct', 0)}%)"
+            )
+            lines.append("")
         lines.append("Recent bundles:")
         if not recent:
             lines.append("- none")
