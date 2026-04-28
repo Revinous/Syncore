@@ -158,9 +158,12 @@ class SimpleContextOptimizer(ContextOptimizer):
             )
             layer_overview = None
             if policy.layering_enabled:
+                preferred_layer = "L1"
+                if section.section_type in self.LOG_LIKE_TYPES or policy.token_budget <= 2_000:
+                    preferred_layer = "L0"
                 layer_row = self._store.get_context_reference_layer(
                     ref_id=reference.ref_id,
-                    layer="L1",
+                    layer=preferred_layer,
                 )
                 if layer_row is not None:
                     layer_overview = str(layer_row.get("content") or "").strip()
