@@ -76,6 +76,9 @@ class SyncoreApiClient:
     def get_task(self, task_id: str) -> Any:
         return self._request("GET", f"/tasks/{task_id}")
 
+    def switch_task_model(self, task_id: str, payload: dict[str, Any]) -> Any:
+        return self._request("POST", f"/tasks/{task_id}/model-switch", payload)
+
     def list_agent_runs(self) -> Any:
         return self._request("GET", "/agent-runs")
 

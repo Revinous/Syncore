@@ -2,9 +2,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskUpdate
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.services.task_service import TaskService
+from app.services.task_service import TaskModelSwitchResult, TaskService
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -59,3 +60,32 @@ def update_task(
     if updated is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return updated
+
+
+class TaskModelSwitchRequest(BaseModel):
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    target_agent: str = Field(default="coder", min_length=1)
+    token_budget: int = Field(default=8_000, ge=256, le=200_000)
+    reason: str | None = None
+
+
+@router.post("/{task_id}/model-switch", response_model=TaskModelSwitchResult)
+def switch_task_model(
+    task_id: UUID,
+    payload: TaskModelSwitchRequest,
+    service: TaskService = Depends(get_task_service),
+) -> TaskModelSwitchResult:
+    try:
+        return service.switch_model(
+            task_id=task_id,
+            provider=payload.provider,
+            model=payload.model,
+            target_agent=payload.target_agent,
+            token_budget=payload.token_budget,
+            reason=payload.reason,
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

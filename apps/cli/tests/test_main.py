@@ -68,6 +68,20 @@ class FakeClient:
             "task": {"id": task_id, "task_type": "analysis", "complexity": "medium"}
         }
 
+    def switch_task_model(self, task_id: str, payload):
+        return {
+            "task_id": task_id,
+            "previous_provider": "openai",
+            "previous_model": "gpt-4.1-mini",
+            "preferred_provider": payload["provider"],
+            "preferred_model": payload["model"],
+            "target_agent": payload["target_agent"],
+            "token_budget": payload["token_budget"],
+            "context_bundle_id": "11111111-1111-1111-1111-111111111111",
+            "estimated_token_count": 512,
+            "included_refs": [],
+        }
+
     def list_agent_runs(self):
         return [
             {
@@ -270,3 +284,26 @@ def test_run_result_json(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["run_id"] == "r1"
     assert payload["output_ref_id"] == "ctxref_1"
+
+
+def test_task_switch_model_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(
+        app,
+        [
+            "task",
+            "switch-model",
+            "t1",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.4",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["task_id"] == "t1"
+    assert payload["preferred_provider"] == "openai"
+    assert payload["preferred_model"] == "gpt-5.4"

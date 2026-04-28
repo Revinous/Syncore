@@ -176,6 +176,7 @@ Examples:
 - `syncore workspace add ./my-app --name my-app`
 - `syncore workspace scan my-app`
 - `syncore task create \"Analyze the auth flow\" --workspace my-app`
+- `syncore task switch-model TASK_ID --provider openai --model gpt-5.4`
 - `syncore run start TASK_ID --agent-role backend`
 - `syncore run result RUN_ID`
 - `syncore open my-app`
@@ -236,6 +237,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /tasks`
 - `GET /tasks/{task_id}`
 - `PATCH /tasks/{task_id}`
+- `POST /tasks/{task_id}/model-switch`
 - `POST /agent-runs`
 - `GET /agent-runs`
 - `GET /agent-runs/{run_id}`

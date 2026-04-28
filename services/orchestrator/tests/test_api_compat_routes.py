@@ -71,6 +71,18 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     )
 
     assert client.get("/dashboard/summary").status_code == 200
+    assert (
+        client.post(
+            f"/tasks/{task_id}/model-switch",
+            json={
+                "provider": "openai",
+                "model": "gpt-5.4",
+                "target_agent": "coder",
+                "token_budget": 1600,
+            },
+        ).status_code
+        == 200
+    )
     assert client.get("/agent-runs").status_code == 200
     assert client.get(f"/agent-runs/{run_id}").status_code == 200
     assert client.get(f"/agent-runs/{run_id}/result").status_code == 200

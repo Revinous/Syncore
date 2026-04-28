@@ -494,6 +494,36 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
     print_kv_panel("Task Detail", payload)
 
 
+@task_app.command("switch-model")
+def task_switch_model(
+    task_id: str,
+    provider: str = typer.Option(..., "--provider"),
+    model: str = typer.Option(..., "--model"),
+    target_agent: str = typer.Option("coder", "--target-agent"),
+    token_budget: int = typer.Option(8000, "--token-budget"),
+    reason: str | None = typer.Option(None, "--reason"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    client = _client()
+    payload = {
+        "provider": provider,
+        "model": model,
+        "target_agent": target_agent,
+        "token_budget": token_budget,
+        "reason": reason,
+    }
+    try:
+        result = client.switch_task_model(task_id, payload)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json(result)
+        return
+    print_kv_panel("Task Model Switch", result)
+
+
 @run_app.command("list")
 def run_list() -> None:
     client = _client()
