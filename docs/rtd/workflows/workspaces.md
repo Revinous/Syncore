@@ -1,8 +1,37 @@
-# Workspace Lifecycle
+# Workspace Workflow
 
-1. Register workspace: `syncore workspace add ./repo --name repo`
-2. Scan workspace: `syncore workspace scan repo`
-3. Inspect safe file listing: `syncore workspace files repo`
-4. Create task scoped to workspace
+## Lifecycle
 
-Safety rules enforce root boundaries and block secret-like files by default.
+1. Add workspace.
+2. Scan workspace.
+3. Review metadata.
+4. Review safe file index.
+5. Create tasks attached to workspace.
+
+## Scanner Behavior
+
+Ignored directories include:
+- `.git`
+- `node_modules`
+- `.venv`
+- `dist`
+- `build`
+- `.next`
+- `__pycache__`
+- `target`
+- `vendor`
+
+Scanner extracts:
+- languages
+- frameworks
+- package managers
+- likely test commands
+- entrypoints
+- docs and important files
+
+## Safe File Access Rules
+
+- normalize path with `pathlib`
+- forbid traversal beyond workspace root
+- enforce max size threshold
+- block sensitive patterns by default

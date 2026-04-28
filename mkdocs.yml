@@ -10,7 +10,15 @@ markdown_extensions:
   - tables
 nav:
   - Home: index.md
-  - Getting Started: rtd/getting-started.md
+  - Overview:
+    - Getting Started: rtd/getting-started.md
+    - What Is Syncore: rtd/overview/what-is-syncore.md
+    - Core Concepts: rtd/overview/concepts.md
+  - Architecture:
+    - System Architecture: rtd/architecture/system-architecture.md
+    - Data Model: rtd/architecture/data-model.md
+    - Context Layer: rtd/architecture/context-layer.md
+    - Autonomy Engine: rtd/architecture/autonomy-engine.md
   - Environments:
     - Native (SQLite): rtd/environments/native.md
     - Docker (Postgres + Redis): rtd/environments/docker.md
@@ -26,8 +34,17 @@ nav:
     - Autonomy: rtd/workflows/autonomy.md
   - Reference:
     - API Endpoints: rtd/reference/api.md
+    - Configuration Reference: rtd/reference/config-reference.md
+    - Data Contracts: rtd/reference/data-contracts.md
     - CLI Command Reference: rtd/reference/cli-reference.md
     - TUI Hotkeys: rtd/reference/tui-hotkeys.md
   - Operations:
+    - Deployment Modes: rtd/operations/deployment-modes.md
+    - Testing and Quality: rtd/operations/testing-and-quality.md
+    - Security Model: rtd/operations/security-model.md
     - Troubleshooting: rtd/operations/troubleshooting.md
+    - Limitations and Roadmap: rtd/operations/limitations-and-roadmap.md
     - Upgrade and Branch Strategy: rtd/operations/branching-and-versions.md
+  - Appendix:
+    - FAQ: rtd/appendix/faq.md
+    - Glossary: rtd/appendix/glossary.md

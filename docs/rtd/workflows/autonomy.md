@@ -1,9 +1,23 @@
-# Autonomy
+# Autonomy Workflow
 
-Autonomy runs staged task execution loops with quality gates and replan policies.
+## Endpoints
 
-Includes:
-- stage/cycle tracking
-- retry and replan decisions
-- persisted state snapshots
-- policy/quality outcomes
+- `POST /autonomy/scan-once`
+- `POST /autonomy/tasks/{task_id}/run`
+- `POST /autonomy/tasks/{task_id}/approve`
+- `POST /autonomy/tasks/{task_id}/reject`
+
+## Operating Model
+
+Autonomy executes bounded stage loops with policy evaluation at each cycle.
+
+## Recommended Rollout
+
+1. enable in native mode only
+2. run with conservative retry/cycle limits
+3. inspect stage outcomes and quality evaluations
+4. tighten/expand policy based on observed performance
+
+## Safety
+
+Autonomy should remain bounded by explicit limits and should produce inspectable stage snapshots for audit and recovery.

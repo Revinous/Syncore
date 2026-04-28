@@ -1,15 +1,30 @@
-# Context Optimization
+# Context Optimization Workflow
 
-Syncore uses an internal context optimization layer (not a proxy).
+## Entry Point
 
-Pipeline:
-1. Assemble raw context
-2. Preserve critical constraints verbatim
-3. Compress/summarize low-value context
-4. Replace heavy content with references
-5. Persist full originals for retrieval
-6. Return optimized bundle
+`POST /context/assemble`
 
-Core endpoints:
-- `POST /context/assemble`
-- `GET /context/references/{ref_id}`
+Inputs:
+- task id
+- target agent
+- target model
+- token budget
+
+## Pipeline Behavior
+
+1. Build raw context bundle.
+2. Preserve critical directives/constraints.
+3. Summarize low-value history.
+4. Replace oversized payloads with context references.
+5. Persist optimized bundle and references.
+6. Return optimized payload and estimated token count.
+
+## Retrieval
+
+`GET /context/references/{ref_id}` returns persisted original content and summary metadata.
+
+## Practical Guidance
+
+- set realistic token budgets per model family
+- avoid marking too much content as critical
+- use references for repeat logs to maximize reuse
