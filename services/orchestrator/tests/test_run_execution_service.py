@@ -10,6 +10,7 @@ from packages.contracts.python.models import (
     AgentRunCreate,
     AgentRunUpdate,
     RunExecutionRequest,
+    Task,
 )
 
 from app.context.schemas import OptimizedContextBundle
@@ -167,6 +168,36 @@ class FakeStore:
         self.context_refs[ref_id] = record
         return record
 
+    def get_context_reference(self, ref_id: str):
+        return self.context_refs.get(ref_id)
+
+    def get_task(self, task_id: UUID):
+        now = datetime.now(timezone.utc)
+        if task_id != self.task_id:
+            return None
+        return Task(
+            id=task_id,
+            title="fake task",
+            status="in_progress",
+            task_type="implementation",
+            complexity="medium",
+            workspace_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def list_tasks(self, limit: int = 50, workspace_id=None):
+        del workspace_id
+        task = self.get_task(self.task_id)
+        return [task] if task is not None else []
+
+    def list_agent_runs(self, task_id: UUID | None = None, limit: int = 50):
+        del limit
+        rows = list(self.runs.values())
+        if task_id is not None:
+            rows = [row for row in rows if row.task_id == task_id]
+        return rows
+
 
 def _request(task_id: UUID) -> RunExecutionRequest:
     return RunExecutionRequest(
@@ -191,6 +222,9 @@ def test_execute_uses_context_and_marks_run_completed() -> None:
         default_provider="fake",
         failover_enabled=True,
         fallback_order=["fake"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
     )
 
     result = service.execute(_request(task_id))
@@ -220,6 +254,9 @@ def test_execute_marks_failed_on_provider_error() -> None:
         default_provider="fake",
         failover_enabled=True,
         fallback_order=["fake"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
     )
 
     with pytest.raises(RuntimeError):
@@ -241,6 +278,9 @@ def test_stream_execute_emits_started_chunks_and_completed() -> None:
         default_provider="fake",
         failover_enabled=True,
         fallback_order=["fake"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
     )
 
     events = list(service.stream_execute(_request(task_id)))
@@ -264,6 +304,9 @@ def test_execute_failover_uses_secondary_provider() -> None:
         default_provider="primary",
         failover_enabled=True,
         fallback_order=["secondary"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
     )
 
     payload = _request(task_id).model_copy(update={"provider": "primary"})

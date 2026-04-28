@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from packages.contracts.python.models import RunExecutionRequest, RunExecutionResponse
 from pydantic import BaseModel
@@ -27,10 +27,14 @@ def get_run_execution_service(settings: Settings = Depends(get_settings)) -> Run
 @router.post("/execute", response_model=RunExecutionResponse)
 def execute_run(
     payload: RunExecutionRequest,
+    x_idempotency_key: str | None = Header(default=None),
     service: RunExecutionService = Depends(get_run_execution_service),
 ) -> RunExecutionResponse:
     try:
-        return service.execute(payload)
+        effective_payload = payload
+        if x_idempotency_key and not payload.idempotency_key:
+            effective_payload = payload.model_copy(update={"idempotency_key": x_idempotency_key})
+        return service.execute(effective_payload)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
@@ -42,11 +46,16 @@ def execute_run(
 @router.post("/execute/stream")
 def execute_run_stream(
     payload: RunExecutionRequest,
+    x_idempotency_key: str | None = Header(default=None),
     service: RunExecutionService = Depends(get_run_execution_service),
 ) -> StreamingResponse:
+    effective_payload = payload
+    if x_idempotency_key and not payload.idempotency_key:
+        effective_payload = payload.model_copy(update={"idempotency_key": x_idempotency_key})
+
     def event_stream():
         try:
-            for event in service.stream_execute(payload):
+            for event in service.stream_execute(effective_payload):
                 event_name = event.event
                 event_json = json.dumps(event.model_dump(mode="json"))
                 yield f"event: {event_name}\ndata: {event_json}\n\n"

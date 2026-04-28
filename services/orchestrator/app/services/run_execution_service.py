@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import shorten
@@ -41,6 +43,9 @@ class RunExecutionService:
         default_provider: str,
         failover_enabled: bool,
         fallback_order: list[str],
+        default_timeout_seconds: int,
+        max_concurrent_runs_per_task: int,
+        max_concurrent_runs_per_workspace: int,
     ) -> None:
         self._store = store
         self._context_service = context_service
@@ -48,6 +53,9 @@ class RunExecutionService:
         self._default_provider = default_provider
         self._failover_enabled = failover_enabled
         self._fallback_order = fallback_order
+        self._default_timeout_seconds = max(default_timeout_seconds, 5)
+        self._max_concurrent_runs_per_task = max(max_concurrent_runs_per_task, 1)
+        self._max_concurrent_runs_per_workspace = max(max_concurrent_runs_per_workspace, 1)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RunExecutionService":
@@ -94,9 +102,17 @@ class RunExecutionService:
             default_provider=settings.default_llm_provider,
             failover_enabled=settings.provider_failover_enabled,
             fallback_order=fallback_order,
+            default_timeout_seconds=settings.run_default_timeout_seconds,
+            max_concurrent_runs_per_task=settings.max_concurrent_runs_per_task,
+            max_concurrent_runs_per_workspace=settings.max_concurrent_runs_per_workspace,
         )
 
     def execute(self, payload: RunExecutionRequest) -> RunExecutionResponse:
+        duplicate = self._maybe_get_idempotent_response(payload)
+        if duplicate is not None:
+            return duplicate
+        self._enforce_concurrency_limits(payload.task_id)
+
         optimized_bundle = self._context_service.assemble_optimized_context(
             task_id=payload.task_id,
             target_agent=payload.target_agent,
@@ -176,7 +192,7 @@ class RunExecutionService:
                     "output_ref_id": output_ref_id,
                 },
             )
-            return RunExecutionResponse(
+            response = RunExecutionResponse(
                 run_id=run.id,
                 task_id=payload.task_id,
                 status="completed",
@@ -193,6 +209,8 @@ class RunExecutionService:
                 created_at=run.created_at,
                 completed_at=completed_at,
             )
+            self._persist_idempotent_response(payload, response)
+            return response
         except Exception as error:
             self._store.update_agent_run(
                 run.id,
@@ -210,6 +228,19 @@ class RunExecutionService:
             raise RuntimeError(f"Run execution failed: {error}") from error
 
     def stream_execute(self, payload: RunExecutionRequest) -> Iterator[RunStreamEvent]:
+        duplicate = self._maybe_get_idempotent_response(payload)
+        if duplicate is not None:
+            yield RunStreamEvent(
+                event="completed",
+                run_id=duplicate.run_id,
+                task_id=duplicate.task_id,
+                provider=duplicate.provider,
+                target_model=duplicate.target_model,
+                estimated_output_tokens=duplicate.estimated_output_tokens,
+            )
+            return
+        self._enforce_concurrency_limits(payload.task_id)
+
         optimized_bundle = self._context_service.assemble_optimized_context(
             task_id=payload.task_id,
             target_agent=payload.target_agent,
@@ -357,18 +388,18 @@ class RunExecutionService:
         self, *, payload: RunExecutionRequest, prompt: str
     ) -> tuple[str, object]:
         candidates = self._provider_candidates(payload.provider)
+        timeout_seconds = payload.timeout_seconds or self._default_timeout_seconds
         errors: list[str] = []
         for provider_name in candidates:
             provider = self._providers.get(provider_name)
             if provider is None:
                 continue
             try:
-                result = provider.complete(
-                    model=payload.target_model,
+                result = self._run_complete_with_timeout(
+                    provider=provider,
+                    payload=payload,
                     prompt=prompt,
-                    system_prompt=payload.system_prompt,
-                    max_output_tokens=payload.max_output_tokens,
-                    temperature=payload.temperature,
+                    timeout_seconds=timeout_seconds,
                 )
                 return provider_name, result
             except Exception as error:
@@ -388,6 +419,85 @@ class RunExecutionService:
             if candidate not in ordered:
                 ordered.append(candidate)
         return ordered
+
+    def _run_complete_with_timeout(
+        self,
+        *,
+        provider: LlmProvider,
+        payload: RunExecutionRequest,
+        prompt: str,
+        timeout_seconds: int,
+    ):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                provider.complete,
+                model=payload.target_model,
+                prompt=prompt,
+                system_prompt=payload.system_prompt,
+                max_output_tokens=payload.max_output_tokens,
+                temperature=payload.temperature,
+            )
+            try:
+                return future.result(timeout=timeout_seconds)
+            except FutureTimeoutError as error:
+                future.cancel()
+                raise RuntimeError(
+                    f"Provider timeout after {timeout_seconds}s for model {payload.target_model}."
+                ) from error
+
+    def _maybe_get_idempotent_response(
+        self, payload: RunExecutionRequest
+    ) -> RunExecutionResponse | None:
+        key = (payload.idempotency_key or "").strip()
+        if not key:
+            return None
+        ref = self._store.get_context_reference(f"idem_{payload.task_id.hex}_{key}")
+        if ref is None:
+            return None
+        try:
+            parsed = json.loads(str(ref["original_content"]))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return RunExecutionResponse.model_validate(parsed)
+
+    def _persist_idempotent_response(
+        self, payload: RunExecutionRequest, response: RunExecutionResponse
+    ) -> None:
+        key = (payload.idempotency_key or "").strip()
+        if not key:
+            return
+        response_json = response.model_dump_json()
+        idem_ref = f"idem_{payload.task_id.hex}_{key}"
+        self._store.upsert_context_reference(
+            ref_id=idem_ref,
+            task_id=payload.task_id,
+            content_type="run_response",
+            original_content=response_json,
+            summary=f"Idempotent response for task {payload.task_id}",
+            retrieval_hint="Internal idempotency replay record.",
+        )
+
+    def _enforce_concurrency_limits(self, task_id: UUID) -> None:
+        task_runs = self._store.list_agent_runs(task_id=task_id, limit=200)
+        active_for_task = [run for run in task_runs if run.status in {"queued", "running"}]
+        if len(active_for_task) >= self._max_concurrent_runs_per_task:
+            raise RuntimeError(
+                f"Task concurrency limit reached ({self._max_concurrent_runs_per_task})."
+            )
+
+        task = self._store.get_task(task_id)
+        if task is None or task.workspace_id is None:
+            return
+        workspace_tasks = self._store.list_tasks(limit=500, workspace_id=task.workspace_id)
+        active_workspace = 0
+        for candidate in workspace_tasks:
+            runs = self._store.list_agent_runs(task_id=candidate.id, limit=200)
+            active_workspace += len([run for run in runs if run.status in {"queued", "running"}])
+            if active_workspace >= self._max_concurrent_runs_per_workspace:
+                raise RuntimeError(
+                    "Workspace concurrency limit reached "
+                    f"({self._max_concurrent_runs_per_workspace})."
+                )
 
     def _build_prompt(self, user_prompt: str, optimized_context: dict[str, object]) -> str:
         rendered_context = str(optimized_context.get("rendered_prompt", "")).strip()

@@ -188,10 +188,12 @@ class RunExecutionRequest(BaseModel):
     target_model: str = Field(min_length=1)
     token_budget: int = Field(default=8_000, ge=256, le=200_000)
     provider: str | None = None
+    idempotency_key: str | None = None
     agent_role: AgentRole = "coder"
     system_prompt: str | None = None
     max_output_tokens: int = Field(default=1_200, ge=64, le=64_000)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    timeout_seconds: int | None = Field(default=None, ge=5, le=600)
 
 
 class RunExecutionResponse(BaseModel):

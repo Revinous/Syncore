@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com"
     provider_failover_enabled: bool = True
     provider_fallback_order: str = "openai,anthropic,gemini,local_echo"
+    run_default_timeout_seconds: int = 90
+    max_concurrent_runs_per_task: int = 1
+    max_concurrent_runs_per_workspace: int = 4
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
     autonomy_default_model: str = "local_echo"
