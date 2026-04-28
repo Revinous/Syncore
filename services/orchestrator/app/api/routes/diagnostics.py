@@ -80,8 +80,8 @@ def diagnostics_config(settings: Settings = Depends(get_settings)) -> Diagnostic
         runtime_mode=settings.syncore_runtime_mode,
         db_backend=settings.syncore_db_backend,
         redis_required=settings.redis_required,
-        redis_url=settings.redis_url,
-        postgres_dsn=settings.postgres_dsn,
+        redis_url=_redact_connection_value(settings.redis_url),
+        postgres_dsn=_redact_connection_value(settings.postgres_dsn),
         sqlite_db_path=settings.sqlite_db_path,
     )
 
@@ -96,3 +96,12 @@ def diagnostics_routes(request: Request) -> DiagnosticsRoutes:
         }
     )
     return DiagnosticsRoutes(routes=paths)
+
+
+def _redact_connection_value(value: str) -> str:
+    if "@" in value:
+        head, tail = value.rsplit("@", 1)
+        if "://" in head:
+            scheme, _ = head.split("://", 1)
+            return f"{scheme}://***@{tail}"
+    return "***"

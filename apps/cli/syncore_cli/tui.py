@@ -111,6 +111,11 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
                 id="task-agent-role",
             )
             yield Input(
+                value="false",
+                placeholder="requires_approval (true/false)",
+                id="task-requires-approval",
+            )
+            yield Input(
                 placeholder="execution prompt (optional)",
                 id="task-prompt",
             )
@@ -161,7 +166,8 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
             "task-title": "task-description",
             "task-description": "task-type",
             "task-type": "task-agent-role",
-            "task-agent-role": "task-prompt",
+            "task-agent-role": "task-requires-approval",
+            "task-requires-approval": "task-prompt",
         }.get(event.input.id or "")
         if next_field:
             self.query_one(f"#{next_field}", Input).focus()
@@ -246,6 +252,9 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
         task_type = self.query_one("#task-type", Input).value.strip().lower()
         complexity = self.query_one("#task-complexity", Input).value.strip().lower()
         agent_role = self.query_one("#task-agent-role", Input).value.strip().lower()
+        requires_approval = (
+            self.query_one("#task-requires-approval", Input).value.strip().lower()
+        )
         preferred_model = self.query_one("#task-model", Input).value.strip()
         prompt = self.query_one("#task-prompt", Input).value.strip()
 
@@ -277,6 +286,9 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
                 "preferred_agent_role": agent_role,
                 "preferred_model": preferred_model,
                 "execution_prompt": prompt,
+                "requires_approval": "true"
+                if requires_approval in {"true", "1", "yes", "on"}
+                else "false",
             }
         )
 
@@ -318,6 +330,8 @@ class SyncoreTuiApp(App[None]):
         ("p", "start_agent_run", "Start Run"),
         ("e", "execute_task", "Execute"),
         ("z", "toggle_autonomy", "Autonomy"),
+        ("y", "approve_task", "Approve"),
+        ("u", "reject_task", "Reject"),
     ]
 
     current_view = reactive("dashboard")
@@ -575,11 +589,13 @@ class SyncoreTuiApp(App[None]):
             preferred_provider = str(data.get("preferred_provider") or "").strip()
             preferred_agent = str(data.get("preferred_agent_role") or "").strip()
             execution_prompt = str(data.get("execution_prompt") or "").strip()
+            requires_approval = str(data.get("requires_approval") or "").strip()
             return {
                 "preferred_provider": preferred_provider,
                 "preferred_model": preferred_model,
                 "preferred_agent_role": preferred_agent,
                 "execution_prompt": execution_prompt,
+                "requires_approval": requires_approval,
             }
         return {}
 
@@ -616,7 +632,7 @@ class SyncoreTuiApp(App[None]):
     def _render_right_pane(self) -> str:
         actions_hint = "Actions: n s g o p e"
         if self.current_view == "task_detail":
-            actions_hint = "Actions: s g o p e"
+            actions_hint = "Actions: s g o p e y u"
         elif self.current_view == "runs":
             actions_hint = "Actions: g o p e"
         elif self.current_view == "diagnostics":
@@ -648,6 +664,7 @@ class SyncoreTuiApp(App[None]):
                     f"provider={self._task_preferences.get('preferred_provider', '-')}",
                     f"model={self._task_preferences.get('preferred_model', '-')}",
                     f"agent={self._task_preferences.get('preferred_agent_role', '-')}",
+                    f"requires_approval={self._task_preferences.get('requires_approval', '-')}",
                 ]
             )
         return "\n".join(lines)
@@ -984,6 +1001,7 @@ class SyncoreTuiApp(App[None]):
                         "preferred_model": payload.get("preferred_model", DEFAULT_MODEL),
                         "preferred_agent_role": payload.get("preferred_agent_role", "coder"),
                         "execution_prompt": payload.get("execution_prompt", ""),
+                        "requires_approval": payload.get("requires_approval", "false"),
                     },
                 }
             )
@@ -1162,6 +1180,34 @@ class SyncoreTuiApp(App[None]):
             self.notify("Autonomy enabled in TUI (scan loop via /autonomy/scan-once).")
         else:
             self.notify("Autonomy disabled in TUI.")
+        self.action_refresh()
+
+    def action_approve_task(self) -> None:
+        task = self._selected_task()
+        if task is None:
+            self.notify("No selected task.", severity="warning")
+            return
+        task_id = str(task.get("id"))
+        try:
+            result = self._client.autonomy_approve_task(task_id, reason="Approved from TUI")
+        except SyncoreApiError as error:
+            self.notify(str(error), severity="error")
+            return
+        self.notify(f"Autonomy approval: {task_id} -> {result.get('status')}")
+        self.action_refresh()
+
+    def action_reject_task(self) -> None:
+        task = self._selected_task()
+        if task is None:
+            self.notify("No selected task.", severity="warning")
+            return
+        task_id = str(task.get("id"))
+        try:
+            result = self._client.autonomy_reject_task(task_id, reason="Rejected from TUI")
+        except SyncoreApiError as error:
+            self.notify(str(error), severity="error")
+            return
+        self.notify(f"Autonomy rejection: {task_id} -> {result.get('status')}")
         self.action_refresh()
 
 

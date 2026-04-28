@@ -13,6 +13,8 @@ class FakeClient:
         self.started_run_payload = None
         self.executed_payload = None
         self.autonomy_calls = 0
+        self.approved_task_id = None
+        self.rejected_task_id = None
 
     def create_task(self, payload):
         self.created_payload = payload
@@ -48,6 +50,14 @@ class FakeClient:
     def autonomy_scan_once(self, limit: int = 50):
         self.autonomy_calls += 1
         return {"processed": 1, "results": []}
+
+    def autonomy_approve_task(self, task_id: str, reason: str | None = None):
+        self.approved_task_id = task_id
+        return {"task_id": task_id, "status": "approved", "note": reason or ""}
+
+    def autonomy_reject_task(self, task_id: str, reason: str | None = None):
+        self.rejected_task_id = task_id
+        return {"task_id": task_id, "status": "rejected", "note": reason or ""}
 
     def dashboard_summary(self):
         return {"health": "ok", "runtime_mode": "native"}
@@ -88,6 +98,7 @@ def test_action_new_task_creates_task(monkeypatch) -> None:
                 "preferred_model": "gpt-5.5",
                 "preferred_agent_role": "coder",
                 "execution_prompt": "Implement and test the feature.",
+                "requires_approval": "true",
             }
         )
 
@@ -103,6 +114,7 @@ def test_action_new_task_creates_task(monkeypatch) -> None:
     assert fake.created_event_payload["event_type"] == "task.preferences"
     assert fake.created_event_payload["event_data"]["preferred_model"] == "gpt-5.5"
     assert fake.created_event_payload["event_data"]["preferred_provider"] == "openai"
+    assert fake.created_event_payload["event_data"]["requires_approval"] == "true"
 
 
 def test_action_scan_workspace_calls_api() -> None:
@@ -217,6 +229,32 @@ def test_toggle_autonomy_runs_scan_on_refresh() -> None:
     assert app._autonomy_enabled is True
     assert fake.autonomy_calls >= 1
     assert app._last_autonomy_processed == 1
+
+
+def test_action_approve_task_calls_api() -> None:
+    app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
+    fake = FakeClient()
+    app._client = fake
+    app._tasks = [{"id": "t1", "title": "Task 1"}]
+    app._selected_task_id = "t1"
+    app.notify = lambda *args, **kwargs: None
+    app.action_refresh = lambda: None
+
+    app.action_approve_task()
+    assert fake.approved_task_id == "t1"
+
+
+def test_action_reject_task_calls_api() -> None:
+    app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
+    fake = FakeClient()
+    app._client = fake
+    app._tasks = [{"id": "t1", "title": "Task 1"}]
+    app._selected_task_id = "t1"
+    app.notify = lambda *args, **kwargs: None
+    app.action_refresh = lambda: None
+
+    app.action_reject_task()
+    assert fake.rejected_task_id == "t1"
 
 
 def test_new_task_model_regex_filter_and_complete() -> None:

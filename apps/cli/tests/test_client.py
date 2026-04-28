@@ -88,3 +88,35 @@ def test_client_builds_autonomy_scan_url(monkeypatch) -> None:
 
     assert captured["method"] == "POST"
     assert captured["url"] == "http://localhost:8000/autonomy/scan-once?limit=25"
+
+
+def test_client_builds_autonomy_approve_url(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, url: str, json=None, timeout=None):
+        captured["method"] = method
+        captured["url"] = url
+        return DummyResponse()
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    client = SyncoreApiClient("http://localhost:8000")
+    client.autonomy_approve_task("task-1", reason="ok")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://localhost:8000/autonomy/tasks/task-1/approve"
+
+
+def test_client_builds_autonomy_reject_url(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, url: str, json=None, timeout=None):
+        captured["method"] = method
+        captured["url"] = url
+        return DummyResponse()
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    client = SyncoreApiClient("http://localhost:8000")
+    client.autonomy_reject_task("task-1", reason="no")
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://localhost:8000/autonomy/tasks/task-1/reject"

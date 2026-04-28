@@ -45,6 +45,9 @@ class AutonomyService:
         default_model: str,
         default_max_retries: int,
         retry_base_seconds: float,
+        max_cycles: int,
+        max_total_steps: int,
+        review_pass_keyword: str,
     ) -> None:
         self._store = store
         self._run_execution_service = run_execution_service
@@ -54,6 +57,9 @@ class AutonomyService:
         self._default_model = default_model
         self._default_max_retries = max(default_max_retries, 0)
         self._retry_base_seconds = max(retry_base_seconds, 0.1)
+        self._max_cycles = max(max_cycles, 1)
+        self._max_total_steps = max(max_total_steps, 1)
+        self._review_pass_keyword = (review_pass_keyword or "PASS").strip()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
@@ -67,6 +73,9 @@ class AutonomyService:
             default_model=settings.autonomy_default_model,
             default_max_retries=settings.autonomy_max_retries,
             retry_base_seconds=settings.autonomy_retry_base_seconds,
+            max_cycles=settings.autonomy_max_cycles,
+            max_total_steps=settings.autonomy_max_total_steps,
+            review_pass_keyword=settings.autonomy_review_pass_keyword,
         )
 
     def process_pending_tasks_once(self, limit: int = 50) -> list[AutonomyResult]:
@@ -90,12 +99,27 @@ class AutonomyService:
         prefs = self._load_preferences(events)
         requires_approval = _as_bool(prefs.get("requires_approval"))
         now_epoch = datetime.now(timezone.utc).timestamp()
+        total_steps = self._total_step_events(events)
+        if total_steps >= self._max_total_steps:
+            self._store.update_task(task_id, TaskUpdate(status="blocked"))
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task_id,
+                    event_type="autonomy.failed",
+                    event_data={"error": "Max autonomy step budget reached."},
+                )
+            )
+            return AutonomyResult(
+                task_id=task_id,
+                status="failed",
+                note="Blocked by max autonomy step budget.",
+            )
 
         task = self._store.update_task(task_id, TaskUpdate(status="in_progress")) or task
-        execute_role = self._bootstrap_if_needed(task=task, events=events)
+        execute_role, cycle = self._bootstrap_if_needed(task=task, events=events)
         events = self._store.list_project_events(task_id=task_id, limit=500)
 
-        next_stage = self._next_stage(events)
+        next_stage = self._next_stage(events, cycle=cycle)
         if next_stage is None:
             self._finalize_task(task_id)
             latest = self._latest_stage_completion(events)
@@ -124,7 +148,10 @@ class AutonomyService:
                 ProjectEventCreate(
                     task_id=task_id,
                     event_type="autonomy.failed",
-                    event_data={"stage": next_stage, "error": "Rejected by operator approval gate."},
+                    event_data={
+                        "stage": next_stage,
+                        "error": "Rejected by operator approval gate.",
+                    },
                 )
             )
             return AutonomyResult(
@@ -133,7 +160,7 @@ class AutonomyService:
                 note="Approval rejected. Task has been blocked.",
             )
 
-        retry_gate = self._scheduled_retry_epoch(events, stage=next_stage)
+        retry_gate = self._scheduled_retry_epoch(events, stage=next_stage, cycle=cycle)
         if retry_gate is not None and now_epoch < retry_gate:
             seconds_left = max(int(retry_gate - now_epoch), 0)
             return AutonomyResult(
@@ -145,7 +172,7 @@ class AutonomyService:
         provider = self._resolve_provider(prefs)
         model = self._resolve_model(provider, prefs)
         max_retries = self._resolve_max_retries(prefs)
-        prompt = self._prompt_for_stage(stage=next_stage, task=task, prefs=prefs)
+        prompt = self._prompt_for_stage(stage=next_stage, task=task, prefs=prefs, cycle=cycle)
         stage_role = self._role_for_stage(stage=next_stage, execute_role=execute_role)
 
         request = RunExecutionRequest(
@@ -168,6 +195,7 @@ class AutonomyService:
                     event_type="autonomy.stage.completed",
                     event_data={
                         "stage": next_stage,
+                        "cycle": cycle,
                         "run_id": str(run.run_id),
                         "provider": run.provider,
                         "target_model": run.target_model,
@@ -176,6 +204,58 @@ class AutonomyService:
             )
 
             if next_stage == "review":
+                review_failed = (
+                    self._review_pass_keyword
+                    and self._review_pass_keyword.upper() not in run.output_text.upper()
+                )
+                if review_failed:
+                    if cycle >= self._max_cycles:
+                        self._store.update_task(task_id, TaskUpdate(status="blocked"))
+                        self._store.save_project_event(
+                            ProjectEventCreate(
+                                task_id=task_id,
+                                event_type="autonomy.failed",
+                                event_data={
+                                    "stage": "review",
+                                    "cycle": cycle,
+                                    "error": (
+                                        "Review did not satisfy pass gate; "
+                                        "max cycles reached."
+                                    ),
+                                },
+                            )
+                        )
+                        return AutonomyResult(
+                            task_id=task_id,
+                            status="failed",
+                            run_id=run.run_id,
+                            note="Review gate failed and max cycles reached.",
+                        )
+                    next_cycle = cycle + 1
+                    self._store.save_project_event(
+                        ProjectEventCreate(
+                            task_id=task_id,
+                            event_type="autonomy.review.failed",
+                            event_data={
+                                "cycle": cycle,
+                                "required_keyword": self._review_pass_keyword,
+                                "next_cycle": next_cycle,
+                            },
+                        )
+                    )
+                    self._store.save_project_event(
+                        ProjectEventCreate(
+                            task_id=task_id,
+                            event_type="autonomy.cycle.started",
+                            event_data={"cycle": next_cycle, "mode": "replan"},
+                        )
+                    )
+                    return AutonomyResult(
+                        task_id=task_id,
+                        status="replanning",
+                        run_id=run.run_id,
+                        note=f"Review gate failed; moved to cycle {next_cycle}.",
+                    )
                 self._finalize_task(task_id)
                 return AutonomyResult(
                     task_id=task_id,
@@ -191,13 +271,14 @@ class AutonomyService:
                 note=f"Stage '{next_stage}' completed.",
             )
         except Exception as error:
-            attempt = self._failed_attempts(events, stage=next_stage) + 1
+            attempt = self._failed_attempts(events, stage=next_stage, cycle=cycle) + 1
             self._store.save_project_event(
                 ProjectEventCreate(
                     task_id=task_id,
                     event_type="autonomy.stage.failed",
                     event_data={
                         "stage": next_stage,
+                        "cycle": cycle,
                         "attempt": attempt,
                         "error": str(error)[:250],
                     },
@@ -213,6 +294,7 @@ class AutonomyService:
                         event_type="autonomy.retry.scheduled",
                         event_data={
                             "stage": next_stage,
+                            "cycle": cycle,
                             "attempt": attempt,
                             "retry_at_epoch": retry_at,
                         },
@@ -232,7 +314,12 @@ class AutonomyService:
                 ProjectEventCreate(
                     task_id=task_id,
                     event_type="autonomy.failed",
-                    event_data={"stage": next_stage, "attempt": attempt, "error": str(error)[:250]},
+                    event_data={
+                        "stage": next_stage,
+                        "cycle": cycle,
+                        "attempt": attempt,
+                        "error": str(error)[:250],
+                    },
                 )
             )
             return AutonomyResult(
@@ -285,11 +372,11 @@ class AutonomyService:
             note="Task rejected and blocked.",
         )
 
-    def _bootstrap_if_needed(self, *, task: Task, events: list[ProjectEvent]) -> str:
+    def _bootstrap_if_needed(self, *, task: Task, events: list[ProjectEvent]) -> tuple[str, int]:
         started_event = self._latest_event(events, "autonomy.started")
         if started_event is not None:
             execute_role = str(started_event.event_data.get("execute_role") or "coder")
-            return _normalize_agent_role(execute_role)
+            return _normalize_agent_role(execute_role), self._current_cycle(events)
 
         routing_decision = self._routing_service.choose_next(
             payload=RoutingRequest(
@@ -318,8 +405,15 @@ class AutonomyService:
                 event_data={"execute_role": execute_role},
             )
         )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.cycle.started",
+                event_data={"cycle": 1, "mode": "initial"},
+            )
+        )
         self._persist_autonomy_baton(task=task, routing_worker=execute_role)
-        return execute_role
+        return execute_role, 1
 
     def _load_preferences(self, events: list[ProjectEvent]) -> dict[str, str]:
         for event in reversed(events):
@@ -334,10 +428,13 @@ class AutonomyService:
             return merged
         return {}
 
-    def _next_stage(self, events: list[ProjectEvent]) -> str | None:
+    def _next_stage(self, events: list[ProjectEvent], *, cycle: int) -> str | None:
         completed: set[str] = set()
         for event in events:
             if event.event_type != "autonomy.stage.completed":
+                continue
+            event_cycle = _event_int(event.event_data.get("cycle")) or 1
+            if event_cycle != cycle:
                 continue
             stage = str(event.event_data.get("stage") or "").strip().lower()
             if stage in AUTONOMY_STAGES:
@@ -347,11 +444,20 @@ class AutonomyService:
                 return stage
         return None
 
-    def _scheduled_retry_epoch(self, events: list[ProjectEvent], stage: str) -> float | None:
+    def _scheduled_retry_epoch(
+        self,
+        events: list[ProjectEvent],
+        stage: str,
+        *,
+        cycle: int,
+    ) -> float | None:
         for event in reversed(events):
             if event.event_type != "autonomy.retry.scheduled":
                 continue
             if str(event.event_data.get("stage") or "").strip().lower() != stage:
+                continue
+            event_cycle = _event_int(event.event_data.get("cycle")) or 1
+            if event_cycle != cycle:
                 continue
             retry_epoch = event.event_data.get("retry_at_epoch")
             if isinstance(retry_epoch, (int, float)):
@@ -363,10 +469,13 @@ class AutonomyService:
                     return None
         return None
 
-    def _failed_attempts(self, events: list[ProjectEvent], stage: str) -> int:
+    def _failed_attempts(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> int:
         count = 0
         for event in events:
             if event.event_type != "autonomy.stage.failed":
+                continue
+            event_cycle = _event_int(event.event_data.get("cycle")) or 1
+            if event_cycle != cycle:
                 continue
             if str(event.event_data.get("stage") or "").strip().lower() == stage:
                 count += 1
@@ -398,6 +507,19 @@ class AutonomyService:
             return self._default_max_retries
         return max(parsed, 0)
 
+    def _current_cycle(self, events: list[ProjectEvent]) -> int:
+        for event in reversed(events):
+            if event.event_type != "autonomy.cycle.started":
+                continue
+            cycle = _event_int(event.event_data.get("cycle"))
+            if cycle is not None and cycle >= 1:
+                return cycle
+        return 1
+
+    def _total_step_events(self, events: list[ProjectEvent]) -> int:
+        tracked = {"autonomy.stage.completed", "autonomy.stage.failed"}
+        return sum(1 for event in events if event.event_type in tracked)
+
     def _approval_gate_state(
         self,
         *,
@@ -427,10 +549,18 @@ class AutonomyService:
             )
         )
 
-    def _prompt_for_stage(self, *, stage: str, task: Task, prefs: dict[str, str]) -> str:
+    def _prompt_for_stage(
+        self,
+        *,
+        stage: str,
+        task: Task,
+        prefs: dict[str, str],
+        cycle: int,
+    ) -> str:
         if stage == "plan":
+            mode = "Replan" if cycle > 1 else "Plan"
             return (
-                "You are Syncore planner.\n"
+                f"You are Syncore planner ({mode}).\n"
                 f"Task title: {task.title}\n"
                 f"Task type: {task.task_type}\n"
                 f"Complexity: {task.complexity}\n"
@@ -557,3 +687,18 @@ def _event_bool(value: str | int | float | bool | None) -> bool:
     if isinstance(value, str):
         return _as_bool(value)
     return False
+
+
+def _event_int(value: str | int | float | bool | None) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None

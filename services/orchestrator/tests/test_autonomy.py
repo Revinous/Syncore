@@ -149,3 +149,211 @@ def test_autonomy_retries_and_blocks_after_budget(monkeypatch, tmp_path) -> None
         detail = client.get(f"/tasks/{task_id}")
         assert detail.status_code == 200
         assert detail.json()["task"]["status"] == "blocked"
+
+
+def test_autonomy_requires_approval_and_resumes_after_approve(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Approval gated task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        pref = client.post(
+            "/project-events",
+            json={
+                "task_id": task_id,
+                "event_type": "task.preferences",
+                "event_data": {"requires_approval": "true"},
+            },
+        )
+        assert pref.status_code == 201
+
+        first = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert first.status_code == 200
+        assert first.json()["status"] in {"in_progress", "completed"}
+
+        second = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert second.status_code == 200
+        assert second.json()["status"] == "awaiting_approval"
+
+        approve = client.post(
+            f"/autonomy/tasks/{task_id}/approve",
+            json={"reason": "looks good"},
+        )
+        assert approve.status_code == 200
+        assert approve.json()["status"] == "approved"
+
+        for _ in range(4):
+            run = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert run.status_code == 200
+            detail = client.get(f"/tasks/{task_id}")
+            assert detail.status_code == 200
+            if detail.json()["task"]["status"] == "completed":
+                break
+
+        final_detail = client.get(f"/tasks/{task_id}")
+        assert final_detail.status_code == 200
+        assert final_detail.json()["task"]["status"] == "completed"
+
+
+def test_autonomy_reject_blocks_task(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Approval rejected task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        pref = client.post(
+            "/project-events",
+            json={
+                "task_id": task_id,
+                "event_type": "task.preferences",
+                "event_data": {"requires_approval": "true"},
+            },
+        )
+        assert pref.status_code == 201
+
+        _ = client.post(f"/autonomy/tasks/{task_id}/run")
+        awaiting = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert awaiting.status_code == 200
+        assert awaiting.json()["status"] == "awaiting_approval"
+
+        reject = client.post(
+            f"/autonomy/tasks/{task_id}/reject",
+            json={"reason": "not safe"},
+        )
+        assert reject.status_code == 200
+        assert reject.json()["status"] == "rejected"
+
+        detail = client.get(f"/tasks/{task_id}")
+        assert detail.status_code == 200
+        assert detail.json()["task"]["status"] == "blocked"
+
+
+def test_autonomy_review_replans_then_blocks_at_max_cycles(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_REVIEW_PASS_KEYWORD", "SYNCORE_REVIEW_OK")
+    monkeypatch.setenv("AUTONOMY_MAX_CYCLES", "2")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task with forced review-gate failure",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        saw_replanning = False
+        for _ in range(12):
+            run = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert run.status_code == 200
+            status = run.json()["status"]
+            if status == "replanning":
+                saw_replanning = True
+            if status == "failed":
+                break
+
+        assert saw_replanning is True
+        detail = client.get(f"/tasks/{task_id}")
+        assert detail.status_code == 200
+        assert detail.json()["task"]["status"] == "blocked"
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        event_types = [event["event_type"] for event in events.json()]
+        assert "autonomy.review.failed" in event_types
+        cycle_events = [
+            event
+            for event in events.json()
+            if event["event_type"] == "autonomy.cycle.started"
+        ]
+        cycles = {int(event["event_data"]["cycle"]) for event in cycle_events}
+        assert 1 in cycles
+        assert 2 in cycles
+
+
+def test_autonomy_blocks_when_total_step_budget_reached(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_MAX_TOTAL_STEPS", "1")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task blocked by max steps",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        seed = client.post(
+            "/project-events",
+            json={
+                "task_id": task_id,
+                "event_type": "autonomy.stage.completed",
+                "event_data": {"stage": "plan", "cycle": 1},
+            },
+        )
+        assert seed.status_code == 201
+
+        run = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert run.status_code == 200
+        assert run.json()["status"] == "failed"
+
+        detail = client.get(f"/tasks/{task_id}")
+        assert detail.status_code == 200
+        assert detail.json()["task"]["status"] == "blocked"

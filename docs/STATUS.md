@@ -45,6 +45,15 @@ Extended autonomy to a staged execution pipeline with retry/backoff safeguards.
   - `autonomy.stage.completed`
   - `autonomy.stage.failed`
   - `autonomy.retry.scheduled`
+- Approval gate:
+  - optional `requires_approval` preference in `task.preferences`
+  - pauses after `plan` before `execute`
+  - approve/reject endpoints:
+    - `POST /autonomy/tasks/{task_id}/approve`
+    - `POST /autonomy/tasks/{task_id}/reject`
+  - TUI hotkeys:
+    - `y` approve selected task
+    - `u` reject selected task
 - Retry/backoff:
   - exponential backoff per stage
   - configurable retry budget before task is set to `blocked`
@@ -56,6 +65,27 @@ Extended autonomy to a staged execution pipeline with retry/backoff safeguards.
 ### Validation
 - Added and passed retry + blocking coverage in:
   - `services/orchestrator/tests/test_autonomy.py`
+
+## Hardening increment (April 28, 2026)
+
+Implemented optional API perimeter controls and safer diagnostics output.
+
+### Added
+- Optional API key auth middleware:
+  - `API_AUTH_ENABLED`
+  - `API_AUTH_TOKEN`
+  - header: `x-api-key`
+- Optional fixed-window rate limiting middleware:
+  - `RATE_LIMIT_ENABLED`
+  - `RATE_LIMIT_WINDOW_SECONDS`
+  - `RATE_LIMIT_MAX_REQUESTS`
+- Diagnostics config redaction:
+  - `POSTGRES_DSN` and `REDIS_URL` are masked in `/diagnostics/config`
+
+### Validation
+- Added and passed:
+  - `services/orchestrator/tests/test_security.py`
+  - `services/orchestrator/tests/test_diagnostics.py`
 
 ## Local MVP reachability update (April 26, 2026)
 

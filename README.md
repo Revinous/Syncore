@@ -97,6 +97,8 @@ Key variables:
 - `AUTONOMY_DEFAULT_MODEL` – fallback model when preferences are absent
 - `AUTONOMY_MAX_RETRIES` – max retries per autonomy stage before blocking
 - `AUTONOMY_RETRY_BASE_SECONDS` – exponential backoff base for retries
+- `API_AUTH_ENABLED` / `API_AUTH_TOKEN` – optional API key protection (`x-api-key`)
+- `RATE_LIMIT_ENABLED` / `RATE_LIMIT_WINDOW_SECONDS` / `RATE_LIMIT_MAX_REQUESTS` – optional request throttling
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.
 
 ## Startup Lanes
@@ -267,6 +269,8 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /diagnostics/task/{task_id}`
 - `POST /autonomy/scan-once`
 - `POST /autonomy/tasks/{task_id}/run`
+- `POST /autonomy/tasks/{task_id}/approve`
+- `POST /autonomy/tasks/{task_id}/reject`
 
 ### Example payloads
 

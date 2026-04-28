@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     autonomy_default_model: str = "local_echo"
     autonomy_max_retries: int = 2
     autonomy_retry_base_seconds: float = 2.0
+    autonomy_max_cycles: int = 2
+    autonomy_max_total_steps: int = 12
+    autonomy_review_pass_keyword: str = "PASS"
+    api_auth_enabled: bool = False
+    api_auth_token: str | None = None
+    rate_limit_enabled: bool = False
+    rate_limit_window_seconds: int = 60
+    rate_limit_max_requests: int = 120
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -23,13 +23,14 @@ schema = Path("scripts/init_sqlite.sql").read_text(encoding="utf-8")
 
 connection = sqlite3.connect(db_path)
 try:
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks' LIMIT 1"
+    ).fetchone()
+    if table_exists:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
+        if "workspace_id" not in columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN workspace_id TEXT")
     connection.executescript(schema)
-    columns = {
-        row[1]
-        for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
-    }
-    if "workspace_id" not in columns:
-        connection.execute("ALTER TABLE tasks ADD COLUMN workspace_id TEXT")
     connection.commit()
 finally:
     connection.close()

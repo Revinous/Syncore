@@ -15,13 +15,17 @@ from app.api.routes.routing import router as routing_router
 from app.api.routes.runs import router as runs_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.workspaces import router as workspaces_router
+from app.config import get_settings
 from app.lifecycle import lifespan
 from app.observability import configure_logging, request_observability_middleware
+from app.security import create_security_middleware
 
 
 def create_app() -> FastAPI:
     configure_logging()
+    settings = get_settings()
     app = FastAPI(title="Agent Workforce Orchestrator", lifespan=lifespan)
+    app.middleware("http")(create_security_middleware(settings))
     app.middleware("http")(request_observability_middleware)
 
     app.include_router(health_router)
