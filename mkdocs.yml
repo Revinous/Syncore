@@ -11,6 +11,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Overview:
+    - Documentation Map: rtd/overview/documentation-map.md
     - Getting Started: rtd/getting-started.md
     - What Is Syncore: rtd/overview/what-is-syncore.md
     - Core Concepts: rtd/overview/concepts.md
@@ -32,19 +33,48 @@ nav:
     - Task and Run Lifecycle: rtd/workflows/tasks-runs.md
     - Context Optimization: rtd/workflows/context-optimization.md
     - Autonomy: rtd/workflows/autonomy.md
+  - Tutorials:
+    - "Tutorial 1: First Project": rtd/tutorials/tutorial-1-first-project.md
+    - "Tutorial 2: Model Selection and Switching": rtd/tutorials/tutorial-2-model-selection-and-switching.md
+    - "Tutorial 3: Context Efficiency": rtd/tutorials/tutorial-3-context-efficiency.md
+    - "Tutorial 4: Build a Small App": rtd/tutorials/tutorial-4-build-small-app-with-syncore.md
+  - Recipes:
+    - Common Recipes: rtd/recipes/common-recipes.md
   - Reference:
     - API Endpoints: rtd/reference/api.md
+    - HTTP Examples: rtd/reference/http-examples.md
+    - Error Reference: rtd/reference/error-reference.md
     - Configuration Reference: rtd/reference/config-reference.md
     - Data Contracts: rtd/reference/data-contracts.md
     - CLI Command Reference: rtd/reference/cli-reference.md
     - TUI Hotkeys: rtd/reference/tui-hotkeys.md
   - Operations:
+    - Local Development Runbook: rtd/operations/local-development-runbook.md
     - Deployment Modes: rtd/operations/deployment-modes.md
+    - Migration and Schema: rtd/operations/migration-and-schema.md
+    - Observability and Metrics: rtd/operations/observability-and-metrics.md
     - Testing and Quality: rtd/operations/testing-and-quality.md
     - Security Model: rtd/operations/security-model.md
     - Troubleshooting: rtd/operations/troubleshooting.md
     - Limitations and Roadmap: rtd/operations/limitations-and-roadmap.md
     - Upgrade and Branch Strategy: rtd/operations/branching-and-versions.md
+  - Internals:
+    - Backend Services: rtd/internals/backend-services.md
+    - CLI and TUI Internals: rtd/internals/cli-tui-internals.md
+    - Context Optimizer Internals: rtd/internals/context-optimizer-internals.md
+    - Autonomy Policy Internals: rtd/internals/autonomy-policy-internals.md
   - Appendix:
     - FAQ: rtd/appendix/faq.md
     - Glossary: rtd/appendix/glossary.md
+  - Project Records:
+    - Original RTD Index: rtd/index.md
+    - User Guide: USER_GUIDE.md
+    - Project Charter: PROJECT_CHARTER.md
+    - Implementation Plan: IMPLEMENTATION_PLAN.md
+    - Environment Notes: ENVIRONMENTS.md
+    - Runbook: RUNBOOK.md
+    - Troubleshooting Notes: TROUBLESHOOTING.md
+    - Status: STATUS.md
+    - Local Validation: LOCAL_VALIDATION.md
+    - Local MVP Checklist: LOCAL_MVP_CHECKLIST.md
+    - Decisions: DECISIONS.md
