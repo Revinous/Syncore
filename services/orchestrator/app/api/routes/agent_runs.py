@@ -71,3 +71,31 @@ def get_agent_run_result(
     if result is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
     return result
+
+
+@router.post("/{run_id}/cancel", response_model=AgentRun)
+def cancel_agent_run(
+    run_id: UUID,
+    service: AgentRunService = Depends(get_agent_run_service),
+) -> AgentRun:
+    try:
+        run = service.cancel_run(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return run
+
+
+@router.post("/{run_id}/resume", response_model=AgentRun)
+def resume_agent_run(
+    run_id: UUID,
+    service: AgentRunService = Depends(get_agent_run_service),
+) -> AgentRun:
+    try:
+        run = service.resume_run(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return run

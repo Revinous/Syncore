@@ -88,6 +88,12 @@ class SyncoreApiClient:
     def get_agent_run_result(self, run_id: str) -> Any:
         return self._request("GET", f"/agent-runs/{run_id}/result")
 
+    def cancel_agent_run(self, run_id: str) -> Any:
+        return self._request("POST", f"/agent-runs/{run_id}/cancel")
+
+    def resume_agent_run(self, run_id: str) -> Any:
+        return self._request("POST", f"/agent-runs/{run_id}/resume")
+
     def list_task_events(self, task_id: str) -> Any:
         return self._request("GET", f"/tasks/{task_id}/events")
 

@@ -583,6 +583,34 @@ def run_result(
     print_kv_panel("Run Result", result)
 
 
+@run_app.command("cancel")
+def run_cancel(run_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    client = _client()
+    try:
+        payload = client.cancel_agent_run(run_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(payload)
+        return
+    print_kv_panel("Run Canceled", payload)
+
+
+@run_app.command("resume")
+def run_resume(run_id: str, json_output: bool = typer.Option(False, "--json")) -> None:
+    client = _client()
+    try:
+        payload = client.resume_agent_run(run_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(payload)
+        return
+    print_kv_panel("Run Resumed", payload)
+
+
 @app.command("events")
 def events(task_id: str) -> None:
     client = _client()

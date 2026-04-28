@@ -107,6 +107,12 @@ class FakeClient:
             "retrieval_hint": "GET /context/references/{ref_id}",
         }
 
+    def cancel_agent_run(self, run_id: str):
+        return {"id": run_id, "status": "blocked", "error_message": "Canceled by operator."}
+
+    def resume_agent_run(self, run_id: str):
+        return {"id": run_id, "status": "queued"}
+
     def list_task_events(self, task_id: str):
         return [{"id": "e1", "task_id": task_id, "event_type": "started"}]
 
@@ -326,3 +332,21 @@ def test_providers_json(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload[0]["provider"] == "local_echo"
+
+
+def test_run_cancel_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["run", "cancel", "r1", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "blocked"
+
+
+def test_run_resume_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["run", "resume", "r1", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "queued"

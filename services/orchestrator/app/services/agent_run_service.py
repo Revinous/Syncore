@@ -1,6 +1,11 @@
 from uuid import UUID
 
-from packages.contracts.python.models import AgentRun, AgentRunCreate, AgentRunUpdate
+from packages.contracts.python.models import (
+    AgentRun,
+    AgentRunCreate,
+    AgentRunUpdate,
+    ProjectEventCreate,
+)
 from pydantic import BaseModel
 from services.memory import MemoryStoreProtocol
 
@@ -36,6 +41,46 @@ class AgentRunService:
 
     def list_runs(self, task_id: UUID | None = None, limit: int = 50) -> list[AgentRun]:
         return self._store.list_agent_runs(task_id=task_id, limit=limit)
+
+    def cancel_run(self, run_id: UUID) -> AgentRun | None:
+        run = self._store.get_agent_run(run_id)
+        if run is None:
+            return None
+        if run.status not in {"queued", "running"}:
+            raise ValueError(f"Run cannot be canceled from status '{run.status}'.")
+        updated = self._store.update_agent_run(
+            run_id,
+            AgentRunUpdate(status="blocked", error_message="Canceled by operator."),
+        )
+        if updated is not None:
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=updated.task_id,
+                    event_type="run.canceled",
+                    event_data={"run_id": str(updated.id), "status": updated.status},
+                )
+            )
+        return updated
+
+    def resume_run(self, run_id: UUID) -> AgentRun | None:
+        run = self._store.get_agent_run(run_id)
+        if run is None:
+            return None
+        if run.status not in {"blocked", "failed"}:
+            raise ValueError(f"Run cannot be resumed from status '{run.status}'.")
+        updated = self._store.update_agent_run(
+            run_id,
+            AgentRunUpdate(status="queued", error_message=None),
+        )
+        if updated is not None:
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=updated.task_id,
+                    event_type="run.resumed",
+                    event_data={"run_id": str(updated.id), "status": updated.status},
+                )
+            )
+        return updated
 
     def get_run_result(self, run_id: UUID) -> AgentRunResult | None:
         run = self._store.get_agent_run(run_id)
