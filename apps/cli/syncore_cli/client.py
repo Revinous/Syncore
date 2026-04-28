@@ -65,7 +65,9 @@ class SyncoreApiClient:
     def list_workspace_files(self, workspace_id: str) -> Any:
         return self._request("GET", f"/workspaces/{workspace_id}/files")
 
-    def list_tasks(self) -> Any:
+    def list_tasks(self, workspace_id: str | None = None) -> Any:
+        if workspace_id:
+            return self._request("GET", f"/tasks?workspace_id={workspace_id}")
         return self._request("GET", "/tasks")
 
     def create_task(self, payload: dict[str, Any]) -> Any:
@@ -82,6 +84,12 @@ class SyncoreApiClient:
 
     def list_task_events(self, task_id: str) -> Any:
         return self._request("GET", f"/tasks/{task_id}/events")
+
+    def create_project_event(self, payload: dict[str, Any]) -> Any:
+        return self._request("POST", "/project-events", payload)
+
+    def list_project_events(self, limit: int = 50) -> Any:
+        return self._request("GET", f"/project-events?limit={limit}")
 
     def list_task_batons(self, task_id: str) -> Any:
         return self._request("GET", f"/tasks/{task_id}/baton-packets")
@@ -109,3 +117,26 @@ class SyncoreApiClient:
 
     def diagnostics_routes(self) -> Any:
         return self._request("GET", "/diagnostics/routes")
+
+    def execute_run(self, payload: dict[str, Any]) -> Any:
+        return self._request("POST", "/runs/execute", payload)
+
+    def autonomy_scan_once(self, limit: int = 50) -> Any:
+        return self._request("POST", f"/autonomy/scan-once?limit={limit}")
+
+    def autonomy_run_task(self, task_id: str) -> Any:
+        return self._request("POST", f"/autonomy/tasks/{task_id}/run")
+
+    def autonomy_approve_task(self, task_id: str, reason: str | None = None) -> Any:
+        return self._request(
+            "POST",
+            f"/autonomy/tasks/{task_id}/approve",
+            {"reason": reason} if reason is not None else {},
+        )
+
+    def autonomy_reject_task(self, task_id: str, reason: str | None = None) -> Any:
+        return self._request(
+            "POST",
+            f"/autonomy/tasks/{task_id}/reject",
+            {"reason": reason} if reason is not None else {},
+        )

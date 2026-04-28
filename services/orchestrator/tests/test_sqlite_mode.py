@@ -39,16 +39,34 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
 
+    workspace = client.post(
+        "/workspaces",
+        json={
+            "name": "SQLite workspace",
+            "root_path": str(tmp_path),
+            "runtime_mode": "native",
+        },
+    )
+    assert workspace.status_code == 201
+    workspace_id = workspace.json()["id"]
+
     task = client.post(
         "/tasks",
         json={
             "title": "SQLite native workflow",
             "task_type": "implementation",
             "complexity": "low",
+            "workspace_id": workspace_id,
         },
     )
     assert task.status_code == 201
     task_id = task.json()["id"]
+    assert task.json()["workspace_id"] == workspace_id
+
+    task_list = client.get(f"/tasks?workspace_id={workspace_id}")
+    assert task_list.status_code == 200
+    assert len(task_list.json()) >= 1
+    assert task_list.json()[0]["workspace_id"] == workspace_id
 
     event = client.post(
         "/project-events",

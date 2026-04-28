@@ -81,6 +81,40 @@ def test_create_task_persists_record(monkeypatch) -> None:
     assert any("INSERT INTO tasks" in sql for sql, _ in fake_cursor.statements)
 
 
+def test_create_task_persists_workspace_id(monkeypatch) -> None:
+    now = datetime.now(timezone.utc)
+    workspace_id = uuid4()
+    row = {
+        "id": uuid4(),
+        "title": "Workspace scoped task",
+        "status": "new",
+        "task_type": "analysis",
+        "complexity": "medium",
+        "workspace_id": workspace_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    fake_cursor = FakeCursor(fetchone_result=row)
+    fake_connection = FakeConnection(fake_cursor)
+    monkeypatch.setattr(
+        "services.memory.store.psycopg.connect", lambda *_, **__: fake_connection
+    )
+
+    store = MemoryStore("postgresql://unused")
+    task = store.create_task(
+        TaskCreate(
+            title="Workspace scoped task",
+            task_type="analysis",
+            workspace_id=workspace_id,
+        )
+    )
+
+    assert task.workspace_id == workspace_id
+    insert_sql, params = fake_cursor.statements[0]
+    assert "workspace_id" in insert_sql
+    assert params[-1] == workspace_id
+
+
 def test_save_baton_packet_inserts_record(monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     row = {

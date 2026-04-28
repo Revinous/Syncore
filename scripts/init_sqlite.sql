@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'new',
   task_type TEXT NOT NULL DEFAULT 'analysis',
   complexity TEXT NOT NULL DEFAULT 'medium',
+  workspace_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -75,6 +76,9 @@ CREATE TABLE IF NOT EXISTS context_bundles (
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
   ON agent_runs (task_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id
+  ON tasks (workspace_id);
 
 CREATE INDEX IF NOT EXISTS idx_baton_packets_task_id_created_at
   ON baton_packets (task_id, created_at DESC);

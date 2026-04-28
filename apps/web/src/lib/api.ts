@@ -105,8 +105,10 @@ export function listWorkspaceFiles(id: string) {
   return request<WorkspaceFile>(`/workspaces/${id}/files`);
 }
 
-export function listTasks(limit = 100) {
-  return request<Task[]>(`/tasks?limit=${limit}`);
+export function listTasks(limit = 100, workspaceId?: string) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (workspaceId) params.set("workspace_id", workspaceId);
+  return request<Task[]>(`/tasks?${params.toString()}`);
 }
 
 export function createTask(payload: TaskCreatePayload) {

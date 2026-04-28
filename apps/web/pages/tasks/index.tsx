@@ -18,8 +18,9 @@ export default function TasksPage() {
   const [title, setTitle] = useState("Analyze auth flow");
   const [taskType, setTaskType] = useState("analysis");
   const [complexity, setComplexity] = useState("medium");
-  const [workspaceName, setWorkspaceName] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [workspaceFilter, setWorkspaceFilter] = useState("all");
 
   const filtered = useMemo(
     () => tasks.filter((task) => statusFilter === "all" || task.status === statusFilter),
@@ -30,7 +31,11 @@ export default function TasksPage() {
     setLoading(true);
     setError(null);
     try {
-      const [taskData, workspaceData] = await Promise.all([listTasks(), listWorkspaces()]);
+      const selectedWorkspaceId = workspaceFilter === "all" ? undefined : workspaceFilter;
+      const [taskData, workspaceData] = await Promise.all([
+        listTasks(100, selectedWorkspaceId),
+        listWorkspaces(),
+      ]);
       setTasks(taskData);
       setWorkspaces(workspaceData);
     } catch (err) {
@@ -42,17 +47,17 @@ export default function TasksPage() {
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [workspaceFilter]);
 
   async function onCreateTask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     try {
-      const prefix = workspaceName ? `[${workspaceName}] ` : "";
       await createTask({
-        title: `${prefix}${title}`,
+        title,
         task_type: taskType,
         complexity,
+        workspace_id: workspaceId || null,
       });
       await load();
     } catch (err) {
@@ -69,10 +74,10 @@ export default function TasksPage() {
         <h2>Create Task</h2>
         <form onSubmit={onCreateTask} style={{ display: "grid", gap: 8, maxWidth: 640 }}>
           <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" required />
-          <select value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)}>
+          <select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
             <option value="">No workspace</option>
             {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.name}>
+              <option key={workspace.id} value={workspace.id}>
                 {workspace.name}
               </option>
             ))}
@@ -106,6 +111,21 @@ export default function TasksPage() {
             <option value="completed">completed</option>
           </select>
         </label>
+        {"  "}
+        <label>
+          Workspace filter:{" "}
+          <select
+            value={workspaceFilter}
+            onChange={(event) => setWorkspaceFilter(event.target.value)}
+          >
+            <option value="all">all</option>
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
+          </select>
+        </label>
 
         {filtered.length === 0 ? (
           <EmptyState message="No tasks found." />
@@ -116,6 +136,7 @@ export default function TasksPage() {
                 <th align="left">Title</th>
                 <th align="left">Type</th>
                 <th align="left">Complexity</th>
+                <th align="left">Workspace</th>
                 <th align="left">Status</th>
                 <th align="left">Updated</th>
                 <th align="left">Open</th>
@@ -127,6 +148,10 @@ export default function TasksPage() {
                   <td>{task.title}</td>
                   <td>{task.task_type}</td>
                   <td>{task.complexity}</td>
+                  <td>
+                    {workspaces.find((workspace) => workspace.id === task.workspace_id)?.name ||
+                      "none"}
+                  </td>
                   <td><StatusBadge status={task.status} /></td>
                   <td>{new Date(task.updated_at).toLocaleString()}</td>
                   <td>

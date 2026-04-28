@@ -28,6 +28,7 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=1)
     task_type: TaskType
     complexity: ComplexityLevel = "medium"
+    workspace_id: UUID | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -35,6 +36,7 @@ class TaskUpdate(BaseModel):
     status: TaskStatus | None = None
     task_type: TaskType | None = None
     complexity: ComplexityLevel | None = None
+    workspace_id: UUID | None = None
 
 
 class Task(BaseModel):
@@ -43,6 +45,7 @@ class Task(BaseModel):
     status: TaskStatus = "new"
     task_type: TaskType = "analysis"
     complexity: ComplexityLevel = "medium"
+    workspace_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -19,15 +19,19 @@ def create_task(
     payload: TaskCreate,
     service: TaskService = Depends(get_task_service),
 ) -> Task:
-    return service.create_task(payload)
+    try:
+        return service.create_task(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("", response_model=list[Task])
 def list_tasks(
     limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: UUID | None = Query(default=None),
     service: TaskService = Depends(get_task_service),
 ) -> list[Task]:
-    return service.list_tasks(limit=limit)
+    return service.list_tasks(limit=limit, workspace_id=workspace_id)
 
 
 @router.get("/{task_id}", response_model=TaskDetail)

@@ -76,6 +76,7 @@ export type Task = {
   status: string;
   task_type: string;
   complexity: string;
+  workspace_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -181,6 +182,7 @@ export type TaskCreatePayload = {
   title: string;
   task_type: string;
   complexity?: string;
+  workspace_id?: string | null;
 };
 
 export type TaskUpdatePayload = {

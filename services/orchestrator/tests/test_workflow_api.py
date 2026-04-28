@@ -58,8 +58,11 @@ class FakeTaskService:
         self.state.tasks[task.id] = task
         return task
 
-    def list_tasks(self, limit: int = 50) -> list[Task]:
-        return list(self.state.tasks.values())[:limit]
+    def list_tasks(self, limit: int = 50, workspace_id: UUID | None = None) -> list[Task]:
+        tasks = list(self.state.tasks.values())
+        if workspace_id is not None:
+            tasks = [task for task in tasks if task.workspace_id == workspace_id]
+        return tasks[:limit]
 
     def get_task_detail(self, task_id: UUID) -> TaskDetail | None:
         task = self.state.tasks.get(task_id)

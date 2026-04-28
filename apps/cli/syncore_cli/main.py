@@ -11,6 +11,7 @@ import typer
 
 from .client import SyncoreApiClient, SyncoreApiError
 from .config import load_config
+from .openai_auth import OpenAIAuthError, OpenAIAuthStore, OpenAIModelClient, OpenAICredentials
 from .render import (
     print_error,
     print_json,
@@ -24,9 +25,13 @@ app = typer.Typer(help="Syncore CLI")
 workspace_app = typer.Typer(help="Workspace commands")
 task_app = typer.Typer(help="Task commands")
 run_app = typer.Typer(help="Agent run commands")
+auth_app = typer.Typer(help="Authentication commands")
+openai_auth_app = typer.Typer(help="OpenAI auth commands")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
+app.add_typer(auth_app, name="auth")
+auth_app.add_typer(openai_auth_app, name="openai")
 
 
 def _repo_root() -> Path:
@@ -40,6 +45,16 @@ def _client(config=None) -> SyncoreApiClient:
     if config is None:
         config = load_config()
     return SyncoreApiClient(config.api_url, config.timeout_seconds)
+
+
+def _openai_store() -> OpenAIAuthStore:
+    return OpenAIAuthStore()
+
+
+def _openai_models_client(config=None) -> OpenAIModelClient:
+    if config is None:
+        config = load_config()
+    return OpenAIModelClient(timeout_seconds=config.timeout_seconds)
 
 
 def _resolve_workspace_id(client: SyncoreApiClient, identifier: str) -> str:
@@ -192,6 +207,73 @@ def _ensure_api_running(config) -> None:
     )
 
 
+@openai_auth_app.command("login")
+def openai_login(
+    api_key: str = typer.Option("", "--api-key", prompt=True, hide_input=True)
+) -> None:
+    if not api_key.strip():
+        print_error("API key cannot be empty")
+        raise typer.Exit(code=1)
+
+    store = _openai_store()
+    models_client = _openai_models_client()
+    try:
+        models = models_client.list_text_models(api_key.strip())
+    except OpenAIAuthError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    store.save(OpenAICredentials(api_key=api_key.strip()))
+    print_json(
+        {
+            "status": "connected",
+            "credential_path": str(store.path),
+            "available_models": models[:25],
+            "model_count": len(models),
+        }
+    )
+
+
+@openai_auth_app.command("logout")
+def openai_logout() -> None:
+    store = _openai_store()
+    store.clear()
+    print_json({"status": "disconnected"})
+
+
+@openai_auth_app.command("status")
+def openai_status() -> None:
+    store = _openai_store()
+    credentials = store.load()
+    if credentials is None:
+        print_json({"connected": False, "credential_path": str(store.path)})
+        return
+    print_json({"connected": True, "credential_path": str(store.path)})
+
+
+@openai_auth_app.command("models")
+def openai_models(json_output: bool = typer.Option(False, "--json")) -> None:
+    store = _openai_store()
+    credentials = store.load()
+    if credentials is None:
+        print_error("Not connected. Run `syncore auth openai login`.")
+        raise typer.Exit(code=1)
+
+    models_client = _openai_models_client()
+    try:
+        models = models_client.list_text_models(credentials.api_key)
+    except OpenAIAuthError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json({"models": models, "count": len(models)})
+        return
+
+    rows = [[model] for model in models]
+    print_table("OpenAI Models", ["id"], rows)
+
+
 @app.command("status")
 def status(json_output: bool = typer.Option(False, "--json")) -> None:
     client = _client()
@@ -313,10 +395,14 @@ def workspace_files(workspace_id_or_name: str) -> None:
 
 
 @task_app.command("list")
-def task_list(json_output: bool = typer.Option(False, "--json")) -> None:
+def task_list(
+    workspace: str | None = typer.Option(None, "--workspace"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
     client = _client()
     try:
-        tasks = client.list_tasks()
+        workspace_id = _resolve_workspace_id(client, workspace) if workspace else None
+        tasks = client.list_tasks(workspace_id=workspace_id)
     except SyncoreApiError as error:
         print_error(str(error))
         raise typer.Exit(code=1)
@@ -331,11 +417,16 @@ def task_list(json_output: bool = typer.Option(False, "--json")) -> None:
             str(task.get("title")),
             str(task.get("status")),
             str(task.get("complexity")),
+            str(task.get("workspace_id") or ""),
             str(task.get("updated_at")),
         ]
         for task in tasks
     ]
-    print_table("Tasks", ["id", "title", "status", "complexity", "updated_at"], rows)
+    print_table(
+        "Tasks",
+        ["id", "title", "status", "complexity", "workspace_id", "updated_at"],
+        rows,
+    )
 
 
 @task_app.command("create")
@@ -347,16 +438,15 @@ def task_create(
     complexity: str = typer.Option("medium", "--complexity"),
 ) -> None:
     client = _client()
-    full_title = title
+    workspace_id: str | None = None
     if workspace:
         try:
             workspace_id = _resolve_workspace_id(client, workspace)
-            workspace_payload = client.get_workspace(workspace_id)
-            full_title = f"[{workspace_payload.get('name')}] {title}"
         except SyncoreApiError as error:
             print_error(str(error))
             raise typer.Exit(code=1)
 
+    full_title = title
     if description:
         full_title = f"{full_title} - {description}"
 
@@ -364,6 +454,7 @@ def task_create(
         "title": full_title,
         "task_type": task_type,
         "complexity": complexity,
+        "workspace_id": workspace_id,
     }
     try:
         task = client.create_task(payload)

@@ -29,6 +29,7 @@ class SQLiteMemoryStore:
     def __init__(self, sqlite_db_path: str) -> None:
         self._sqlite_db_path = sqlite_db_path
         Path(self._sqlite_db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_task_workspace_column()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -41,20 +42,38 @@ class SQLiteMemoryStore:
         finally:
             connection.close()
 
+    def _ensure_task_workspace_column(self) -> None:
+        with sqlite3.connect(self._sqlite_db_path) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if columns and "workspace_id" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN workspace_id TEXT")
+                connection.commit()
+
     def create_task(self, task: TaskCreate) -> Task:
         task_id = str(uuid4())
         now = self._now()
         with self._connection() as connection:
             connection.execute(
                 """
-                INSERT INTO tasks (id, title, status, task_type, complexity, created_at, updated_at)
-                VALUES (?, ?, 'new', ?, ?, ?, ?)
+                INSERT INTO tasks (id, title, status, task_type, complexity, workspace_id, created_at, updated_at)
+                VALUES (?, ?, 'new', ?, ?, ?, ?, ?)
                 """,
-                (task_id, task.title, task.task_type, task.complexity, now, now),
+                (
+                    task_id,
+                    task.title,
+                    task.task_type,
+                    task.complexity,
+                    str(task.workspace_id) if task.workspace_id else None,
+                    now,
+                    now,
+                ),
             )
             row = connection.execute(
                 """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
+                SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -68,7 +87,7 @@ class SQLiteMemoryStore:
         with self._connection() as connection:
             row = connection.execute(
                 """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
+                SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 FROM tasks
                 WHERE id = ?
                 """,
@@ -78,18 +97,30 @@ class SQLiteMemoryStore:
             return None
         return Task.model_validate(dict(row))
 
-    def list_tasks(self, limit: int = 50) -> list[Task]:
+    def list_tasks(self, limit: int = 50, workspace_id: UUID | None = None) -> list[Task]:
         bounded_limit = min(max(limit, 1), 200)
         with self._connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
-                FROM tasks
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (bounded_limit,),
-            ).fetchall()
+            if workspace_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
+                    FROM tasks
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (bounded_limit,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
+                    FROM tasks
+                    WHERE workspace_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (str(workspace_id), bounded_limit),
+                ).fetchall()
         return [Task.model_validate(dict(row)) for row in rows]
 
     def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task | None:
@@ -108,6 +139,9 @@ class SQLiteMemoryStore:
         if payload.complexity is not None:
             assignments.append("complexity = ?")
             values.append(payload.complexity)
+        if "workspace_id" in payload.model_fields_set:
+            assignments.append("workspace_id = ?")
+            values.append(str(payload.workspace_id) if payload.workspace_id else None)
 
         if not assignments:
             raise ValueError("At least one field must be provided for task update")
@@ -127,7 +161,7 @@ class SQLiteMemoryStore:
             )
             row = connection.execute(
                 """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
+                SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 FROM tasks
                 WHERE id = ?
                 """,

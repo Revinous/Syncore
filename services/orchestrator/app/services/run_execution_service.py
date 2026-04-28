@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from textwrap import shorten
 from typing import Iterator
 from uuid import UUID
@@ -46,9 +49,10 @@ class RunExecutionService:
         providers: dict[str, LlmProvider] = {
             "local_echo": LocalEchoProvider(),
         }
-        if settings.openai_api_key:
+        openai_api_key = _resolve_openai_api_key(settings.openai_api_key)
+        if openai_api_key:
             providers["openai"] = OpenAIChatCompletionsProvider(
-                api_key=settings.openai_api_key,
+                api_key=openai_api_key,
                 base_url=settings.openai_base_url,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
@@ -294,3 +298,28 @@ class RunExecutionService:
         self._store.save_project_event(
             ProjectEventCreate(task_id=task_id, event_type=event_type, event_data=event_data)
         )
+
+
+def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:
+    configured = (configured_api_key or "").strip()
+    if configured and configured.lower() not in {"replace_me", "changeme", "your_api_key_here"}:
+        return configured
+
+    auth_path = os.getenv("SYNCORE_OPENAI_AUTH_PATH")
+    if auth_path:
+        path = Path(auth_path).expanduser()
+    else:
+        path = Path.home() / ".syncore" / "openai_credentials.json"
+
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    file_key = str(payload.get("api_key", "")).strip()
+    if not file_key:
+        return None
+    return file_key

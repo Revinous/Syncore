@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.routes.agent_runs import router as agent_runs_router
 from app.api.routes.analyst import router as analyst_router
+from app.api.routes.autonomy import router as autonomy_router
 from app.api.routes.baton_packets import router as baton_packets_router
 from app.api.routes.compat import router as compat_router
 from app.api.routes.context import router as context_router
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(context_router)
     app.include_router(analyst_router)
     app.include_router(diagnostics_router)
+    app.include_router(autonomy_router)
     app.include_router(compat_router)
     return app
 

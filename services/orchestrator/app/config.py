@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com"
     openai_timeout_seconds: int = 60
+    autonomy_enabled: bool = False
+    autonomy_poll_interval_seconds: float = 2.0
+    autonomy_default_model: str = "local_echo"
+    autonomy_max_retries: int = 2
+    autonomy_retry_base_seconds: float = 2.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

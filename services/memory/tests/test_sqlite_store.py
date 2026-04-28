@@ -129,3 +129,29 @@ def test_sqlite_store_workspace_crud_roundtrip(tmp_path) -> None:
     deleted = store.delete_workspace(created.id)
     assert deleted is True
     assert store.get_workspace(created.id) is None
+
+
+def test_sqlite_store_tasks_can_link_workspace(tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    store = SQLiteMemoryStore(str(db_path))
+    workspace = store.create_workspace(
+        WorkspaceCreate(
+            name="Linked workspace",
+            root_path=str(tmp_path),
+            runtime_mode="native",
+        )
+    )
+    task = store.create_task(
+        TaskCreate(
+            title="Task with workspace",
+            task_type="analysis",
+            workspace_id=workspace.id,
+        )
+    )
+    assert task.workspace_id == workspace.id
+
+    filtered = store.list_tasks(workspace_id=workspace.id)
+    assert len(filtered) == 1
+    assert filtered[0].id == task.id

@@ -18,6 +18,7 @@ export interface TaskCreate {
   title: string;
   task_type: TaskType;
   complexity: ComplexityLevel;
+  workspace_id?: string;
 }
 
 export interface Task {
@@ -26,6 +27,7 @@ export interface Task {
   status: TaskStatus;
   task_type: TaskType;
   complexity: ComplexityLevel;
+  workspace_id?: string;
   created_at: string;
   updated_at: string;
 }

@@ -6,12 +6,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'new',
   task_type TEXT NOT NULL DEFAULT 'analysis',
   complexity TEXT NOT NULL DEFAULT 'medium',
+  workspace_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS task_type TEXT NOT NULL DEFAULT 'analysis';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS complexity TEXT NOT NULL DEFAULT 'medium';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workspace_id UUID;
 
 CREATE TABLE IF NOT EXISTS agent_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -78,6 +80,9 @@ CREATE TABLE IF NOT EXISTS context_bundles (
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
   ON agent_runs (task_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_workspace_id
+  ON tasks (workspace_id);
 
 CREATE INDEX IF NOT EXISTS idx_baton_packets_task_id_created_at
   ON baton_packets (task_id, created_at DESC);

@@ -48,7 +48,7 @@ class FakeClient:
     def list_workspace_files(self, workspace_id: str):
         return {"workspace_id": workspace_id, "files": ["README.md"], "count": 1}
 
-    def list_tasks(self):
+    def list_tasks(self, workspace_id: str | None = None):
         return [
             {
                 "id": "t1",
@@ -227,3 +227,25 @@ def test_open_command_creates_workspace_from_local_path(monkeypatch, tmp_path) -
     assert launched["workspace_id"] == "w2"
     assert launched["workspace_name"] == "demo-repo"
     assert launched["ran"] is True
+
+
+def test_openai_auth_models_command(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class _Store:
+        def load(self):
+            from syncore_cli.openai_auth import OpenAICredentials
+
+            return OpenAICredentials(api_key="sk-test")
+
+    class _ModelsClient:
+        def list_text_models(self, api_key: str):
+            assert api_key == "sk-test"
+            return ["gpt-5.4", "gpt-5.2-codex"]
+
+    monkeypatch.setattr("syncore_cli.main._openai_store", lambda: _Store())
+    monkeypatch.setattr("syncore_cli.main._openai_models_client", lambda config=None: _ModelsClient())
+    result = runner.invoke(app, ["auth", "openai", "models", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["count"] == 2

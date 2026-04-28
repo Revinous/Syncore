@@ -2,6 +2,61 @@
 
 Initial state: repository seeded.
 
+## Autonomy v1 update (April 28, 2026)
+
+Implemented first-class internal autonomy loop in orchestrator so Syncore can execute new tasks from high-level ideas without manual run orchestration.
+
+### Added
+- Internal autonomy service:
+  - evaluates new tasks
+  - applies routing decisions
+  - creates kickoff baton packets
+  - executes runs through existing `/runs/execute` service path
+  - marks task `completed` on success or `blocked` on failure
+  - emits analyst digest metadata event after completion
+- API endpoints:
+  - `POST /autonomy/scan-once`
+  - `POST /autonomy/tasks/{task_id}/run`
+- Background loop (config-gated) wired in app lifespan:
+  - controlled by `AUTONOMY_ENABLED`
+  - cadence via `AUTONOMY_POLL_INTERVAL_SECONDS`
+  - fallback model via `AUTONOMY_DEFAULT_MODEL`
+
+### Validation
+- Added and passed autonomy tests:
+  - `services/orchestrator/tests/test_autonomy.py`
+    - scan-once executes a new task end-to-end
+    - background loop picks up and completes newly created tasks
+- Regression checks passed for orchestrator and CLI/TUI suites.
+
+### Remaining autonomy limitations
+- Planning is still single-pass and deterministic; no multi-step replanning loop yet.
+- No long-running worker queue with retries/backoff policies beyond current flow.
+- No human approval gate between generated plan and execution.
+
+## Autonomy v2 update (April 28, 2026)
+
+Extended autonomy to a staged execution pipeline with retry/backoff safeguards.
+
+### Added
+- Stage-based task progression:
+  - `plan` -> `execute` -> `review` -> finalize
+- Stage events:
+  - `autonomy.stage.completed`
+  - `autonomy.stage.failed`
+  - `autonomy.retry.scheduled`
+- Retry/backoff:
+  - exponential backoff per stage
+  - configurable retry budget before task is set to `blocked`
+
+### Configuration
+- `AUTONOMY_MAX_RETRIES`
+- `AUTONOMY_RETRY_BASE_SECONDS`
+
+### Validation
+- Added and passed retry + blocking coverage in:
+  - `services/orchestrator/tests/test_autonomy.py`
+
 ## Local MVP reachability update (April 26, 2026)
 
 Completed an end-to-end reachability pass focused on the local MVP surface.

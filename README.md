@@ -92,6 +92,11 @@ Key variables:
 - `POSTGRES_DSN` – PostgreSQL DSN for Docker/enterprise mode
 - `REDIS_URL` – redis connection string
 - `REDIS_REQUIRED` – set `false` for native mode without redis
+- `AUTONOMY_ENABLED` – set `true` to auto-process new tasks
+- `AUTONOMY_POLL_INTERVAL_SECONDS` – background loop interval
+- `AUTONOMY_DEFAULT_MODEL` – fallback model when preferences are absent
+- `AUTONOMY_MAX_RETRIES` – max retries per autonomy stage before blocking
+- `AUTONOMY_RETRY_BASE_SECONDS` – exponential backoff base for retries
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.
 
 ## Startup Lanes
@@ -116,6 +121,7 @@ make dev-local
 ```
 
 Native mode initializes SQLite at `.syncore/syncore.db` and does not require Redis by default.
+For autonomous task execution from raw task ideas, set `AUTONOMY_ENABLED=true`.
 
 ## Interfaces
 
@@ -137,6 +143,8 @@ Syncore has two first-class control surfaces that both use the FastAPI orchestra
   - Common commands:
     - `syncore status`
     - `syncore dashboard`
+    - `syncore auth openai login`
+    - `syncore auth openai models`
     - `syncore workspace list`
     - `syncore task list`
     - `syncore open my-app`
@@ -146,7 +154,19 @@ Environment variables used by interfaces:
 - `SYNCORE_API_URL=http://localhost:8000`
 - `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`
 
+OpenAI model access in CLI/TUI:
+- Sign in locally with API key:
+  - `syncore auth openai login`
+- Inspect available models for your account:
+  - `syncore auth openai models`
+- In TUI:
+  - press `i` to connect OpenAI
+  - press `m` to refresh model list
+  - press `n` to create a task and pick a preferred model
+
 Examples:
+- `syncore auth openai login`
+- `syncore auth openai models`
 - `syncore workspace add ./my-app --name my-app`
 - `syncore workspace scan my-app`
 - `syncore task create \"Analyze the auth flow\" --workspace my-app`
@@ -245,6 +265,8 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /diagnostics/config`
 - `GET /diagnostics/routes`
 - `GET /diagnostics/task/{task_id}`
+- `POST /autonomy/scan-once`
+- `POST /autonomy/tasks/{task_id}/run`
 
 ### Example payloads
 

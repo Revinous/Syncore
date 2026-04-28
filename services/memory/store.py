@@ -38,11 +38,11 @@ class MemoryStore:
         with self._cursor() as cursor:
             cursor.execute(
                 """
-                INSERT INTO tasks (title, task_type, complexity)
-                VALUES (%s, %s, %s)
-                RETURNING id, title, status, task_type, complexity, created_at, updated_at
+                INSERT INTO tasks (title, task_type, complexity, workspace_id)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 """,
-                (task.title, task.task_type, task.complexity),
+                (task.title, task.task_type, task.complexity, task.workspace_id),
             )
             row = cursor.fetchone()
 
@@ -55,7 +55,7 @@ class MemoryStore:
         with self._cursor() as cursor:
             cursor.execute(
                 """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
+                SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 FROM tasks
                 WHERE id = %s
                 """,
@@ -68,18 +68,30 @@ class MemoryStore:
 
         return Task.model_validate(row)
 
-    def list_tasks(self, limit: int = 50) -> list[Task]:
+    def list_tasks(self, limit: int = 50, workspace_id: UUID | None = None) -> list[Task]:
         bounded_limit = min(max(limit, 1), 200)
         with self._cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT id, title, status, task_type, complexity, created_at, updated_at
-                FROM tasks
-                ORDER BY created_at DESC
-                LIMIT %s
-                """,
-                (bounded_limit,),
-            )
+            if workspace_id is None:
+                cursor.execute(
+                    """
+                    SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
+                    FROM tasks
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (bounded_limit,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, title, status, task_type, complexity, workspace_id, created_at, updated_at
+                    FROM tasks
+                    WHERE workspace_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (workspace_id, bounded_limit),
+                )
             rows = cursor.fetchall()
 
         return [Task.model_validate(row) for row in rows]
@@ -100,6 +112,9 @@ class MemoryStore:
         if payload.complexity is not None:
             assignments.append("complexity = %s")
             values.append(payload.complexity)
+        if "workspace_id" in payload.model_fields_set:
+            assignments.append("workspace_id = %s")
+            values.append(payload.workspace_id)
 
         if not assignments:
             raise ValueError("At least one field must be provided for task update")
@@ -113,7 +128,7 @@ class MemoryStore:
                 UPDATE tasks
                 SET {", ".join(assignments)}
                 WHERE id = %s
-                RETURNING id, title, status, task_type, complexity, created_at, updated_at
+                RETURNING id, title, status, task_type, complexity, workspace_id, created_at, updated_at
                 """,
                 tuple(values),
             )
