@@ -132,6 +132,8 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
 
     run_result = client.get(f"/agent-runs/{run_id}/result")
     assert run_result.status_code == 200
+    assert run_result.json()["prompt_ref_id"]
+    assert run_result.json()["context_ref_id"]
     assert run_result.json()["output_ref_id"]
     assert isinstance(run_result.json()["output_text"], str)
     assert len(run_result.json()["output_text"]) > 0

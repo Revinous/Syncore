@@ -48,6 +48,9 @@ class AutonomyService:
         max_cycles: int,
         max_total_steps: int,
         review_pass_keyword: str,
+        plan_min_chars: int,
+        execute_min_chars: int,
+        review_min_chars: int,
     ) -> None:
         self._store = store
         self._run_execution_service = run_execution_service
@@ -60,6 +63,9 @@ class AutonomyService:
         self._max_cycles = max(max_cycles, 1)
         self._max_total_steps = max(max_total_steps, 1)
         self._review_pass_keyword = (review_pass_keyword or "PASS").strip()
+        self._plan_min_chars = max(plan_min_chars, 20)
+        self._execute_min_chars = max(execute_min_chars, 40)
+        self._review_min_chars = max(review_min_chars, 20)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
@@ -76,6 +82,9 @@ class AutonomyService:
             max_cycles=settings.autonomy_max_cycles,
             max_total_steps=settings.autonomy_max_total_steps,
             review_pass_keyword=settings.autonomy_review_pass_keyword,
+            plan_min_chars=settings.autonomy_plan_min_chars,
+            execute_min_chars=settings.autonomy_execute_min_chars,
+            review_min_chars=settings.autonomy_review_min_chars,
         )
 
     def process_pending_tasks_once(self, limit: int = 50) -> list[AutonomyResult]:
@@ -189,6 +198,10 @@ class AutonomyService:
 
         try:
             run = self._run_execution_service.execute(request)
+            quality_ok, quality_reason = self._stage_quality_gate(
+                stage=next_stage,
+                output_text=run.output_text,
+            )
             self._store.save_project_event(
                 ProjectEventCreate(
                     task_id=task_id,
@@ -202,6 +215,52 @@ class AutonomyService:
                     },
                 )
             )
+            if not quality_ok:
+                if cycle >= self._max_cycles:
+                    self._store.update_task(task_id, TaskUpdate(status="blocked"))
+                    self._store.save_project_event(
+                        ProjectEventCreate(
+                            task_id=task_id,
+                            event_type="autonomy.failed",
+                            event_data={
+                                "stage": next_stage,
+                                "cycle": cycle,
+                                "error": quality_reason,
+                            },
+                        )
+                    )
+                    return AutonomyResult(
+                        task_id=task_id,
+                        status="failed",
+                        run_id=run.run_id,
+                        note=f"Quality gate failed at '{next_stage}' and max cycles reached.",
+                    )
+                next_cycle = cycle + 1
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.quality.failed",
+                        event_data={
+                            "stage": next_stage,
+                            "cycle": cycle,
+                            "reason": quality_reason,
+                            "next_cycle": next_cycle,
+                        },
+                    )
+                )
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.cycle.started",
+                        event_data={"cycle": next_cycle, "mode": "replan"},
+                    )
+                )
+                return AutonomyResult(
+                    task_id=task_id,
+                    status="replanning",
+                    run_id=run.run_id,
+                    note=f"Quality gate failed at '{next_stage}'; moved to cycle {next_cycle}.",
+                )
 
             if next_stage == "review":
                 review_failed = (
@@ -584,6 +643,18 @@ class AutonomyService:
         if stage == "execute":
             return _normalize_agent_role(execute_role)
         return "reviewer"
+
+    def _stage_quality_gate(self, *, stage: str, output_text: str) -> tuple[bool, str]:
+        text = (output_text or "").strip()
+        minimum = self._execute_min_chars
+        if stage == "plan":
+            minimum = self._plan_min_chars
+        elif stage == "review":
+            minimum = self._review_min_chars
+
+        if len(text) < minimum:
+            return False, f"Output too short for stage '{stage}' ({len(text)} < {minimum})."
+        return True, ""
 
     def _persist_autonomy_baton(self, *, task: Task, routing_worker: str) -> None:
         self._store.save_baton_packet(

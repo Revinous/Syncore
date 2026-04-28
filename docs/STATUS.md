@@ -2,6 +2,49 @@
 
 Initial state: repository seeded.
 
+## Phase continuation update (April 28, 2026, pass 2)
+
+Implemented the next items in the production-readiness backlog:
+
+### Autonomy v3 quality gates (deeper loop intelligence)
+- Added stage-level minimum-output quality gates:
+  - `AUTONOMY_PLAN_MIN_CHARS`
+  - `AUTONOMY_EXECUTE_MIN_CHARS`
+  - `AUTONOMY_REVIEW_MIN_CHARS`
+- When a stage output fails quality gate:
+  - emits `autonomy.quality.failed`
+  - automatically starts next cycle with `autonomy.cycle.started` (`mode=replan`)
+  - blocks task at max cycle cap
+
+### Artifact/result persistence expansion
+- Expanded run artifact persistence beyond output:
+  - full prompt snapshot stored as `run_prompt` context reference
+  - rendered optimized context stored as `run_context_rendered` context reference
+  - output remains stored as `run_output` context reference
+- Run start/completion events now include reference IDs.
+- `GET /agent-runs/{run_id}/result` now returns:
+  - `prompt_ref_id`
+  - `context_ref_id`
+  - `output_ref_id`
+  - full output + retrieval hint
+
+### Migration lifecycle (Alembic)
+- Added Alembic framework under `services/orchestrator/alembic/`:
+  - `alembic.ini`
+  - `env.py` with sqlite/postgres URL resolution from env
+  - baseline migration revision
+- Added Make targets:
+  - `make db-migrate`
+  - `make db-revision m=\"...\"`
+
+### Metrics/SLO hardening (first cut)
+- Added `/metrics` endpoint with Prometheus text output.
+- Added request counters/error-rate/latency aggregates in observability middleware.
+
+### Validation
+- `make check` passed.
+- `make local-test` passed.
+
 ## Phase continuation update (April 28, 2026)
 
 Implemented result durability and retrieval so executed runs are inspectable end-to-end, and not only visible as truncated summaries.

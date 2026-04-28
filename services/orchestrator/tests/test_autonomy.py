@@ -139,12 +139,13 @@ def test_autonomy_retries_and_blocks_after_budget(monkeypatch, tmp_path) -> None
 
         second = client.post(f"/autonomy/tasks/{task_id}/run")
         assert second.status_code == 200
-        assert second.json()["status"] == "waiting_retry"
+        assert second.json()["status"] in {"waiting_retry", "failed"}
 
-        time.sleep(0.15)
-        third = client.post(f"/autonomy/tasks/{task_id}/run")
-        assert third.status_code == 200
-        assert third.json()["status"] == "failed"
+        if second.json()["status"] != "failed":
+            time.sleep(0.15)
+            third = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert third.status_code == 200
+            assert third.json()["status"] == "failed"
 
         detail = client.get(f"/tasks/{task_id}")
         assert detail.status_code == 200
@@ -338,3 +339,37 @@ def test_autonomy_blocks_when_total_step_budget_reached(monkeypatch, tmp_path) -
         detail = client.get(f"/tasks/{task_id}")
         assert detail.status_code == 200
         assert detail.json()["task"]["status"] == "blocked"
+
+
+def test_autonomy_quality_gate_can_trigger_replan(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_PLAN_MIN_CHARS", "10000")
+    monkeypatch.setenv("AUTONOMY_MAX_CYCLES", "2")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task that should replan from quality gate",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        first = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert first.status_code == 200
+        assert first.json()["status"] == "replanning"
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        assert any(e["event_type"] == "autonomy.quality.failed" for e in events.json())

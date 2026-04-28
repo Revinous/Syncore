@@ -10,6 +10,8 @@ class AgentRunResult(BaseModel):
     task_id: UUID
     status: str
     output_summary: str | None = None
+    prompt_ref_id: str | None = None
+    context_ref_id: str | None = None
     output_ref_id: str | None = None
     output_text: str | None = None
     retrieval_hint: str | None = None
@@ -41,7 +43,22 @@ class AgentRunService:
             return None
 
         output_ref_id: str | None = None
+        prompt_ref_id: str | None = None
+        context_ref_id: str | None = None
         events = self._store.list_project_events(task_id=run.task_id, limit=500)
+        for event in reversed(events):
+            if event.event_type != "run.started":
+                continue
+            if str(event.event_data.get("run_id") or "") not in {"", str(run_id)}:
+                continue
+            prompt_candidate = str(event.event_data.get("prompt_ref_id") or "").strip()
+            context_candidate = str(event.event_data.get("context_ref_id") or "").strip()
+            if prompt_candidate:
+                prompt_ref_id = prompt_candidate
+            if context_candidate:
+                context_ref_id = context_candidate
+            break
+
         for event in reversed(events):
             if event.event_type != "run.output.stored":
                 continue
@@ -65,6 +82,8 @@ class AgentRunService:
             task_id=run.task_id,
             status=run.status,
             output_summary=run.output_summary,
+            prompt_ref_id=prompt_ref_id,
+            context_ref_id=context_ref_id,
             output_ref_id=output_ref_id,
             output_text=output_text,
             retrieval_hint=retrieval_hint,

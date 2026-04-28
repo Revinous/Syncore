@@ -72,6 +72,18 @@ class RunExecutionService:
         )
         provider_name, provider = self._resolve_provider(payload.provider)
         prompt = self._build_prompt(payload.prompt, optimized_bundle.optimized_context)
+        prompt_ref_id = self._store_text_reference(
+            task_id=payload.task_id,
+            content_type="run_prompt",
+            content_text=prompt,
+            retrieval_hint="Full worker prompt snapshot for this run.",
+        )
+        context_ref_id = self._store_text_reference(
+            task_id=payload.task_id,
+            content_type="run_context_rendered",
+            content_text=str(optimized_bundle.optimized_context.get("rendered_prompt", "")),
+            retrieval_hint="Rendered optimized context used for this run.",
+        )
 
         run = self._store.create_agent_run(
             AgentRunCreate(
@@ -87,9 +99,12 @@ class RunExecutionService:
             task_id=payload.task_id,
             event_type="run.started",
             event_data={
+                "run_id": str(run.id),
                 "provider": provider_name,
                 "target_model": payload.target_model,
                 "target_agent": payload.target_agent,
+                "prompt_ref_id": prompt_ref_id,
+                "context_ref_id": context_ref_id,
             },
         )
 
@@ -173,6 +188,18 @@ class RunExecutionService:
         )
         provider_name, provider = self._resolve_provider(payload.provider)
         prompt = self._build_prompt(payload.prompt, optimized_bundle.optimized_context)
+        prompt_ref_id = self._store_text_reference(
+            task_id=payload.task_id,
+            content_type="run_prompt",
+            content_text=prompt,
+            retrieval_hint="Full worker prompt snapshot for this run.",
+        )
+        context_ref_id = self._store_text_reference(
+            task_id=payload.task_id,
+            content_type="run_context_rendered",
+            content_text=str(optimized_bundle.optimized_context.get("rendered_prompt", "")),
+            retrieval_hint="Rendered optimized context used for this run.",
+        )
 
         run = self._store.create_agent_run(
             AgentRunCreate(
@@ -188,9 +215,12 @@ class RunExecutionService:
             task_id=payload.task_id,
             event_type="run.started",
             event_data={
+                "run_id": str(run.id),
                 "provider": provider_name,
                 "target_model": payload.target_model,
                 "target_agent": payload.target_agent,
+                "prompt_ref_id": prompt_ref_id,
+                "context_ref_id": context_ref_id,
             },
         )
 
@@ -352,6 +382,28 @@ class RunExecutionService:
             },
         )
         return ref_id
+
+    def _store_text_reference(
+        self,
+        *,
+        task_id: UUID,
+        content_type: str,
+        content_text: str,
+        retrieval_hint: str,
+    ) -> str:
+        if not content_text.strip():
+            return ""
+        summary = shorten(" ".join(content_text.split()), width=220, placeholder=" ...")
+        ref_id = build_ref_id(task_id, content_type, content_text)
+        record = self._store.upsert_context_reference(
+            ref_id=ref_id,
+            task_id=task_id,
+            content_type=content_type,
+            original_content=content_text,
+            summary=summary,
+            retrieval_hint=retrieval_hint,
+        )
+        return str(record["ref_id"])
 
 
 def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:

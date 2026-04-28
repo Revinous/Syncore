@@ -202,7 +202,7 @@ def test_execute_uses_context_and_marks_run_completed() -> None:
     assert any(event["event_type"] == "run.started" for event in store.events)
     assert any(event["event_type"] == "run.completed" for event in store.events)
     assert any(event["event_type"] == "run.output.stored" for event in store.events)
-    assert len(store.context_refs) == 1
+    assert len(store.context_refs) >= 3
 
 
 def test_execute_marks_failed_on_provider_error() -> None:

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     autonomy_max_cycles: int = 2
     autonomy_max_total_steps: int = 12
     autonomy_review_pass_keyword: str = "PASS"
+    autonomy_plan_min_chars: int = 80
+    autonomy_execute_min_chars: int = 120
+    autonomy_review_min_chars: int = 80
     api_auth_enabled: bool = False
     api_auth_token: str | None = None
     rate_limit_enabled: bool = False

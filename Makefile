@@ -1,6 +1,6 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
 	install-local db-local-init dev-local bootstrap-local local-test \
-	install-cli cli-status tui web ui-check
+	install-cli cli-status tui web ui-check db-migrate db-revision
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -22,6 +22,12 @@ local-test:
 	PYTHONPATH=services/orchestrator:. SYNCORE_DB_BACKEND=sqlite \
 	SQLITE_DB_PATH=.syncore/test.db REDIS_REQUIRED=false \
 	python3 -m pytest services/orchestrator/tests services/memory/tests -q
+
+db-migrate:
+	cd services/orchestrator && ../../.venv/bin/alembic -c alembic.ini upgrade head
+
+db-revision:
+	cd services/orchestrator && ../../.venv/bin/alembic -c alembic.ini revision --autogenerate -m "$(m)"
 
 install-cli:
 	cd apps/cli && uv pip install --python ../../.venv/bin/python -e .

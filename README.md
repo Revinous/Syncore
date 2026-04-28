@@ -97,6 +97,10 @@ Key variables:
 - `AUTONOMY_DEFAULT_MODEL` – fallback model when preferences are absent
 - `AUTONOMY_MAX_RETRIES` – max retries per autonomy stage before blocking
 - `AUTONOMY_RETRY_BASE_SECONDS` – exponential backoff base for retries
+- `AUTONOMY_MAX_CYCLES` – max replan cycles before blocking
+- `AUTONOMY_MAX_TOTAL_STEPS` – hard cap on total autonomy stage attempts
+- `AUTONOMY_REVIEW_PASS_KEYWORD` – review pass token required by gate
+- `AUTONOMY_PLAN_MIN_CHARS` / `AUTONOMY_EXECUTE_MIN_CHARS` / `AUTONOMY_REVIEW_MIN_CHARS` – stage output quality gates
 - `API_AUTH_ENABLED` / `API_AUTH_TOKEN` – optional API key protection (`x-api-key`)
 - `RATE_LIMIT_ENABLED` / `RATE_LIMIT_WINDOW_SECONDS` / `RATE_LIMIT_MAX_REQUESTS` – optional request throttling
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.
@@ -202,6 +206,7 @@ make db-local-init  # initialize sqlite schema at SQLITE_DB_PATH
 make dev-local      # run orchestrator + web without Docker
 make bootstrap-local # install-local + db-local-init
 make local-test     # run backend tests with sqlite backend env
+make db-migrate     # apply Alembic migrations (native/docker based on env)
 make up             # docker compose up -d --build
 make down           # docker compose down
 make logs           # tail compose logs
@@ -225,6 +230,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 
 - `GET /health`
 - `GET /health/services`
+- `GET /metrics`
 - `GET /dashboard/summary`
 - `POST /tasks`
 - `GET /tasks`
@@ -273,6 +279,22 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `POST /autonomy/tasks/{task_id}/run`
 - `POST /autonomy/tasks/{task_id}/approve`
 - `POST /autonomy/tasks/{task_id}/reject`
+
+## Migration Lifecycle (Alembic)
+
+Syncore now supports an Alembic migration lifecycle in `services/orchestrator/alembic`.
+
+Run migrations:
+
+```bash
+make db-migrate
+```
+
+Generate a new revision:
+
+```bash
+make db-revision m="add_new_table"
+```
 
 ### Example payloads
 
