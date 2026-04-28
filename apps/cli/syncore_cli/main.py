@@ -128,6 +128,16 @@ def _resolve_or_create_workspace(
     )
 
 
+def _latest_model_switch(events: list[dict[str, object]]) -> dict[str, object] | None:
+    for event in reversed(events):
+        if str(event.get("event_type")) != "model.switch.completed":
+            continue
+        event_data = event.get("event_data")
+        if isinstance(event_data, dict):
+            return event_data
+    return None
+
+
 def _ensure_api_running(config) -> None:
     client = _client(config)
     try:
@@ -487,6 +497,7 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
         "recent_events": events,
         "latest_baton": baton,
         "digest": digest,
+        "latest_model_switch": _latest_model_switch(events),
     }
     if json_output:
         print_json(payload)

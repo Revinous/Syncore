@@ -24,11 +24,21 @@ class TaskModelSwitchResult(BaseModel):
     context_bundle_id: UUID
     estimated_token_count: int = Field(ge=0)
     included_refs: list[str] = Field(default_factory=list)
+    continuity_status: str = "preserved"
+    continuity_notes: list[str] = Field(default_factory=list)
 
 
 class TaskService:
-    def __init__(self, store: MemoryStoreProtocol) -> None:
+    def __init__(
+        self,
+        store: MemoryStoreProtocol,
+        *,
+        configured_providers: set[str] | None = None,
+        provider_model_hints: dict[str, str] | None = None,
+    ) -> None:
         self._store = store
+        self._configured_providers = configured_providers or {"local_echo"}
+        self._provider_model_hints = provider_model_hints or {}
 
     def create_task(self, payload: TaskCreate) -> Task:
         if (
@@ -84,9 +94,21 @@ class TaskService:
             raise ValueError("provider is required")
         if not model_norm:
             raise ValueError("model is required")
+        if provider_norm not in self._configured_providers:
+            providers = ", ".join(sorted(self._configured_providers))
+            raise ValueError(
+                f"Provider '{provider_norm}' is not configured. Available: {providers}"
+            )
+        self._validate_model_for_provider(provider=provider_norm, model=model_norm)
 
         events = self._store.list_project_events(task_id=task_id, limit=500)
         previous_provider, previous_model, current_prefs = self._latest_preferences(events)
+        continuity_status, continuity_notes = self._continuity_notes(
+            previous_provider=previous_provider,
+            previous_model=previous_model,
+            next_provider=provider_norm,
+            next_model=model_norm,
+        )
         next_prefs = dict(current_prefs)
         next_prefs["preferred_provider"] = provider_norm
         next_prefs["preferred_model"] = model_norm
@@ -122,6 +144,7 @@ class TaskService:
                     "to_model": model_norm,
                     "target_agent": target_agent,
                     "context_bundle_id": str(optimized.bundle_id),
+                    "continuity_status": continuity_status,
                 },
             )
         )
@@ -137,6 +160,8 @@ class TaskService:
             context_bundle_id=optimized.bundle_id,
             estimated_token_count=optimized.estimated_token_count,
             included_refs=optimized.included_refs,
+            continuity_status=continuity_status,
+            continuity_notes=continuity_notes,
         )
 
     def _latest_preferences(
@@ -151,3 +176,39 @@ class TaskService:
             model = str(prefs.get("preferred_model") or "").strip() or None
             return provider, model, prefs
         return None, None, {}
+
+    def _validate_model_for_provider(self, *, provider: str, model: str) -> None:
+        lowered = model.lower()
+        if provider == "local_echo" and lowered != "local_echo":
+            raise ValueError("local_echo provider only supports model 'local_echo'.")
+        if provider == "openai" and not lowered.startswith(("gpt", "o1", "o3", "o4")):
+            raise ValueError("OpenAI model should start with gpt/o1/o3/o4.")
+        if provider == "anthropic" and "claude" not in lowered:
+            raise ValueError("Anthropic model should contain 'claude'.")
+        if provider == "gemini" and "gemini" not in lowered:
+            raise ValueError("Gemini model should contain 'gemini'.")
+
+    def _continuity_notes(
+        self,
+        *,
+        previous_provider: str | None,
+        previous_model: str | None,
+        next_provider: str,
+        next_model: str,
+    ) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        if previous_provider is None and previous_model is None:
+            notes.append("First explicit provider/model selection for this task.")
+            return "initialized", notes
+        if previous_provider == next_provider and previous_model == next_model:
+            notes.append("Provider/model unchanged; continuity fully preserved.")
+            return "unchanged", notes
+        if previous_provider != next_provider:
+            notes.append(
+                f"Cross-provider switch: {previous_provider or '-'} -> {next_provider}."
+            )
+            notes.append("Context bundle reassembled to preserve task continuity.")
+            return "cross_provider_switched", notes
+        notes.append(f"Intra-provider model switch: {previous_model or '-'} -> {next_model}.")
+        notes.append("Context bundle reassembled for the new model.")
+        return "model_switched", notes

@@ -369,6 +369,7 @@ class SyncoreTuiApp(App[None]):
         self._task_routing: dict[str, Any] | None = None
         self._task_digest: dict[str, Any] | None = None
         self._task_preferences: dict[str, str] = {}
+        self._latest_model_switch: dict[str, Any] | None = None
         self._last_scan: dict[str, Any] | None = None
         self._last_view: str | None = None
         self._available_models: list[str] = list(PROVIDER_MODEL_CATALOG["local_echo"])
@@ -549,6 +550,7 @@ class SyncoreTuiApp(App[None]):
             self._task_routing = None
             self._task_digest = None
             self._task_preferences = {}
+            self._latest_model_switch = None
             return
 
         task_id = str(task.get("id"))
@@ -570,6 +572,7 @@ class SyncoreTuiApp(App[None]):
             lambda: self._client.get_task_digest(task_id), None
         )
         self._task_preferences = self._extract_task_preferences(self._task_events)
+        self._latest_model_switch = self._extract_latest_model_switch(self._task_events)
 
     def _latest_by_timestamp(
         self, records: list[dict[str, Any]], field: str = "updated_at"
@@ -598,6 +601,17 @@ class SyncoreTuiApp(App[None]):
                 "requires_approval": requires_approval,
             }
         return {}
+
+    def _extract_latest_model_switch(
+        self, events: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        for event in reversed(events):
+            if str(event.get("event_type")) != "model.switch.completed":
+                continue
+            data = event.get("event_data")
+            if isinstance(data, dict):
+                return data
+        return None
 
     def _render_left_pane(self) -> str:
         if self.current_view == "dashboard":
@@ -665,6 +679,21 @@ class SyncoreTuiApp(App[None]):
                     f"model={self._task_preferences.get('preferred_model', '-')}",
                     f"agent={self._task_preferences.get('preferred_agent_role', '-')}",
                     f"requires_approval={self._task_preferences.get('requires_approval', '-')}",
+                ]
+            )
+        if self._latest_model_switch:
+            lines.extend(
+                [
+                    "",
+                    "Latest model switch:",
+                    (
+                        f"{self._latest_model_switch.get('from_provider', '-')}/"
+                        f"{self._latest_model_switch.get('from_model', '-')} -> "
+                        f"{self._latest_model_switch.get('to_provider', '-')}/"
+                        f"{self._latest_model_switch.get('to_model', '-')}"
+                    ),
+                    f"bundle={self._latest_model_switch.get('context_bundle_id', '-')}",
+                    f"continuity={self._latest_model_switch.get('continuity_status', '-')}",
                 ]
             )
         return "\n".join(lines)

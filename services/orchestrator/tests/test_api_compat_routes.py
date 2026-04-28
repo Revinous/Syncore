@@ -32,6 +32,9 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
     monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
     monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
 
     client = TestClient(create_app())
 
@@ -75,14 +78,24 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
         client.post(
             f"/tasks/{task_id}/model-switch",
             json={
-                "provider": "openai",
-                "model": "gpt-5.4",
+                "provider": "local_echo",
+                "model": "local_echo",
                 "target_agent": "coder",
                 "token_budget": 1600,
             },
         ).status_code
         == 200
     )
+    denied = client.post(
+        f"/tasks/{task_id}/model-switch",
+        json={
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "target_agent": "coder",
+            "token_budget": 1600,
+        },
+    )
+    assert denied.status_code == 400
     assert client.get("/agent-runs").status_code == 200
     assert client.get(f"/agent-runs/{run_id}").status_code == 200
     assert client.get(f"/agent-runs/{run_id}/result").status_code == 200

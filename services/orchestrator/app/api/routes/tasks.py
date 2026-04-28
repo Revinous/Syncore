@@ -12,7 +12,22 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 def get_task_service(settings: Settings = Depends(get_settings)) -> TaskService:
-    return TaskService(build_memory_store(settings))
+    configured = {"local_echo"}
+    hints = {"local_echo": "local_echo"}
+    if (settings.openai_api_key or "").strip():
+        configured.add("openai")
+        hints["openai"] = "gpt-5.4"
+    if (settings.anthropic_api_key or "").strip():
+        configured.add("anthropic")
+        hints["anthropic"] = "claude-3-7-sonnet-latest"
+    if (settings.gemini_api_key or "").strip():
+        configured.add("gemini")
+        hints["gemini"] = "gemini-2.5-pro"
+    return TaskService(
+        build_memory_store(settings),
+        configured_providers=configured,
+        provider_model_hints=hints,
+    )
 
 
 @router.post("", response_model=Task, status_code=201)
