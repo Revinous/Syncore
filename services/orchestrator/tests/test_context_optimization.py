@@ -207,6 +207,41 @@ def test_large_content_replaced_with_retrievable_reference() -> None:
     assert "log line 699 lorem ipsum dolor sit amet" in recovered.original_content
 
 
+def test_error_like_stderr_is_treated_as_log_and_compressed() -> None:
+    task = _build_task()
+    huge_stderr = "\n".join(
+        [
+            "Traceback: ValueError at step 4",
+            "ERROR: critical failure in pipeline",
+            *[f"stderr line {idx} repetitive payload block" for idx in range(1500)],
+        ]
+    )
+    store = InMemoryContextStore(
+        task=task,
+        baton_packets=[_build_baton(task.id, ["Keep hard constraints verbatim"])],
+        events=[
+            _build_event(
+                task.id,
+                event_type="tool.exec.stderr",
+                event_data={"stderr": huge_stderr, "command": "pytest -q"},
+            )
+        ],
+    )
+    service = ContextService(store)  # type: ignore[arg-type]
+
+    bundle = service.assemble_optimized_context(
+        task_id=task.id,
+        target_agent="coder",
+        target_model="gpt-4o-mini",
+        token_budget=1200,
+    )
+
+    assert bundle.included_refs
+    rendered = bundle.optimized_context["rendered_prompt"]
+    assert "stderr line 1499" not in rendered
+    assert "ctxref_" in rendered
+
+
 def test_optimized_context_stays_under_budget() -> None:
     task = _build_task()
     noisy_events = [

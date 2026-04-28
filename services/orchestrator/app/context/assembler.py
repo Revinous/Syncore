@@ -182,10 +182,12 @@ class ContextAssembler:
     def _event_section(self, event: ProjectEvent, *, index: int, total: int) -> ContextSection:
         serialized = json.dumps(event.event_data, sort_keys=True, ensure_ascii=True)
         section_type = self._classify_event_type(event.event_type, event.event_data, serialized)
-        is_critical = section_type in {"constraint", "error", "schema", "code_patch"} or (
-            self._contains_critical_marker(event.event_type)
-            or self._contains_critical_marker(serialized)
-        )
+        is_critical = section_type in {"constraint", "error", "schema", "code_patch"}
+        if section_type not in {"log_output", "tool_output", "file_content"}:
+            is_critical = is_critical or (
+                self._contains_critical_marker(event.event_type)
+                or self._contains_critical_marker(serialized)
+            )
         priority = 40 + int((index / max(total, 1)) * 30)
         content = "\n".join(
             [
@@ -244,12 +246,12 @@ class ContextAssembler:
             key in keys for key in ("patch", "diff", "active_patch")
         ):
             return "code_patch"
-        if any(marker in lower_payload for marker in ("traceback", "exception", "error:")):
-            return "error"
         if any(key in keys for key in ("stdout", "stderr", "log", "logs")):
             return "log_output"
         if any(key in keys for key in ("tool_output", "output", "command_output")):
             return "tool_output"
         if any(key in keys for key in ("file_content", "file_dump", "source_blob")):
             return "file_content"
+        if any(marker in lower_payload for marker in ("traceback", "exception", "error:")):
+            return "error"
         return "project_event"
