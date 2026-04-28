@@ -8,7 +8,8 @@ from packages.contracts.python.models import (
     RunStreamEvent,
 )
 
-from app.api.routes.runs import execute_run, execute_run_stream
+from app.api.routes.runs import execute_run, execute_run_stream, list_provider_capabilities
+from app.runs.providers import ProviderCapabilities
 
 
 class FakeRunExecutionService:
@@ -38,6 +39,18 @@ class FakeRunExecutionService:
         yield RunStreamEvent(event="chunk", content="part-1")
         yield RunStreamEvent(event="completed", estimated_output_tokens=20)
 
+    def list_provider_capabilities(self):
+        return [
+            ProviderCapabilities(
+                provider="local_echo",
+                supports_streaming=True,
+                supports_system_prompt=True,
+                supports_temperature=True,
+                supports_max_tokens=True,
+                model_hint="local_echo",
+            )
+        ]
+
 
 def test_execute_run_route_function_returns_response() -> None:
     request = RunExecutionRequest(
@@ -63,3 +76,9 @@ def test_execute_run_stream_route_returns_streaming_response() -> None:
     response = execute_run_stream(request, service=FakeRunExecutionService())  # type: ignore[arg-type]
     assert isinstance(response, StreamingResponse)
     assert response.media_type == "text/event-stream"
+
+
+def test_list_provider_capabilities_route_returns_rows() -> None:
+    payload = list_provider_capabilities(service=FakeRunExecutionService())  # type: ignore[arg-type]
+    assert len(payload) == 1
+    assert payload[0].provider == "local_echo"

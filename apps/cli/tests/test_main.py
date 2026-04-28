@@ -134,6 +134,16 @@ class FakeClient:
     def diagnostics_routes(self):
         return {"routes": ["GET /health"]}
 
+    def list_run_providers(self):
+        return [
+            {
+                "provider": "local_echo",
+                "model_hint": "local_echo",
+                "supports_streaming": True,
+                "supports_system_prompt": True,
+            }
+        ]
+
 
 class OfflineClient(FakeClient):
     def health(self):
@@ -307,3 +317,12 @@ def test_task_switch_model_json(monkeypatch) -> None:
     assert payload["task_id"] == "t1"
     assert payload["preferred_provider"] == "openai"
     assert payload["preferred_model"] == "gpt-5.4"
+
+
+def test_providers_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["providers", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload[0]["provider"] == "local_echo"

@@ -179,6 +179,7 @@ Examples:
 - `syncore task switch-model TASK_ID --provider openai --model gpt-5.4`
 - `syncore run start TASK_ID --agent-role backend`
 - `syncore run result RUN_ID`
+- `syncore providers`
 - `syncore open my-app`
 - `syncore my-app` (shortcut for `syncore open my-app`)
 - `syncore tui`
@@ -259,6 +260,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /tasks/{task_id}/routing`
 - `POST /runs/execute`
 - `POST /runs/execute/stream`
+- `GET /runs/providers`
 - `POST /memory/lookup`
 - `GET /context/{task_id}`
 - `POST /context/assemble`

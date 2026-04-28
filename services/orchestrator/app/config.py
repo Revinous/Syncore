@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com"
     openai_timeout_seconds: int = 60
+    anthropic_api_key: str | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_api_version: str = "2023-06-01"
+    gemini_api_key: str | None = None
+    gemini_base_url: str = "https://generativelanguage.googleapis.com"
+    provider_failover_enabled: bool = True
+    provider_fallback_order: str = "openai,anthropic,gemini,local_echo"
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
     autonomy_default_model: str = "local_echo"

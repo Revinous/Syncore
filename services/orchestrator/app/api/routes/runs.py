@@ -3,11 +3,21 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from packages.contracts.python.models import RunExecutionRequest, RunExecutionResponse
+from pydantic import BaseModel
 
 from app.config import Settings, get_settings
 from app.services.run_execution_service import RunExecutionService
 
 router = APIRouter(prefix="/runs", tags=["runs"])
+
+
+class ProviderCapabilityResponse(BaseModel):
+    provider: str
+    supports_streaming: bool
+    supports_system_prompt: bool
+    supports_temperature: bool
+    supports_max_tokens: bool
+    model_hint: str
 
 
 def get_run_execution_service(settings: Settings = Depends(get_settings)) -> RunExecutionService:
@@ -51,3 +61,13 @@ def execute_run_stream(
             yield f"event: error\ndata: {json.dumps(payload_data)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/providers", response_model=list[ProviderCapabilityResponse])
+def list_provider_capabilities(
+    service: RunExecutionService = Depends(get_run_execution_service),
+) -> list[ProviderCapabilityResponse]:
+    return [
+        ProviderCapabilityResponse(**item.__dict__)
+        for item in service.list_provider_capabilities()
+    ]

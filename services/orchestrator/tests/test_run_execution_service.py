@@ -189,6 +189,8 @@ def test_execute_uses_context_and_marks_run_completed() -> None:
         context_service=context_service,  # type: ignore[arg-type]
         providers={"fake": provider},
         default_provider="fake",
+        failover_enabled=True,
+        fallback_order=["fake"],
     )
 
     result = service.execute(_request(task_id))
@@ -216,6 +218,8 @@ def test_execute_marks_failed_on_provider_error() -> None:
         context_service=context_service,  # type: ignore[arg-type]
         providers={"fake": provider},
         default_provider="fake",
+        failover_enabled=True,
+        fallback_order=["fake"],
     )
 
     with pytest.raises(RuntimeError):
@@ -235,6 +239,8 @@ def test_stream_execute_emits_started_chunks_and_completed() -> None:
         context_service=context_service,  # type: ignore[arg-type]
         providers={"fake": provider},
         default_provider="fake",
+        failover_enabled=True,
+        fallback_order=["fake"],
     )
 
     events = list(service.stream_execute(_request(task_id)))
@@ -242,3 +248,25 @@ def test_stream_execute_emits_started_chunks_and_completed() -> None:
     assert any(event.event == "chunk" for event in events)
     assert events[-1].event == "completed"
     assert any(run.status == "completed" for run in store.runs.values())
+
+
+def test_execute_failover_uses_secondary_provider() -> None:
+    task_id = uuid4()
+    store = FakeStore(task_id=task_id)
+    primary = FakeProvider()
+    primary.should_fail = True
+    secondary = FakeProvider()
+    context_service = FakeContextService(task_id=task_id)
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"primary": primary, "secondary": secondary},
+        default_provider="primary",
+        failover_enabled=True,
+        fallback_order=["secondary"],
+    )
+
+    payload = _request(task_id).model_copy(update={"provider": "primary"})
+    result = service.execute(payload)
+    assert result.status == "completed"
+    assert result.provider == "secondary"

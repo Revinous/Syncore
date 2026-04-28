@@ -20,7 +20,14 @@ from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
 from app.context.retrieval_refs import build_ref_id, estimate_tokens
-from app.runs.providers import LlmProvider, LocalEchoProvider, OpenAIChatCompletionsProvider
+from app.runs.providers import (
+    AnthropicMessagesProvider,
+    GeminiGenerateContentProvider,
+    LlmProvider,
+    LocalEchoProvider,
+    OpenAIChatCompletionsProvider,
+    ProviderCapabilities,
+)
 from app.services.context_service import ContextService
 
 
@@ -32,11 +39,15 @@ class RunExecutionService:
         context_service: ContextService,
         providers: dict[str, LlmProvider],
         default_provider: str,
+        failover_enabled: bool,
+        fallback_order: list[str],
     ) -> None:
         self._store = store
         self._context_service = context_service
         self._providers = providers
         self._default_provider = default_provider
+        self._failover_enabled = failover_enabled
+        self._fallback_order = fallback_order
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RunExecutionService":
@@ -56,11 +67,33 @@ class RunExecutionService:
                 base_url=settings.openai_base_url,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
+        anthropic_api_key = (settings.anthropic_api_key or "").strip()
+        if anthropic_api_key:
+            providers["anthropic"] = AnthropicMessagesProvider(
+                api_key=anthropic_api_key,
+                base_url=settings.anthropic_base_url,
+                api_version=settings.anthropic_api_version,
+                timeout_seconds=settings.openai_timeout_seconds,
+            )
+        gemini_api_key = (settings.gemini_api_key or "").strip()
+        if gemini_api_key:
+            providers["gemini"] = GeminiGenerateContentProvider(
+                api_key=gemini_api_key,
+                base_url=settings.gemini_base_url,
+                timeout_seconds=settings.openai_timeout_seconds,
+            )
+        fallback_order = [
+            p.strip().lower()
+            for p in settings.provider_fallback_order.split(",")
+            if p.strip()
+        ]
         return cls(
             store=store,
             context_service=context_service,
             providers=providers,
             default_provider=settings.default_llm_provider,
+            failover_enabled=settings.provider_failover_enabled,
+            fallback_order=fallback_order,
         )
 
     def execute(self, payload: RunExecutionRequest) -> RunExecutionResponse:
@@ -70,7 +103,6 @@ class RunExecutionService:
             target_model=payload.target_model,
             token_budget=payload.token_budget,
         )
-        provider_name, provider = self._resolve_provider(payload.provider)
         prompt = self._build_prompt(payload.prompt, optimized_bundle.optimized_context)
         prompt_ref_id = self._store_text_reference(
             task_id=payload.task_id,
@@ -95,12 +127,16 @@ class RunExecutionService:
                 ),
             )
         )
+        provider_candidates = self._provider_candidates(payload.provider)
+        requested_provider = (
+            provider_candidates[0] if provider_candidates else self._default_provider
+        )
         self._record_event(
             task_id=payload.task_id,
             event_type="run.started",
             event_data={
                 "run_id": str(run.id),
-                "provider": provider_name,
+                "provider": requested_provider,
                 "target_model": payload.target_model,
                 "target_agent": payload.target_agent,
                 "prompt_ref_id": prompt_ref_id,
@@ -109,13 +145,7 @@ class RunExecutionService:
         )
 
         try:
-            result = provider.complete(
-                model=payload.target_model,
-                prompt=prompt,
-                system_prompt=payload.system_prompt,
-                max_output_tokens=payload.max_output_tokens,
-                temperature=payload.temperature,
-            )
+            provider_name, result = self._complete_with_failover(payload=payload, prompt=prompt)
             completed_at = datetime.now(timezone.utc)
             input_tokens = estimate_tokens(prompt)
             output_tokens = estimate_tokens(result.output_text)
@@ -172,7 +202,7 @@ class RunExecutionService:
                 task_id=payload.task_id,
                 event_type="run.failed",
                 event_data={
-                    "provider": provider_name,
+                    "provider": requested_provider,
                     "target_model": payload.target_model,
                     "error": str(error)[:250],
                 },
@@ -319,6 +349,45 @@ class RunExecutionService:
                 f"Provider '{provider_name}' is not configured. Available providers: {available}."
             )
         return provider_name, provider
+
+    def list_provider_capabilities(self) -> list[ProviderCapabilities]:
+        return [self._providers[name].capabilities() for name in sorted(self._providers.keys())]
+
+    def _complete_with_failover(
+        self, *, payload: RunExecutionRequest, prompt: str
+    ) -> tuple[str, object]:
+        candidates = self._provider_candidates(payload.provider)
+        errors: list[str] = []
+        for provider_name in candidates:
+            provider = self._providers.get(provider_name)
+            if provider is None:
+                continue
+            try:
+                result = provider.complete(
+                    model=payload.target_model,
+                    prompt=prompt,
+                    system_prompt=payload.system_prompt,
+                    max_output_tokens=payload.max_output_tokens,
+                    temperature=payload.temperature,
+                )
+                return provider_name, result
+            except Exception as error:
+                errors.append(f"{provider_name}: {error}")
+                continue
+        raise RuntimeError("All provider attempts failed: " + " | ".join(errors))
+
+    def _provider_candidates(self, requested_provider: str | None) -> list[str]:
+        primary = (requested_provider or self._default_provider).strip().lower()
+        if not self._failover_enabled:
+            return [primary]
+        ordered = [primary]
+        for candidate in self._fallback_order:
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        for candidate in sorted(self._providers.keys()):
+            if candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
 
     def _build_prompt(self, user_prompt: str, optimized_context: dict[str, object]) -> str:
         rendered_context = str(optimized_context.get("rendered_prompt", "")).strip()

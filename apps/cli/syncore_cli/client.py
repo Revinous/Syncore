@@ -127,6 +127,9 @@ class SyncoreApiClient:
     def execute_run(self, payload: dict[str, Any]) -> Any:
         return self._request("POST", "/runs/execute", payload)
 
+    def list_run_providers(self) -> Any:
+        return self._request("GET", "/runs/providers")
+
     def autonomy_scan_once(self, limit: int = 50) -> Any:
         return self._request("POST", f"/autonomy/scan-once?limit={limit}")
 

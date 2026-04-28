@@ -659,6 +659,35 @@ def diagnostics() -> None:
     print_json(payload)
 
 
+@app.command("providers")
+def providers(json_output: bool = typer.Option(False, "--json")) -> None:
+    client = _client()
+    try:
+        rows = client.list_run_providers()
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json(rows)
+        return
+
+    table_rows = [
+        [
+            str(item.get("provider")),
+            str(item.get("model_hint")),
+            str(item.get("supports_streaming")),
+            str(item.get("supports_system_prompt")),
+        ]
+        for item in rows
+    ]
+    print_table(
+        "Run Providers",
+        ["provider", "model_hint", "streaming", "system_prompt"],
+        table_rows,
+    )
+
+
 @app.command("open")
 def open_workspace(workspace_id_or_name: str) -> None:
     config = load_config()

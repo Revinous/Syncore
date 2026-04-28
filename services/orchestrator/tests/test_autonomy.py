@@ -120,6 +120,7 @@ def test_autonomy_retries_and_blocks_after_budget(monkeypatch, tmp_path) -> None
     monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
     monkeypatch.setenv("AUTONOMY_MAX_RETRIES", "1")
     monkeypatch.setenv("AUTONOMY_RETRY_BASE_SECONDS", "0.1")
+    monkeypatch.setenv("PROVIDER_FAILOVER_ENABLED", "false")
 
     with TestClient(create_app()) as client:
         task = client.post(
