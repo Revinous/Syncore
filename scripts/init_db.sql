@@ -78,6 +78,20 @@ CREATE TABLE IF NOT EXISTS context_bundles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS run_queue (
+  job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  last_error TEXT,
+  run_id UUID,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
   ON agent_runs (task_id, created_at ASC);
 
@@ -98,3 +112,6 @@ CREATE INDEX IF NOT EXISTS idx_context_references_task_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_context_bundles_task_id_created_at
   ON context_bundles (task_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_run_queue_status_available_created
+  ON run_queue (status, available_at, created_at);

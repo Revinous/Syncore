@@ -679,3 +679,89 @@ class MemoryStore:
             row = cursor.fetchone()
 
         return row
+
+    def enqueue_run_job(
+        self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3
+    ) -> dict[str, object]:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO run_queue (
+                    task_id, payload, status, attempt_count, max_attempts,
+                    last_error, run_id, available_at
+                )
+                VALUES (%s, %s, 'queued', 0, %s, NULL, NULL, NOW())
+                RETURNING *
+                """,
+                (task_id, Json(payload), max(1, max_attempts)),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to enqueue run job")
+        return row
+
+    def claim_next_run_job(self) -> dict[str, object] | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                WITH next_job AS (
+                    SELECT job_id
+                    FROM run_queue
+                    WHERE status IN ('queued', 'retry') AND available_at <= NOW()
+                    ORDER BY created_at ASC
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                )
+                UPDATE run_queue q
+                SET status = 'running', updated_at = NOW()
+                FROM next_job
+                WHERE q.job_id = next_job.job_id
+                RETURNING q.*
+                """
+            )
+            row = cursor.fetchone()
+        return row
+
+    def complete_run_job(
+        self,
+        *,
+        job_id: str,
+        status: str,
+        run_id: UUID | None = None,
+        error: str | None = None,
+    ) -> dict[str, object] | None:
+        next_status = status if status in {"completed", "failed", "retry"} else "failed"
+        with self._cursor() as cursor:
+            if next_status == "retry":
+                cursor.execute(
+                    """
+                    UPDATE run_queue
+                    SET
+                        attempt_count = attempt_count + 1,
+                        status = CASE WHEN attempt_count + 1 >= max_attempts THEN 'failed' ELSE 'retry' END,
+                        last_error = %s,
+                        run_id = %s,
+                        available_at = NOW(),
+                        updated_at = NOW()
+                    WHERE job_id = %s
+                    RETURNING *
+                    """,
+                    ((error or "")[:500] if error else None, run_id, job_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE run_queue
+                    SET
+                        status = %s,
+                        last_error = %s,
+                        run_id = %s,
+                        available_at = NOW(),
+                        updated_at = NOW()
+                    WHERE job_id = %s
+                    RETURNING *
+                    """,
+                    (next_status, (error or "")[:500] if error else None, run_id, job_id),
+                )
+            row = cursor.fetchone()
+        return row

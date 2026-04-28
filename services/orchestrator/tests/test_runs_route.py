@@ -8,7 +8,14 @@ from packages.contracts.python.models import (
     RunStreamEvent,
 )
 
-from app.api.routes.runs import execute_run, execute_run_stream, list_provider_capabilities
+from app.api.routes.runs import (
+    QueueEnqueueRequest,
+    enqueue_run_job,
+    execute_run,
+    execute_run_stream,
+    list_provider_capabilities,
+    scan_run_queue_once,
+)
 from app.runs.providers import ProviderCapabilities
 
 
@@ -52,6 +59,21 @@ class FakeRunExecutionService:
         ]
 
 
+class FakeRunQueueService:
+    def enqueue(self, payload: RunExecutionRequest, max_attempts: int = 3):
+        return {
+            "job_id": "job-1",
+            "task_id": str(payload.task_id),
+            "status": "queued",
+            "attempt_count": 0,
+            "max_attempts": max_attempts,
+        }
+
+    def scan_once(self, limit: int = 10):
+        del limit
+        return []
+
+
 def test_execute_run_route_function_returns_response() -> None:
     request = RunExecutionRequest(
         task_id=uuid4(),
@@ -82,3 +104,23 @@ def test_list_provider_capabilities_route_returns_rows() -> None:
     payload = list_provider_capabilities(service=FakeRunExecutionService())  # type: ignore[arg-type]
     assert len(payload) == 1
     assert payload[0].provider == "local_echo"
+
+
+def test_enqueue_run_job_route_returns_queue_row() -> None:
+    request = RunExecutionRequest(
+        task_id=uuid4(),
+        prompt="Review this patch",
+        target_agent="reviewer",
+        target_model="gpt-4.1-mini",
+    )
+    response = enqueue_run_job(  # type: ignore[arg-type]
+        payload=QueueEnqueueRequest(run=request, max_attempts=3),
+        service=FakeRunQueueService(),
+    )
+    assert response.job_id == "job-1"
+    assert response.status == "queued"
+
+
+def test_scan_run_queue_once_route_returns_response() -> None:
+    response = scan_run_queue_once(limit=10, service=FakeRunQueueService())  # type: ignore[arg-type]
+    assert response.processed == 0

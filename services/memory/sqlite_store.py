@@ -807,5 +807,119 @@ class SQLiteMemoryStore:
         record["included_refs"] = json.loads(record["included_refs"])
         return record
 
+    def enqueue_run_job(
+        self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3
+    ) -> dict[str, object]:
+        job_id = str(uuid4())
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO run_queue (
+                    job_id, task_id, payload, status, attempt_count, max_attempts,
+                    last_error, run_id, available_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'queued', 0, ?, NULL, NULL, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    str(task_id),
+                    json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                    max(1, max_attempts),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM run_queue WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to enqueue run job")
+        record = dict(row)
+        record["payload"] = json.loads(str(record["payload"]))
+        return record
+
+    def claim_next_run_job(self) -> dict[str, object] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM run_queue
+                WHERE status IN ('queued', 'retry') AND available_at <= ?
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (self._now(),),
+            ).fetchone()
+            if row is None:
+                return None
+            job_id = str(row["job_id"])
+            connection.execute(
+                """
+                UPDATE run_queue
+                SET status = 'running', updated_at = ?
+                WHERE job_id = ? AND status IN ('queued', 'retry')
+                """,
+                (self._now(), job_id),
+            )
+            claimed = connection.execute(
+                "SELECT * FROM run_queue WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if claimed is None:
+            return None
+        record = dict(claimed)
+        record["payload"] = json.loads(str(record["payload"]))
+        return record
+
+    def complete_run_job(
+        self,
+        *,
+        job_id: str,
+        status: str,
+        run_id: UUID | None = None,
+        error: str | None = None,
+    ) -> dict[str, object] | None:
+        next_status = status if status in {"completed", "failed", "retry"} else "failed"
+        with self._connection() as connection:
+            existing = connection.execute(
+                "SELECT * FROM run_queue WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            attempt_count = int(existing["attempt_count"])
+            max_attempts = int(existing["max_attempts"])
+            if next_status == "retry":
+                attempt_count += 1
+                if attempt_count >= max_attempts:
+                    next_status = "failed"
+            connection.execute(
+                """
+                UPDATE run_queue
+                SET status = ?, attempt_count = ?, last_error = ?, run_id = ?, available_at = ?, updated_at = ?
+                WHERE job_id = ?
+                """,
+                (
+                    next_status,
+                    attempt_count,
+                    (error or "")[:500] if error else None,
+                    str(run_id) if run_id is not None else None,
+                    self._now(),
+                    self._now(),
+                    job_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM run_queue WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["payload"] = json.loads(str(record["payload"]))
+        return record
+
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()

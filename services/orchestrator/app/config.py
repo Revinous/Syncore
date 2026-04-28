@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     slo_min_run_success_rate: float = 0.97
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
+    queue_worker_enabled: bool = False
+    queue_worker_poll_interval_seconds: float = 1.0
     autonomy_default_model: str = "local_echo"
     autonomy_max_retries: int = 2
     autonomy_retry_base_seconds: float = 2.0

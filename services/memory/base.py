@@ -87,6 +87,21 @@ class MemoryStoreProtocol(Protocol):
 
     def get_latest_context_bundle(self, task_id: UUID) -> dict[str, object] | None: ...
 
+    def enqueue_run_job(
+        self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3
+    ) -> dict[str, object]: ...
+
+    def claim_next_run_job(self) -> dict[str, object] | None: ...
+
+    def complete_run_job(
+        self,
+        *,
+        job_id: str,
+        status: str,
+        run_id: UUID | None = None,
+        error: str | None = None,
+    ) -> dict[str, object] | None: ...
+
     def create_workspace(self, payload: WorkspaceCreate) -> Workspace: ...
 
     def get_workspace(self, workspace_id: UUID) -> Workspace | None: ...

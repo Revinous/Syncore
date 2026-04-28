@@ -1,12 +1,13 @@
 import json
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from packages.contracts.python.models import RunExecutionRequest, RunExecutionResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
 from app.services.run_execution_service import RunExecutionService
+from app.services.run_queue_service import RunQueueService
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -20,8 +21,38 @@ class ProviderCapabilityResponse(BaseModel):
     model_hint: str
 
 
+class QueueEnqueueRequest(BaseModel):
+    run: RunExecutionRequest
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
+class QueueEnqueueResponse(BaseModel):
+    job_id: str
+    task_id: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+
+
+class QueueScanItem(BaseModel):
+    job_id: str
+    task_id: str
+    status: str
+    run_id: str | None = None
+    note: str
+
+
+class QueueScanResponse(BaseModel):
+    processed: int
+    results: list[QueueScanItem]
+
+
 def get_run_execution_service(settings: Settings = Depends(get_settings)) -> RunExecutionService:
     return RunExecutionService.from_settings(settings)
+
+
+def get_run_queue_service(settings: Settings = Depends(get_settings)) -> RunQueueService:
+    return RunQueueService.from_settings(settings)
 
 
 @router.post("/execute", response_model=RunExecutionResponse)
@@ -80,3 +111,39 @@ def list_provider_capabilities(
         ProviderCapabilityResponse(**item.__dict__)
         for item in service.list_provider_capabilities()
     ]
+
+
+@router.post("/queue/enqueue", response_model=QueueEnqueueResponse)
+def enqueue_run_job(
+    payload: QueueEnqueueRequest,
+    service: RunQueueService = Depends(get_run_queue_service),
+) -> QueueEnqueueResponse:
+    row = service.enqueue(payload.run, max_attempts=payload.max_attempts)
+    return QueueEnqueueResponse(
+        job_id=str(row["job_id"]),
+        task_id=str(row["task_id"]),
+        status=str(row["status"]),
+        attempt_count=int(row["attempt_count"]),
+        max_attempts=int(row["max_attempts"]),
+    )
+
+
+@router.post("/queue/scan-once", response_model=QueueScanResponse)
+def scan_run_queue_once(
+    limit: int = Query(default=10, ge=1, le=100),
+    service: RunQueueService = Depends(get_run_queue_service),
+) -> QueueScanResponse:
+    results = service.scan_once(limit=limit)
+    return QueueScanResponse(
+        processed=len(results),
+        results=[
+            QueueScanItem(
+                job_id=result.job_id,
+                task_id=str(result.task_id),
+                status=result.status,
+                run_id=str(result.run_id) if result.run_id else None,
+                note=result.note,
+            )
+            for result in results
+        ],
+    )

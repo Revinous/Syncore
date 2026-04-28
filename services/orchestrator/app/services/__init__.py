@@ -4,6 +4,7 @@ from .context_service import ContextService
 from .event_service import EventService
 from .routing_service import RoutingService
 from .run_execution_service import RunExecutionService
+from .run_queue_service import RunQueueService
 from .task_service import TaskService
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "RoutingService",
     "ContextService",
     "RunExecutionService",
+    "RunQueueService",
 ]

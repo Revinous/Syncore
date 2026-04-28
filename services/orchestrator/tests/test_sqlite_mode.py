@@ -138,4 +138,29 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     assert isinstance(run_result.json()["output_text"], str)
     assert len(run_result.json()["output_text"]) > 0
 
+    queued = client.post(
+        "/runs/queue/enqueue",
+        json={
+            "run": {
+                "task_id": task_id,
+                "prompt": "Generate a queue-based follow-up.",
+                "target_agent": "coder",
+                "target_model": "local_echo",
+                "provider": "local_echo",
+                "agent_role": "coder",
+                "token_budget": 1200,
+                "max_output_tokens": 200,
+                "temperature": 0.0,
+            },
+            "max_attempts": 2,
+        },
+    )
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "queued"
+
+    scan = client.post("/runs/queue/scan-once")
+    assert scan.status_code == 200
+    assert scan.json()["processed"] >= 1
+    assert scan.json()["results"][0]["status"] == "completed"
+
     get_settings.cache_clear()
