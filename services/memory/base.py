@@ -81,11 +81,20 @@ class MemoryStoreProtocol(Protocol):
         target_agent: str,
         target_model: str,
         token_budget: int,
+        raw_estimated_tokens: int,
+        optimized_estimated_tokens: int,
+        token_savings_estimate: int,
+        token_savings_pct: float,
+        estimated_cost_raw_usd: float | None,
+        estimated_cost_optimized_usd: float | None,
+        estimated_cost_saved_usd: float | None,
         optimized_context: dict[str, object],
         included_refs: list[str],
     ) -> dict[str, object]: ...
 
     def get_latest_context_bundle(self, task_id: UUID) -> dict[str, object] | None: ...
+
+    def list_recent_context_bundles(self, limit: int = 200) -> list[dict[str, object]]: ...
 
     def enqueue_run_job(
         self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3

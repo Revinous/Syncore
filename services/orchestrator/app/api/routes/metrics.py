@@ -3,6 +3,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import Settings, get_settings
 from app.observability import get_slo_status, render_prometheus_metrics
+from app.store_factory import build_memory_store
 
 router = APIRouter(tags=["metrics"])
 
@@ -22,3 +23,89 @@ def get_metrics_slo(settings: Settings = Depends(get_settings)) -> dict[str, obj
         max_http_p95_latency_ms=settings.slo_max_http_p95_latency_ms,
         min_run_success_rate=settings.slo_min_run_success_rate,
     )
+
+
+@router.get("/metrics/context-efficiency")
+def get_context_efficiency_metrics(
+    limit: int = 200,
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    store = build_memory_store(settings)
+    rows = store.list_recent_context_bundles(limit=limit)
+
+    total_raw = 0
+    total_optimized = 0
+    total_saved = 0
+    total_cost_raw = 0.0
+    total_cost_optimized = 0.0
+    total_cost_saved = 0.0
+    cost_rows = 0
+    by_model: dict[str, dict[str, object]] = {}
+
+    recent: list[dict[str, object]] = []
+    for row in rows:
+        model = str(row.get("target_model") or "unknown")
+        raw = int(row.get("raw_estimated_tokens") or 0)
+        optimized = int(row.get("optimized_estimated_tokens") or 0)
+        saved = int(row.get("token_savings_estimate") or (raw - optimized))
+
+        total_raw += raw
+        total_optimized += optimized
+        total_saved += saved
+
+        cost_raw = row.get("estimated_cost_raw_usd")
+        cost_opt = row.get("estimated_cost_optimized_usd")
+        cost_saved = row.get("estimated_cost_saved_usd")
+        if isinstance(cost_raw, (float, int)) and isinstance(cost_opt, (float, int)):
+            total_cost_raw += float(cost_raw)
+            total_cost_optimized += float(cost_opt)
+            total_cost_saved += float(cost_saved or (float(cost_raw) - float(cost_opt)))
+            cost_rows += 1
+
+        model_bucket = by_model.setdefault(
+            model,
+            {
+                "bundle_count": 0,
+                "raw_tokens": 0,
+                "optimized_tokens": 0,
+                "saved_tokens": 0,
+            },
+        )
+        model_bucket["bundle_count"] = int(model_bucket["bundle_count"]) + 1
+        model_bucket["raw_tokens"] = int(model_bucket["raw_tokens"]) + raw
+        model_bucket["optimized_tokens"] = int(model_bucket["optimized_tokens"]) + optimized
+        model_bucket["saved_tokens"] = int(model_bucket["saved_tokens"]) + saved
+
+        recent.append(
+            {
+                "bundle_id": str(row.get("bundle_id")),
+                "task_id": str(row.get("task_id")),
+                "target_model": model,
+                "raw_estimated_tokens": raw,
+                "optimized_estimated_tokens": optimized,
+                "token_savings_estimate": saved,
+                "token_savings_pct": float(row.get("token_savings_pct") or 0.0),
+                "estimated_cost_saved_usd": row.get("estimated_cost_saved_usd"),
+                "created_at": row.get("created_at"),
+            }
+        )
+
+    savings_pct = round((total_saved / total_raw) * 100.0, 2) if total_raw > 0 else 0.0
+    payload: dict[str, object] = {
+        "bundle_count": len(rows),
+        "totals": {
+            "raw_tokens": total_raw,
+            "optimized_tokens": total_optimized,
+            "saved_tokens": total_saved,
+            "savings_pct": savings_pct,
+        },
+        "by_model": by_model,
+        "recent_bundles": recent[:50],
+    }
+    if cost_rows > 0:
+        payload["cost_totals"] = {
+            "raw_usd": round(total_cost_raw, 8),
+            "optimized_usd": round(total_cost_optimized, 8),
+            "saved_usd": round(total_cost_saved, 8),
+        }
+    return payload

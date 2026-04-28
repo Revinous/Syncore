@@ -130,6 +130,9 @@ class SyncoreApiClient:
     def diagnostics_routes(self) -> Any:
         return self._request("GET", "/diagnostics/routes")
 
+    def context_efficiency_metrics(self, limit: int = 200) -> Any:
+        return self._request("GET", f"/metrics/context-efficiency?limit={limit}")
+
     def execute_run(self, payload: dict[str, Any]) -> Any:
         return self._request("POST", "/runs/execute", payload)
 

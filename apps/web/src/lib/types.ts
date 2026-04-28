@@ -36,6 +36,40 @@ export type DashboardSummary = {
   latest_digest: AnalystDigest | null;
 };
 
+export type ContextEfficiencyModelBreakdown = {
+  bundle_count: number;
+  raw_tokens: number;
+  optimized_tokens: number;
+  saved_tokens: number;
+};
+
+export type ContextEfficiencyMetrics = {
+  bundle_count: number;
+  totals: {
+    raw_tokens: number;
+    optimized_tokens: number;
+    saved_tokens: number;
+    savings_pct: number;
+  };
+  cost_totals?: {
+    raw_usd: number;
+    optimized_usd: number;
+    saved_usd: number;
+  };
+  by_model: Record<string, ContextEfficiencyModelBreakdown>;
+  recent_bundles: Array<{
+    bundle_id: string;
+    task_id: string;
+    target_model: string;
+    raw_estimated_tokens: number;
+    optimized_estimated_tokens: number;
+    token_savings_estimate: number;
+    token_savings_pct: number;
+    estimated_cost_saved_usd?: number | null;
+    created_at: string;
+  }>;
+};
+
 export type Workspace = {
   id: string;
   name: string;

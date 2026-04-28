@@ -616,6 +616,13 @@ class MemoryStore:
         target_agent: str,
         target_model: str,
         token_budget: int,
+        raw_estimated_tokens: int,
+        optimized_estimated_tokens: int,
+        token_savings_estimate: int,
+        token_savings_pct: float,
+        estimated_cost_raw_usd: float | None,
+        estimated_cost_optimized_usd: float | None,
+        estimated_cost_saved_usd: float | None,
         optimized_context: dict[str, object],
         included_refs: list[str],
     ) -> dict[str, object]:
@@ -627,16 +634,30 @@ class MemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING
                     bundle_id,
                     task_id,
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs,
                     created_at
@@ -646,6 +667,13 @@ class MemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    max(raw_estimated_tokens, 0),
+                    max(optimized_estimated_tokens, 0),
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     Json(optimized_context),
                     included_refs,
                 ),
@@ -666,6 +694,13 @@ class MemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs,
                     created_at
@@ -679,6 +714,36 @@ class MemoryStore:
             row = cursor.fetchone()
 
         return row
+
+    def list_recent_context_bundles(self, limit: int = 200) -> list[dict[str, object]]:
+        bounded_limit = min(max(limit, 1), 1000)
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    bundle_id,
+                    task_id,
+                    target_agent,
+                    target_model,
+                    token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
+                    optimized_context,
+                    included_refs,
+                    created_at
+                FROM context_bundles
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (bounded_limit,),
+            )
+            rows = cursor.fetchall()
+        return rows
 
     def enqueue_run_job(
         self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3

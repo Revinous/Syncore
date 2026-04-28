@@ -73,10 +73,25 @@ CREATE TABLE IF NOT EXISTS context_bundles (
   target_agent TEXT NOT NULL,
   target_model TEXT NOT NULL,
   token_budget INTEGER NOT NULL,
+  raw_estimated_tokens INTEGER NOT NULL DEFAULT 0,
+  optimized_estimated_tokens INTEGER NOT NULL DEFAULT 0,
+  token_savings_estimate INTEGER NOT NULL DEFAULT 0,
+  token_savings_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
+  estimated_cost_raw_usd DOUBLE PRECISION,
+  estimated_cost_optimized_usd DOUBLE PRECISION,
+  estimated_cost_saved_usd DOUBLE PRECISION,
   optimized_context JSONB NOT NULL,
   included_refs TEXT[] NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS raw_estimated_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS optimized_estimated_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS token_savings_estimate INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS token_savings_pct DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS estimated_cost_raw_usd DOUBLE PRECISION;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS estimated_cost_optimized_usd DOUBLE PRECISION;
+ALTER TABLE context_bundles ADD COLUMN IF NOT EXISTS estimated_cost_saved_usd DOUBLE PRECISION;
 
 CREATE TABLE IF NOT EXISTS run_queue (
   job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

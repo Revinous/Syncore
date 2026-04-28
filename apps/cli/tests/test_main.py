@@ -150,6 +150,19 @@ class FakeClient:
             }
         ]
 
+    def context_efficiency_metrics(self, limit: int = 200):
+        return {
+            "bundle_count": max(limit, 1),
+            "totals": {
+                "raw_tokens": 1000,
+                "optimized_tokens": 700,
+                "saved_tokens": 300,
+                "savings_pct": 30.0,
+            },
+            "by_model": {"gpt-4.1-mini": {"bundle_count": 1, "raw_tokens": 1000, "optimized_tokens": 700, "saved_tokens": 300}},
+            "recent_bundles": [],
+        }
+
 
 class OfflineClient(FakeClient):
     def health(self):
@@ -215,6 +228,15 @@ def test_json_output_is_valid(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert isinstance(payload, list)
+
+
+def test_metrics_context_json_output(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["metrics", "context", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["totals"]["saved_tokens"] == 300
 
 
 def test_open_command_resolves_workspace_and_launches_tui(monkeypatch) -> None:

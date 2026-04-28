@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { getDashboardSummary } from "../src/lib/api";
-import { DashboardSummary } from "../src/lib/types";
+import { getContextEfficiencyMetrics, getDashboardSummary } from "../src/lib/api";
+import { ContextEfficiencyMetrics, DashboardSummary } from "../src/lib/types";
 import { EmptyState } from "../src/components/EmptyState";
 import { ErrorState } from "../src/components/ErrorState";
 import { Layout } from "../src/components/Layout";
@@ -11,6 +11,7 @@ import { StatusBadge } from "../src/components/StatusBadge";
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardSummary | null>(null);
+  const [efficiency, setEfficiency] = useState<ContextEfficiencyMetrics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +19,12 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      setData(await getDashboardSummary());
+      const [summary, contextEfficiency] = await Promise.all([
+        getDashboardSummary(),
+        getContextEfficiencyMetrics(),
+      ]);
+      setData(summary);
+      setEfficiency(contextEfficiency);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
     } finally {
@@ -48,6 +54,22 @@ export default function DashboardPage() {
             <StatCard label="Open Tasks" value={data.open_task_count} />
             <StatCard label="Active Runs" value={data.active_run_count} />
             <StatCard label="Recent Events" value={data.recent_events.length} />
+            <StatCard
+              label="Token Savings"
+              value={
+                efficiency
+                  ? `${efficiency.totals.saved_tokens} (${efficiency.totals.savings_pct}%)`
+                  : "n/a"
+              }
+            />
+            <StatCard
+              label="Cost Saved (Est.)"
+              value={
+                efficiency?.cost_totals
+                  ? `$${efficiency.cost_totals.saved_usd.toFixed(4)}`
+                  : "n/a"
+              }
+            />
           </div>
 
           <section style={{ marginTop: 16, padding: 12, border: "1px solid #d8dbe2", background: "#fff", borderRadius: 8 }}>
@@ -87,6 +109,20 @@ export default function DashboardPage() {
                     {packet.from_agent} → {packet.to_agent ?? "unassigned"}: {packet.summary}
                   </li>
                 ))}
+              </ul>
+            )}
+          </section>
+
+          <section style={{ marginTop: 16, padding: 12, border: "1px solid #d8dbe2", background: "#fff", borderRadius: 8 }}>
+            <h2>Context Efficiency</h2>
+            {!efficiency || efficiency.bundle_count === 0 ? (
+              <EmptyState message="No context efficiency data yet." />
+            ) : (
+              <ul>
+                <li>Bundles: {efficiency.bundle_count}</li>
+                <li>Raw tokens: {efficiency.totals.raw_tokens}</li>
+                <li>Optimized tokens: {efficiency.totals.optimized_tokens}</li>
+                <li>Saved tokens: {efficiency.totals.saved_tokens} ({efficiency.totals.savings_pct}%)</li>
               </ul>
             )}
           </section>

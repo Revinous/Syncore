@@ -84,6 +84,12 @@ class OptimizedContextBundle(BaseModel):
     target_model: str = Field(min_length=1)
     token_budget: int = Field(ge=256, le=200_000)
     estimated_token_count: int = Field(ge=0)
+    raw_estimated_token_count: int = Field(default=0, ge=0)
+    token_savings_estimate: int = Field(default=0)
+    token_savings_pct: float = Field(default=0.0)
+    estimated_cost_raw_usd: float | None = None
+    estimated_cost_optimized_usd: float | None = None
+    estimated_cost_saved_usd: float | None = None
     optimized_context: dict[str, Any] = Field(default_factory=dict)
     sections: list[ContextSection] = Field(default_factory=list)
     included_refs: list[str] = Field(default_factory=list)

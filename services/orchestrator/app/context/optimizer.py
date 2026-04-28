@@ -99,9 +99,16 @@ class SimpleContextOptimizer(ContextOptimizer):
 
         rendered_prompt = self._render_prompt(optimized_sections)
         estimated = estimate_tokens(rendered_prompt)
+        raw_rendered_prompt = self._render_prompt(bundle.sections)
+        raw_estimated = estimate_tokens(raw_rendered_prompt)
+        token_savings = raw_estimated - estimated
+        token_savings_pct = (
+            round((token_savings / raw_estimated) * 100.0, 2) if raw_estimated > 0 else 0.0
+        )
         optimized_context = {
             "rendered_prompt": rendered_prompt,
             "section_count": len(optimized_sections),
+            "raw_section_count": len(bundle.sections),
             "metadata": bundle.metadata,
         }
 
@@ -111,6 +118,9 @@ class SimpleContextOptimizer(ContextOptimizer):
             target_model=bundle.target_model,
             token_budget=policy.token_budget,
             estimated_token_count=estimated,
+            raw_estimated_token_count=raw_estimated,
+            token_savings_estimate=token_savings,
+            token_savings_pct=token_savings_pct,
             optimized_context=optimized_context,
             sections=optimized_sections,
             included_refs=sorted(set(included_refs)),

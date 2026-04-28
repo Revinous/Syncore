@@ -69,6 +69,13 @@ CREATE TABLE IF NOT EXISTS context_bundles (
   target_agent TEXT NOT NULL,
   target_model TEXT NOT NULL,
   token_budget INTEGER NOT NULL,
+  raw_estimated_tokens INTEGER NOT NULL DEFAULT 0,
+  optimized_estimated_tokens INTEGER NOT NULL DEFAULT 0,
+  token_savings_estimate INTEGER NOT NULL DEFAULT 0,
+  token_savings_pct REAL NOT NULL DEFAULT 0,
+  estimated_cost_raw_usd REAL,
+  estimated_cost_optimized_usd REAL,
+  estimated_cost_saved_usd REAL,
   optimized_context TEXT NOT NULL,
   included_refs TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL

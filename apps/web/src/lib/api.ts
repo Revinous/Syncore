@@ -4,6 +4,7 @@ import {
   ApiError,
   BatonPacket,
   DashboardSummary,
+  ContextEfficiencyMetrics,
   DiagnosticsConfig,
   DiagnosticsOverview,
   DiagnosticsRoutes,
@@ -69,6 +70,12 @@ export function getServicesHealth() {
 
 export function getDashboardSummary() {
   return request<DashboardSummary>("/dashboard/summary");
+}
+
+export function getContextEfficiencyMetrics(limit = 200) {
+  return request<ContextEfficiencyMetrics>(
+    `/metrics/context-efficiency?limit=${encodeURIComponent(String(limit))}`
+  );
 }
 
 export function listWorkspaces() {

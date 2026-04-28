@@ -727,6 +727,13 @@ class SQLiteMemoryStore:
         target_agent: str,
         target_model: str,
         token_budget: int,
+        raw_estimated_tokens: int,
+        optimized_estimated_tokens: int,
+        token_savings_estimate: int,
+        token_savings_pct: float,
+        estimated_cost_raw_usd: float | None,
+        estimated_cost_optimized_usd: float | None,
+        estimated_cost_saved_usd: float | None,
         optimized_context: dict[str, object],
         included_refs: list[str],
     ) -> dict[str, object]:
@@ -740,11 +747,18 @@ class SQLiteMemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     bundle_id,
@@ -752,6 +766,13 @@ class SQLiteMemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    max(raw_estimated_tokens, 0),
+                    max(optimized_estimated_tokens, 0),
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     json.dumps(optimized_context, ensure_ascii=True, sort_keys=True),
                     json.dumps(included_refs, ensure_ascii=True),
                     self._now(),
@@ -765,6 +786,13 @@ class SQLiteMemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs,
                     created_at
@@ -790,6 +818,13 @@ class SQLiteMemoryStore:
                     target_agent,
                     target_model,
                     token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
                     optimized_context,
                     included_refs,
                     created_at
@@ -806,6 +841,41 @@ class SQLiteMemoryStore:
         record["optimized_context"] = json.loads(record["optimized_context"])
         record["included_refs"] = json.loads(record["included_refs"])
         return record
+
+    def list_recent_context_bundles(self, limit: int = 200) -> list[dict[str, object]]:
+        bounded_limit = min(max(limit, 1), 1000)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    bundle_id,
+                    task_id,
+                    target_agent,
+                    target_model,
+                    token_budget,
+                    raw_estimated_tokens,
+                    optimized_estimated_tokens,
+                    token_savings_estimate,
+                    token_savings_pct,
+                    estimated_cost_raw_usd,
+                    estimated_cost_optimized_usd,
+                    estimated_cost_saved_usd,
+                    optimized_context,
+                    included_refs,
+                    created_at
+                FROM context_bundles
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        records: list[dict[str, object]] = []
+        for row in rows:
+            record = dict(row)
+            record["optimized_context"] = json.loads(record["optimized_context"])
+            record["included_refs"] = json.loads(record["included_refs"])
+            records.append(record)
+        return records
 
     def enqueue_run_job(
         self, *, task_id: UUID, payload: dict[str, object], max_attempts: int = 3

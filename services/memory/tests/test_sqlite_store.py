@@ -83,6 +83,13 @@ def test_sqlite_store_context_refs_and_bundles(tmp_path) -> None:
         target_agent="coder",
         target_model="gpt-4.1-mini",
         token_budget=1600,
+        raw_estimated_tokens=500,
+        optimized_estimated_tokens=300,
+        token_savings_estimate=200,
+        token_savings_pct=40.0,
+        estimated_cost_raw_usd=0.001,
+        estimated_cost_optimized_usd=0.0006,
+        estimated_cost_saved_usd=0.0004,
         optimized_context={"rendered_prompt": "context"},
         included_refs=[str(ref["ref_id"])],
     )
@@ -90,6 +97,8 @@ def test_sqlite_store_context_refs_and_bundles(tmp_path) -> None:
     latest = store.get_latest_context_bundle(task.id)
     assert latest is not None
     assert latest["included_refs"] == [str(ref["ref_id"])]
+    recent = store.list_recent_context_bundles(limit=10)
+    assert len(recent) >= 1
 
 
 def test_sqlite_store_workspace_crud_roundtrip(tmp_path) -> None:

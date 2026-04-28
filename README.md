@@ -149,6 +149,7 @@ Syncore has two first-class control surfaces that both use the FastAPI orchestra
   - Common commands:
     - `syncore status`
     - `syncore dashboard`
+    - `syncore metrics context`
     - `syncore auth openai login`
     - `syncore auth openai models`
     - `syncore workspace list`
@@ -234,6 +235,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /health/services`
 - `GET /metrics`
 - `GET /metrics/slo`
+- `GET /metrics/context-efficiency`
 - `GET /dashboard/summary`
 - `POST /tasks`
 - `GET /tasks`

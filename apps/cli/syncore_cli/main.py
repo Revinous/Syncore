@@ -25,11 +25,13 @@ app = typer.Typer(help="Syncore CLI")
 workspace_app = typer.Typer(help="Workspace commands")
 task_app = typer.Typer(help="Task commands")
 run_app = typer.Typer(help="Agent run commands")
+metrics_app = typer.Typer(help="Metrics commands")
 auth_app = typer.Typer(help="Authentication commands")
 openai_auth_app = typer.Typer(help="OpenAI auth commands")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
+app.add_typer(metrics_app, name="metrics")
 app.add_typer(auth_app, name="auth")
 auth_app.add_typer(openai_auth_app, name="openai")
 
@@ -315,6 +317,36 @@ def dashboard(json_output: bool = typer.Option(False, "--json")) -> None:
         return
 
     print_kv_panel("Dashboard", summary)
+
+
+@metrics_app.command("context")
+def metrics_context(
+    json_output: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(200, "--limit", min=1, max=1000),
+) -> None:
+    client = _client()
+    try:
+        payload = client.context_efficiency_metrics(limit=limit)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json(payload)
+        return
+
+    totals = payload.get("totals", {})
+    print_kv_panel(
+        "Context Efficiency",
+        {
+            "bundle_count": payload.get("bundle_count", 0),
+            "raw_tokens": totals.get("raw_tokens", 0),
+            "optimized_tokens": totals.get("optimized_tokens", 0),
+            "saved_tokens": totals.get("saved_tokens", 0),
+            "savings_pct": totals.get("savings_pct", 0),
+            "cost_saved_usd": (payload.get("cost_totals") or {}).get("saved_usd", "n/a"),
+        },
+    )
 
 
 @workspace_app.command("list")

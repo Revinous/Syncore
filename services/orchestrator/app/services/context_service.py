@@ -7,6 +7,7 @@ from services.memory import MemoryStoreProtocol
 from app.context.assembler import ContextAssembler
 from app.context.compression_policy import default_context_policy
 from app.context.optimizer import ContextOptimizer, SimpleContextOptimizer
+from app.context.pricing import estimate_input_cost_usd
 from app.context.schemas import ContextReference, OptimizedContextBundle
 
 
@@ -87,11 +88,27 @@ class ContextService:
         )
         policy = default_context_policy(token_budget=token_budget)
         optimized = self._optimizer.optimize(raw_bundle, policy=policy)
+        cost_raw = estimate_input_cost_usd(
+            model=target_model, input_tokens=optimized.raw_estimated_token_count
+        )
+        cost_optimized = estimate_input_cost_usd(
+            model=target_model, input_tokens=optimized.estimated_token_count
+        )
+        cost_saved = None
+        if cost_raw is not None and cost_optimized is not None:
+            cost_saved = round(cost_raw - cost_optimized, 8)
         row = self._store.save_context_bundle(
             task_id=task_id,
             target_agent=target_agent,
             target_model=target_model,
             token_budget=token_budget,
+            raw_estimated_tokens=optimized.raw_estimated_token_count,
+            optimized_estimated_tokens=optimized.estimated_token_count,
+            token_savings_estimate=optimized.token_savings_estimate,
+            token_savings_pct=optimized.token_savings_pct,
+            estimated_cost_raw_usd=cost_raw,
+            estimated_cost_optimized_usd=cost_optimized,
+            estimated_cost_saved_usd=cost_saved,
             optimized_context=optimized.optimized_context,
             included_refs=optimized.included_refs,
         )
@@ -100,6 +117,9 @@ class ContextService:
                 "bundle_id": self._as_uuid(row["bundle_id"]),
                 "created_at": self._as_datetime(row["created_at"]),
                 "included_refs": list(row["included_refs"]),
+                "estimated_cost_raw_usd": row.get("estimated_cost_raw_usd"),
+                "estimated_cost_optimized_usd": row.get("estimated_cost_optimized_usd"),
+                "estimated_cost_saved_usd": row.get("estimated_cost_saved_usd"),
             }
         )
 

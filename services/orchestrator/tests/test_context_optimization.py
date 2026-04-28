@@ -69,6 +69,13 @@ class InMemoryContextStore:
         target_agent: str,
         target_model: str,
         token_budget: int,
+        raw_estimated_tokens: int,
+        optimized_estimated_tokens: int,
+        token_savings_estimate: int,
+        token_savings_pct: float,
+        estimated_cost_raw_usd: float | None,
+        estimated_cost_optimized_usd: float | None,
+        estimated_cost_saved_usd: float | None,
         optimized_context: dict[str, object],
         included_refs: list[str],
     ) -> dict[str, object]:
@@ -78,12 +85,22 @@ class InMemoryContextStore:
             "target_agent": target_agent,
             "target_model": target_model,
             "token_budget": token_budget,
+            "raw_estimated_tokens": raw_estimated_tokens,
+            "optimized_estimated_tokens": optimized_estimated_tokens,
+            "token_savings_estimate": token_savings_estimate,
+            "token_savings_pct": token_savings_pct,
+            "estimated_cost_raw_usd": estimated_cost_raw_usd,
+            "estimated_cost_optimized_usd": estimated_cost_optimized_usd,
+            "estimated_cost_saved_usd": estimated_cost_saved_usd,
             "optimized_context": optimized_context,
             "included_refs": included_refs,
             "created_at": datetime.now(timezone.utc),
         }
         self.context_bundles.append(record)
         return record
+
+    def list_recent_context_bundles(self, limit: int = 200) -> list[dict[str, object]]:
+        return list(reversed(self.context_bundles))[:limit]
 
 
 def _build_task(task_id: UUID | None = None) -> Task:
@@ -215,6 +232,8 @@ def test_optimized_context_stays_under_budget() -> None:
     )
 
     assert bundle.estimated_token_count <= bundle.token_budget
+    assert bundle.raw_estimated_token_count >= bundle.estimated_token_count
+    assert bundle.token_savings_estimate >= 0
 
 
 def test_second_worker_can_resume_using_previous_optimized_bundle() -> None:
