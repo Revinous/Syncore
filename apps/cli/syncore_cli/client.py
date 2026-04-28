@@ -82,6 +82,9 @@ class SyncoreApiClient:
     def create_agent_run(self, payload: dict[str, Any]) -> Any:
         return self._request("POST", "/agent-runs", payload)
 
+    def get_agent_run_result(self, run_id: str) -> Any:
+        return self._request("GET", f"/agent-runs/{run_id}/result")
+
     def list_task_events(self, task_id: str) -> Any:
         return self._request("GET", f"/tasks/{task_id}/events")
 

@@ -113,4 +113,27 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     assert digest.status_code == 200
     assert digest.json()["total_events"] >= 1
 
+    run = client.post(
+        "/runs/execute",
+        json={
+            "task_id": task_id,
+            "prompt": "Summarize next action.",
+            "target_agent": "coder",
+            "target_model": "local_echo",
+            "provider": "local_echo",
+            "agent_role": "coder",
+            "token_budget": 1200,
+            "max_output_tokens": 300,
+            "temperature": 0.0,
+        },
+    )
+    assert run.status_code == 200
+    run_id = run.json()["run_id"]
+
+    run_result = client.get(f"/agent-runs/{run_id}/result")
+    assert run_result.status_code == 200
+    assert run_result.json()["output_ref_id"]
+    assert isinstance(run_result.json()["output_text"], str)
+    assert len(run_result.json()["output_text"]) > 0
+
     get_settings.cache_clear()

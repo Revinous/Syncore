@@ -535,6 +535,24 @@ def run_start(
     print_json(run)
 
 
+@run_app.command("result")
+def run_result(
+    run_id: str,
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    client = _client()
+    try:
+        result = client.get_agent_run_result(run_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json(result)
+        return
+    print_kv_panel("Run Result", result)
+
+
 @app.command("events")
 def events(task_id: str) -> None:
     client = _client()

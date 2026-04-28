@@ -96,6 +96,7 @@ class FakeStore:
     task_id: UUID
     runs: dict[UUID, AgentRun] = field(default_factory=dict)
     events: list[dict[str, str | int | float | bool | None]] = field(default_factory=list)
+    context_refs: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def create_agent_run(self, run: AgentRunCreate) -> AgentRun:
         now = datetime.now(timezone.utc)
@@ -144,6 +145,28 @@ class FakeStore:
             }
         )
 
+    def upsert_context_reference(
+        self,
+        *,
+        ref_id: str,
+        task_id: UUID,
+        content_type: str,
+        original_content: str,
+        summary: str,
+        retrieval_hint: str,
+    ) -> dict[str, object]:
+        record: dict[str, object] = {
+            "ref_id": ref_id,
+            "task_id": task_id,
+            "content_type": content_type,
+            "original_content": original_content,
+            "summary": summary,
+            "retrieval_hint": retrieval_hint,
+            "created_at": datetime.now(timezone.utc),
+        }
+        self.context_refs[ref_id] = record
+        return record
+
 
 def _request(task_id: UUID) -> RunExecutionRequest:
     return RunExecutionRequest(
@@ -178,6 +201,8 @@ def test_execute_uses_context_and_marks_run_completed() -> None:
     assert result.total_estimated_tokens >= result.estimated_input_tokens
     assert any(event["event_type"] == "run.started" for event in store.events)
     assert any(event["event_type"] == "run.completed" for event in store.events)
+    assert any(event["event_type"] == "run.output.stored" for event in store.events)
+    assert len(store.context_refs) == 1
 
 
 def test_execute_marks_failed_on_provider_error() -> None:

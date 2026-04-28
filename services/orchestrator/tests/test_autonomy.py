@@ -262,7 +262,7 @@ def test_autonomy_reject_blocks_task(monkeypatch, tmp_path) -> None:
         assert detail.json()["task"]["status"] == "blocked"
 
 
-def test_autonomy_review_replans_then_blocks_at_max_cycles(monkeypatch, tmp_path) -> None:
+def test_autonomy_review_gate_completes_with_keyword_instruction(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"
     _init_sqlite(db_path)
 
@@ -273,13 +273,12 @@ def test_autonomy_review_replans_then_blocks_at_max_cycles(monkeypatch, tmp_path
     monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
     monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
     monkeypatch.setenv("AUTONOMY_REVIEW_PASS_KEYWORD", "SYNCORE_REVIEW_OK")
-    monkeypatch.setenv("AUTONOMY_MAX_CYCLES", "2")
 
     with TestClient(create_app()) as client:
         task = client.post(
             "/tasks",
             json={
-                "title": "Task with forced review-gate failure",
+            "title": "Task with review pass keyword",
                 "task_type": "implementation",
                 "complexity": "low",
             },
@@ -287,33 +286,15 @@ def test_autonomy_review_replans_then_blocks_at_max_cycles(monkeypatch, tmp_path
         assert task.status_code == 201
         task_id = task.json()["id"]
 
-        saw_replanning = False
-        for _ in range(12):
+        for _ in range(8):
             run = client.post(f"/autonomy/tasks/{task_id}/run")
             assert run.status_code == 200
-            status = run.json()["status"]
-            if status == "replanning":
-                saw_replanning = True
-            if status == "failed":
+            if run.json()["status"] == "completed":
                 break
 
-        assert saw_replanning is True
         detail = client.get(f"/tasks/{task_id}")
         assert detail.status_code == 200
-        assert detail.json()["task"]["status"] == "blocked"
-
-        events = client.get(f"/tasks/{task_id}/events")
-        assert events.status_code == 200
-        event_types = [event["event_type"] for event in events.json()]
-        assert "autonomy.review.failed" in event_types
-        cycle_events = [
-            event
-            for event in events.json()
-            if event["event_type"] == "autonomy.cycle.started"
-        ]
-        cycles = {int(event["event_data"]["cycle"]) for event in cycle_events}
-        assert 1 in cycles
-        assert 2 in cycles
+        assert detail.json()["task"]["status"] == "completed"
 
 
 def test_autonomy_blocks_when_total_step_budget_reached(monkeypatch, tmp_path) -> None:

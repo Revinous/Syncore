@@ -2,6 +2,31 @@
 
 Initial state: repository seeded.
 
+## Phase continuation update (April 28, 2026)
+
+Implemented result durability and retrieval so executed runs are inspectable end-to-end, and not only visible as truncated summaries.
+
+### Added
+- Durable run output storage:
+  - each completed run now persists full output in `context_references` with `content_type=run_output`
+  - emits `run.output.stored` project event containing `run_id` + `ref_id`
+- Agent run result retrieval API:
+  - `GET /agent-runs/{run_id}/result`
+  - returns run status, output summary, output ref id, retrieval hint, and full output text when available
+- CLI support:
+  - `syncore run result RUN_ID`
+  - `--json` supported for machine-readable workflows
+
+### Validation
+- Updated tests:
+  - `services/orchestrator/tests/test_run_execution_service.py`
+  - `services/orchestrator/tests/test_sqlite_mode.py`
+  - `services/orchestrator/tests/test_api_compat_routes.py`
+  - `apps/cli/tests/test_main.py`
+- Suite status:
+  - `make check` passed
+  - `make local-test` passed
+
 ## Autonomy v1 update (April 28, 2026)
 
 Implemented first-class internal autonomy loop in orchestrator so Syncore can execute new tasks from high-level ideas without manual run orchestration.

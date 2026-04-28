@@ -173,6 +173,7 @@ Examples:
 - `syncore workspace scan my-app`
 - `syncore task create \"Analyze the auth flow\" --workspace my-app`
 - `syncore run start TASK_ID --agent-role backend`
+- `syncore run result RUN_ID`
 - `syncore open my-app`
 - `syncore my-app` (shortcut for `syncore open my-app`)
 - `syncore tui`
@@ -232,6 +233,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `POST /agent-runs`
 - `GET /agent-runs`
 - `GET /agent-runs/{run_id}`
+- `GET /agent-runs/{run_id}/result`
 - `PATCH /agent-runs/{run_id}`
 - `POST /baton-packets`
 - `GET /baton-packets`

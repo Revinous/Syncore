@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from packages.contracts.python.models import AgentRun, AgentRunCreate, AgentRunUpdate
 
 from app.config import Settings, get_settings
-from app.services.agent_run_service import AgentRunService
+from app.services.agent_run_service import AgentRunResult, AgentRunService
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
@@ -60,3 +60,14 @@ def get_agent_run(
     if run is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
     return run
+
+
+@router.get("/{run_id}/result", response_model=AgentRunResult)
+def get_agent_run_result(
+    run_id: UUID,
+    service: AgentRunService = Depends(get_agent_run_service),
+) -> AgentRunResult:
+    result = service.get_run_result(run_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    return result

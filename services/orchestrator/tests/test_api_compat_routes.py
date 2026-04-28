@@ -73,6 +73,7 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     assert client.get("/dashboard/summary").status_code == 200
     assert client.get("/agent-runs").status_code == 200
     assert client.get(f"/agent-runs/{run_id}").status_code == 200
+    assert client.get(f"/agent-runs/{run_id}/result").status_code == 200
     assert client.get("/project-events").status_code == 200
     assert client.get(f"/tasks/{task_id}/events").status_code == 200
     assert client.get("/baton-packets").status_code == 200

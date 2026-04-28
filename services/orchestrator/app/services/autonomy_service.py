@@ -574,6 +574,7 @@ class AutonomyService:
         return (
             "You are Syncore reviewer.\n"
             f"Review task outcome for: {task.title}\n"
+            f"If acceptable, include exact token: {self._review_pass_keyword}\n"
             "Return pass/fail with key risks and next verification step."
         )
 

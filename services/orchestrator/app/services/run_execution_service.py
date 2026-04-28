@@ -19,7 +19,7 @@ from packages.contracts.python.models import (
 from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
-from app.context.retrieval_refs import estimate_tokens
+from app.context.retrieval_refs import build_ref_id, estimate_tokens
 from app.runs.providers import LlmProvider, LocalEchoProvider, OpenAIChatCompletionsProvider
 from app.services.context_service import ContextService
 
@@ -113,6 +113,13 @@ class RunExecutionService:
                     output_summary=shorten(result.output_text, width=500, placeholder=" ..."),
                 ),
             )
+            output_ref_id = self._store_run_output_reference(
+                task_id=payload.task_id,
+                run_id=run.id,
+                provider=provider_name,
+                model=payload.target_model,
+                output_text=result.output_text,
+            )
             self._record_event(
                 task_id=payload.task_id,
                 event_type="run.completed",
@@ -121,6 +128,7 @@ class RunExecutionService:
                     "target_model": payload.target_model,
                     "estimated_input_tokens": input_tokens,
                     "estimated_output_tokens": output_tokens,
+                    "output_ref_id": output_ref_id,
                 },
             )
             return RunExecutionResponse(
@@ -223,6 +231,13 @@ class RunExecutionService:
                     output_summary=shorten(full_output, width=500, placeholder=" ..."),
                 ),
             )
+            output_ref_id = self._store_run_output_reference(
+                task_id=payload.task_id,
+                run_id=run.id,
+                provider=provider_name,
+                model=payload.target_model,
+                output_text=full_output,
+            )
             self._record_event(
                 task_id=payload.task_id,
                 event_type="run.completed",
@@ -231,6 +246,7 @@ class RunExecutionService:
                     "target_model": payload.target_model,
                     "estimated_input_tokens": estimate_tokens(prompt),
                     "estimated_output_tokens": output_tokens,
+                    "output_ref_id": output_ref_id,
                 },
             )
             yield RunStreamEvent(
@@ -298,6 +314,44 @@ class RunExecutionService:
         self._store.save_project_event(
             ProjectEventCreate(task_id=task_id, event_type=event_type, event_data=event_data)
         )
+
+    def _store_run_output_reference(
+        self,
+        *,
+        task_id: UUID,
+        run_id: UUID,
+        provider: str,
+        model: str,
+        output_text: str,
+    ) -> str:
+        excerpt = " ".join(output_text.split())
+        summary = shorten(excerpt, width=220, placeholder=" ...")
+        retrieval_hint = (
+            f"run_id={run_id} provider={provider} model={model}; "
+            "retrieve via GET /context/references/{ref_id}"
+        )
+        ref_id = build_ref_id(task_id, "run_output", output_text)
+        record = self._store.upsert_context_reference(
+            ref_id=ref_id,
+            task_id=task_id,
+            content_type="run_output",
+            original_content=output_text,
+            summary=summary,
+            retrieval_hint=retrieval_hint,
+        )
+        ref_id = str(record["ref_id"])
+        self._record_event(
+            task_id=task_id,
+            event_type="run.output.stored",
+            event_data={
+                "run_id": str(run_id),
+                "ref_id": ref_id,
+                "provider": provider,
+                "target_model": model,
+                "chars": len(output_text),
+            },
+        )
+        return ref_id
 
 
 def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:

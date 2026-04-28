@@ -82,6 +82,17 @@ class FakeClient:
     def create_agent_run(self, payload):
         return {"id": "r2", **payload}
 
+    def get_agent_run_result(self, run_id: str):
+        return {
+            "run_id": run_id,
+            "task_id": "t1",
+            "status": "completed",
+            "output_summary": "summary",
+            "output_ref_id": "ctxref_1",
+            "output_text": "full output",
+            "retrieval_hint": "GET /context/references/{ref_id}",
+        }
+
     def list_task_events(self, task_id: str):
         return [{"id": "e1", "task_id": task_id, "event_type": "started"}]
 
@@ -249,3 +260,13 @@ def test_openai_auth_models_command(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["count"] == 2
+
+
+def test_run_result_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["run", "result", "r1", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["run_id"] == "r1"
+    assert payload["output_ref_id"] == "ctxref_1"
