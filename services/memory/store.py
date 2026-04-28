@@ -765,3 +765,55 @@ class MemoryStore:
                 )
             row = cursor.fetchone()
         return row
+
+    def save_autonomy_snapshot(
+        self,
+        *,
+        task_id: UUID,
+        cycle: int,
+        stage: str,
+        state: str,
+        strategy: str,
+        quality_score: int,
+        details: dict[str, object],
+    ) -> dict[str, object]:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO autonomy_snapshots (
+                    task_id, cycle, stage, state, strategy, quality_score, details
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (
+                    task_id,
+                    max(cycle, 1),
+                    stage,
+                    state,
+                    strategy,
+                    max(min(int(quality_score), 100), 0),
+                    Json(details),
+                ),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist autonomy snapshot")
+        return row
+
+    def list_autonomy_snapshots(
+        self, *, task_id: UUID, limit: int = 200
+    ) -> list[dict[str, object]]:
+        bounded_limit = min(max(limit, 1), 500)
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT * FROM autonomy_snapshots
+                WHERE task_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (task_id, bounded_limit),
+            )
+            rows = cursor.fetchall()
+        return rows

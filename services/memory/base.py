@@ -102,6 +102,22 @@ class MemoryStoreProtocol(Protocol):
         error: str | None = None,
     ) -> dict[str, object] | None: ...
 
+    def save_autonomy_snapshot(
+        self,
+        *,
+        task_id: UUID,
+        cycle: int,
+        stage: str,
+        state: str,
+        strategy: str,
+        quality_score: int,
+        details: dict[str, object],
+    ) -> dict[str, object]: ...
+
+    def list_autonomy_snapshots(
+        self, *, task_id: UUID, limit: int = 200
+    ) -> list[dict[str, object]]: ...
+
     def create_workspace(self, payload: WorkspaceCreate) -> Workspace: ...
 
     def get_workspace(self, workspace_id: UUID) -> Workspace | None: ...

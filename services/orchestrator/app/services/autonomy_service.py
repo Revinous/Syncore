@@ -23,6 +23,13 @@ from app.services.run_execution_service import RunExecutionService
 from app.store_factory import build_memory_store
 
 AUTONOMY_STAGES = ("plan", "execute", "review")
+AUTONOMY_STRATEGIES = (
+    "default",
+    "tighten_scope",
+    "increase_detail",
+    "raise_verification",
+    "switch_execution_role",
+)
 
 
 @dataclass
@@ -178,11 +185,47 @@ class AutonomyService:
                 note=f"Waiting {seconds_left}s before retrying stage '{next_stage}'.",
             )
 
+        strategy = self._select_replan_strategy(
+            events=events,
+            stage=next_stage,
+            cycle=cycle,
+            execute_role=execute_role,
+        )
         provider = self._resolve_provider(prefs)
         model = self._resolve_model(provider, prefs)
         max_retries = self._resolve_max_retries(prefs)
-        prompt = self._prompt_for_stage(stage=next_stage, task=task, prefs=prefs, cycle=cycle)
-        stage_role = self._role_for_stage(stage=next_stage, execute_role=execute_role)
+        prompt = self._prompt_for_stage(
+            stage=next_stage,
+            task=task,
+            prefs=prefs,
+            cycle=cycle,
+            strategy=strategy,
+        )
+        stage_role = self._role_for_stage(
+            stage=next_stage,
+            execute_role=execute_role,
+            strategy=strategy,
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="autonomy.strategy.selected",
+                event_data={
+                    "stage": next_stage,
+                    "cycle": cycle,
+                    "strategy": strategy,
+                },
+            )
+        )
+        self._save_snapshot(
+            task_id=task_id,
+            cycle=cycle,
+            stage=next_stage,
+            state="started",
+            strategy=strategy,
+            quality_score=0,
+            details={"role": stage_role, "provider": provider or "", "model": model},
+        )
 
         request = RunExecutionRequest(
             task_id=task_id,
@@ -198,9 +241,10 @@ class AutonomyService:
 
         try:
             run = self._run_execution_service.execute(request)
-            quality_ok, quality_reason = self._stage_quality_gate(
+            quality = self._stage_quality_gate(
                 stage=next_stage,
                 output_text=run.output_text,
+                strategy=strategy,
             )
             self._store.save_project_event(
                 ProjectEventCreate(
@@ -212,10 +256,25 @@ class AutonomyService:
                         "run_id": str(run.run_id),
                         "provider": run.provider,
                         "target_model": run.target_model,
+                        "strategy": strategy,
                     },
                 )
             )
-            if not quality_ok:
+            self._save_snapshot(
+                task_id=task_id,
+                cycle=cycle,
+                stage=next_stage,
+                state="completed",
+                strategy=strategy,
+                quality_score=quality["score"],
+                details={
+                    "quality_passed": quality["passed"],
+                    "quality_reasons": "; ".join(quality["reasons"]),
+                    "run_id": str(run.run_id),
+                },
+            )
+            if not bool(quality["passed"]):
+                quality_reason = "; ".join(quality["reasons"])
                 if cycle >= self._max_cycles:
                     self._store.update_task(task_id, TaskUpdate(status="blocked"))
                     self._store.save_project_event(
@@ -243,10 +302,18 @@ class AutonomyService:
                         event_data={
                             "stage": next_stage,
                             "cycle": cycle,
-                            "reason": quality_reason,
+                            "reason": quality_reason[:250],
                             "next_cycle": next_cycle,
+                            "strategy": strategy,
+                            "quality_score": int(quality["score"]),
                         },
                     )
+                )
+                self._record_feedback(
+                    task_id=task_id,
+                    stage=next_stage,
+                    strategy=strategy,
+                    outcome="quality_failed",
                 )
                 self._store.save_project_event(
                     ProjectEventCreate(
@@ -315,6 +382,12 @@ class AutonomyService:
                         run_id=run.run_id,
                         note=f"Review gate failed; moved to cycle {next_cycle}.",
                     )
+                self._record_feedback(
+                    task_id=task_id,
+                    stage=next_stage,
+                    strategy=strategy,
+                    outcome="success",
+                )
                 self._finalize_task(task_id)
                 return AutonomyResult(
                     task_id=task_id,
@@ -323,6 +396,12 @@ class AutonomyService:
                     note="Autonomy review passed and task finalized.",
                 )
 
+            self._record_feedback(
+                task_id=task_id,
+                stage=next_stage,
+                strategy=strategy,
+                outcome="success",
+            )
             return AutonomyResult(
                 task_id=task_id,
                 status="in_progress",
@@ -340,8 +419,18 @@ class AutonomyService:
                         "cycle": cycle,
                         "attempt": attempt,
                         "error": str(error)[:250],
+                        "strategy": strategy,
                     },
                 )
+            )
+            self._save_snapshot(
+                task_id=task_id,
+                cycle=cycle,
+                stage=next_stage,
+                state="failed",
+                strategy=strategy,
+                quality_score=0,
+                details={"attempt": attempt, "error": str(error)[:250]},
             )
 
             if attempt <= max_retries:
@@ -367,6 +456,12 @@ class AutonomyService:
                         f"retry scheduled in {round(delay_seconds, 2)}s."
                     ),
                 )
+            self._record_feedback(
+                task_id=task_id,
+                stage=next_stage,
+                strategy=strategy,
+                outcome="failed",
+            )
 
             self._store.update_task(task_id, TaskUpdate(status="blocked"))
             self._store.save_project_event(
@@ -615,7 +710,9 @@ class AutonomyService:
         task: Task,
         prefs: dict[str, str],
         cycle: int,
+        strategy: str,
     ) -> str:
+        guidance = self._strategy_guidance(strategy)
         if stage == "plan":
             mode = "Replan" if cycle > 1 else "Plan"
             return (
@@ -623,28 +720,36 @@ class AutonomyService:
                 f"Task title: {task.title}\n"
                 f"Task type: {task.task_type}\n"
                 f"Complexity: {task.complexity}\n"
-                "Produce a short implementation plan with clear first action."
+                f"Strategy: {strategy}.\n"
+                f"Guidance: {guidance}\n"
+                "Produce a short implementation plan with clear first action, "
+                "risks, and checkpoints."
             )
         if stage == "execute":
             preferred = prefs.get("execution_prompt", "").strip()
             if preferred:
-                return preferred
-            return _default_prompt(task)
+                return f"{preferred}\n\nStrategy: {strategy}. Guidance: {guidance}"
+            return _default_prompt(task, strategy=strategy, guidance=guidance)
         return (
             "You are Syncore reviewer.\n"
             f"Review task outcome for: {task.title}\n"
+            f"Strategy used: {strategy}. Guidance: {guidance}\n"
             f"If acceptable, include exact token: {self._review_pass_keyword}\n"
-            "Return pass/fail with key risks and next verification step."
+            "Return pass/fail with key risks, coverage notes, and next verification step."
         )
 
-    def _role_for_stage(self, *, stage: str, execute_role: str) -> str:
+    def _role_for_stage(self, *, stage: str, execute_role: str, strategy: str) -> str:
         if stage == "plan":
             return "planner"
         if stage == "execute":
+            if strategy == "switch_execution_role":
+                return "analyst" if execute_role == "coder" else "coder"
             return _normalize_agent_role(execute_role)
         return "reviewer"
 
-    def _stage_quality_gate(self, *, stage: str, output_text: str) -> tuple[bool, str]:
+    def _stage_quality_gate(
+        self, *, stage: str, output_text: str, strategy: str
+    ) -> dict[str, object]:
         text = (output_text or "").strip()
         minimum = self._execute_min_chars
         if stage == "plan":
@@ -652,9 +757,156 @@ class AutonomyService:
         elif stage == "review":
             minimum = self._review_min_chars
 
+        reasons: list[str] = []
+        score = 100
         if len(text) < minimum:
-            return False, f"Output too short for stage '{stage}' ({len(text)} < {minimum})."
-        return True, ""
+            reasons.append(f"Too short ({len(text)} < {minimum}).")
+            score -= 45
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if stage == "plan":
+            has_step_shape = any(
+                line.startswith(("-", "*")) or line[:2].isdigit()
+                for line in lines
+            )
+            if not has_step_shape:
+                reasons.append("Plan missing explicit step list.")
+                score -= 20
+            if "risk" not in text.lower():
+                reasons.append("Plan missing risk notes.")
+                score -= 10
+        if stage == "execute":
+            has_actionable = (
+                ("```" in text)
+                or ("$ " in text)
+                or ("def " in text)
+                or ("class " in text)
+            )
+            if not has_actionable:
+                reasons.append("Execute output missing concrete code/command artifacts.")
+                score -= 25
+        if stage == "review":
+            lowered = text.lower()
+            if "pass" not in lowered and "fail" not in lowered:
+                reasons.append("Review missing explicit pass/fail.")
+                score -= 20
+            if "risk" not in lowered:
+                reasons.append("Review missing risk analysis.")
+                score -= 10
+            if self._review_pass_keyword and self._review_pass_keyword.upper() not in text.upper():
+                reasons.append(f"Missing review pass keyword '{self._review_pass_keyword}'.")
+                score -= 40
+        if strategy == "raise_verification":
+            if "test" not in text.lower() and "verify" not in text.lower():
+                reasons.append("Verification-focused strategy requires tests/verification notes.")
+                score -= 15
+
+        score = max(score, 0)
+        return {"passed": score >= 70, "score": score, "reasons": reasons}
+
+    def _select_replan_strategy(
+        self,
+        *,
+        events: list[ProjectEvent],
+        stage: str,
+        cycle: int,
+        execute_role: str,
+    ) -> str:
+        if cycle <= 1:
+            return "default"
+        recent_fail = self._latest_event(events, "autonomy.quality.failed")
+        reason = str((recent_fail.event_data.get("reason") if recent_fail else "") or "").lower()
+        candidates = [
+            "tighten_scope",
+            "increase_detail",
+            "raise_verification",
+            "switch_execution_role",
+        ]
+        if "short" in reason:
+            candidates = [
+                "increase_detail",
+                "tighten_scope",
+                "raise_verification",
+                "switch_execution_role",
+            ]
+        elif "risk" in reason or stage == "review":
+            candidates = [
+                "raise_verification",
+                "increase_detail",
+                "tighten_scope",
+                "switch_execution_role",
+            ]
+        elif execute_role == "coder":
+            candidates = [
+                "switch_execution_role",
+                "increase_detail",
+                "tighten_scope",
+                "raise_verification",
+            ]
+        return self._best_strategy_from_feedback(candidates)
+
+    def _best_strategy_from_feedback(self, candidates: list[str]) -> str:
+        feedback = self._store.list_project_events(task_id=None, limit=500)
+        scores: dict[str, int] = {name: 0 for name in AUTONOMY_STRATEGIES}
+        for event in feedback:
+            if event.event_type != "autonomy.feedback":
+                continue
+            strategy = str(event.event_data.get("strategy") or "").strip()
+            outcome = str(event.event_data.get("outcome") or "").strip()
+            if strategy not in scores:
+                continue
+            if outcome == "success":
+                scores[strategy] += 3
+            elif outcome == "quality_failed":
+                scores[strategy] -= 2
+            elif outcome == "failed":
+                scores[strategy] -= 3
+        best = max(candidates, key=lambda item: scores.get(item, 0))
+        return best if best in AUTONOMY_STRATEGIES else "default"
+
+    def _strategy_guidance(self, strategy: str) -> str:
+        if strategy == "tighten_scope":
+            return "Break work into smaller validated increments and avoid broad refactors."
+        if strategy == "increase_detail":
+            return "Increase implementation detail and include explicit step-by-step artifacts."
+        if strategy == "raise_verification":
+            return "Prioritize tests, checks, and explicit verification evidence."
+        if strategy == "switch_execution_role":
+            return "Shift execution perspective to reduce repeated blind spots."
+        return "Deliver concise, actionable, and verifiable output."
+
+    def _record_feedback(self, *, task_id: UUID, stage: str, strategy: str, outcome: str) -> None:
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="autonomy.feedback",
+                event_data={
+                    "stage": stage,
+                    "strategy": strategy,
+                    "outcome": outcome,
+                },
+            )
+        )
+
+    def _save_snapshot(
+        self,
+        *,
+        task_id: UUID,
+        cycle: int,
+        stage: str,
+        state: str,
+        strategy: str,
+        quality_score: int,
+        details: dict[str, object],
+    ) -> None:
+        self._store.save_autonomy_snapshot(
+            task_id=task_id,
+            cycle=cycle,
+            stage=stage,
+            state=state,
+            strategy=strategy,
+            quality_score=quality_score,
+            details=details,
+        )
 
     def _persist_autonomy_baton(self, *, task: Task, routing_worker: str) -> None:
         self._store.save_baton_packet(
@@ -734,13 +986,15 @@ def _normalize_agent_role(candidate: str) -> str:
     return "coder"
 
 
-def _default_prompt(task: Task) -> str:
+def _default_prompt(task: Task, *, strategy: str, guidance: str) -> str:
     return (
         "You are the autonomous implementation worker.\n"
         f"Task title: {task.title}\n"
         f"Task type: {task.task_type}\n"
         f"Complexity: {task.complexity}\n"
-        "Deliver a concrete implementation plan and the first executable step."
+        f"Strategy: {strategy}\n"
+        f"Guidance: {guidance}\n"
+        "Deliver a concrete implementation plan, executable artifacts, and verification notes."
     )
 
 

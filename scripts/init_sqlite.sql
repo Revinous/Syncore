@@ -88,6 +88,18 @@ CREATE TABLE IF NOT EXISTS run_queue (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS autonomy_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  cycle INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  state TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  quality_score INTEGER NOT NULL DEFAULT 0,
+  details TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
   ON agent_runs (task_id, created_at ASC);
 
@@ -111,3 +123,6 @@ CREATE INDEX IF NOT EXISTS idx_context_bundles_task_id_created_at
 
 CREATE INDEX IF NOT EXISTS idx_run_queue_status_available_created
   ON run_queue (status, available_at, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_autonomy_snapshots_task_created
+  ON autonomy_snapshots (task_id, created_at DESC);

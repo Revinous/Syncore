@@ -374,3 +374,100 @@ def test_autonomy_quality_gate_can_trigger_replan(monkeypatch, tmp_path) -> None
         events = client.get(f"/tasks/{task_id}/events")
         assert events.status_code == 200
         assert any(e["event_type"] == "autonomy.quality.failed" for e in events.json())
+
+
+def test_autonomy_persists_state_snapshots(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task with snapshot trail",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        run = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert run.status_code == 200
+
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM autonomy_snapshots WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        assert row is not None
+        assert int(row[0]) >= 1
+
+
+def test_autonomy_uses_feedback_for_replan_strategy(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_PLAN_MIN_CHARS", "10000")
+    monkeypatch.setenv("AUTONOMY_MAX_CYCLES", "2")
+
+    with TestClient(create_app()) as client:
+        seed_task = client.post(
+            "/tasks",
+            json={
+                "title": "Seed feedback task",
+                "task_type": "analysis",
+                "complexity": "low",
+            },
+        )
+        assert seed_task.status_code == 201
+        seed_task_id = seed_task.json()["id"]
+        for _ in range(2):
+            ev = client.post(
+                "/project-events",
+                json={
+                    "task_id": seed_task_id,
+                    "event_type": "autonomy.feedback",
+                    "event_data": {"strategy": "raise_verification", "outcome": "success"},
+                },
+            )
+            assert ev.status_code == 201
+
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task that replans from quality gate",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        first = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert first.status_code == 200
+        assert first.json()["status"] == "replanning"
+
+        second = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert second.status_code == 200
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        strategy_events = [
+            e for e in events.json() if e["event_type"] == "autonomy.strategy.selected"
+        ]
+        assert len(strategy_events) >= 2
+        assert strategy_events[-1]["event_data"]["strategy"] == "raise_verification"

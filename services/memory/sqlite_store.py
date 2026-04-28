@@ -921,5 +921,69 @@ class SQLiteMemoryStore:
         record["payload"] = json.loads(str(record["payload"]))
         return record
 
+    def save_autonomy_snapshot(
+        self,
+        *,
+        task_id: UUID,
+        cycle: int,
+        stage: str,
+        state: str,
+        strategy: str,
+        quality_score: int,
+        details: dict[str, object],
+    ) -> dict[str, object]:
+        snapshot_id = str(uuid4())
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO autonomy_snapshots (
+                    snapshot_id, task_id, cycle, stage, state, strategy, quality_score, details, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    str(task_id),
+                    max(cycle, 1),
+                    stage,
+                    state,
+                    strategy,
+                    max(min(int(quality_score), 100), 0),
+                    json.dumps(details, ensure_ascii=True, sort_keys=True),
+                    now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM autonomy_snapshots WHERE snapshot_id = ?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist autonomy snapshot")
+        record = dict(row)
+        record["details"] = json.loads(str(record["details"]))
+        return record
+
+    def list_autonomy_snapshots(
+        self, *, task_id: UUID, limit: int = 200
+    ) -> list[dict[str, object]]:
+        bounded_limit = min(max(limit, 1), 500)
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM autonomy_snapshots
+                WHERE task_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(task_id), bounded_limit),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            record = dict(row)
+            record["details"] = json.loads(str(record["details"]))
+            result.append(record)
+        return result
+
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
