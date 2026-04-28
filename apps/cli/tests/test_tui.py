@@ -62,6 +62,19 @@ class FakeClient:
     def dashboard_summary(self):
         return {"health": "ok", "runtime_mode": "native"}
 
+    def context_efficiency_metrics(self, limit: int = 200):
+        return {
+            "bundle_count": 1,
+            "totals": {
+                "raw_tokens": 1000,
+                "optimized_tokens": 700,
+                "saved_tokens": 300,
+                "savings_pct": 30.0,
+            },
+            "by_model": {"local_echo": {"bundle_count": 1, "saved_tokens": 300}},
+            "recent_bundles": [],
+        }
+
     def list_workspaces(self):
         return []
 
@@ -75,6 +88,13 @@ class FakeClient:
 def test_tui_initializes() -> None:
     app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
     assert app is not None
+
+
+def test_action_show_metrics_switches_view() -> None:
+    app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
+    app._client = FakeClient()
+    app.action_show_metrics()
+    assert app.current_view == "metrics"
 
 
 def test_action_new_task_creates_task(monkeypatch) -> None:

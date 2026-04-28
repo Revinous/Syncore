@@ -317,6 +317,7 @@ class SyncoreTuiApp(App[None]):
         ("t", "show_tasks", "Tasks"),
         ("a", "show_runs", "Runs"),
         ("x", "show_diagnostics", "Diagnostics"),
+        ("c", "show_metrics", "Metrics"),
         ("v", "open_detail", "Open Detail"),
         ("b", "back_view", "Back"),
         ("j", "next_item", "Next"),
@@ -361,6 +362,7 @@ class SyncoreTuiApp(App[None]):
         self._services: dict[str, Any] = {}
         self._diag_config: dict[str, Any] = {}
         self._diag_routes: dict[str, Any] = {}
+        self._context_efficiency: dict[str, Any] = {}
         self._task_events: list[dict[str, Any]] = []
         self._task_batons: list[dict[str, Any]] = []
         self._task_runs: list[dict[str, Any]] = []
@@ -431,6 +433,12 @@ class SyncoreTuiApp(App[None]):
                 self._services = self._safe_request(self._client.services_health, {})
                 self._diag_config = self._safe_request(self._client.diagnostics_config, {})
                 self._diag_routes = self._safe_request(self._client.diagnostics_routes, {})
+            if self.current_view in {"dashboard", "metrics"}:
+                metrics_fn = getattr(self._client, "context_efficiency_metrics", None)
+                if callable(metrics_fn):
+                    self._context_efficiency = self._safe_request(metrics_fn, {})
+                else:
+                    self._context_efficiency = {}
 
             self._sync_workspace_selection()
             self._sync_task_selection()
@@ -626,6 +634,8 @@ class SyncoreTuiApp(App[None]):
             return self._render_runs_left()
         if self.current_view == "diagnostics":
             return self._render_diagnostics_left()
+        if self.current_view == "metrics":
+            return self._render_metrics_left()
         return "Unknown view"
 
     def _render_center_pane(self) -> str:
@@ -641,6 +651,8 @@ class SyncoreTuiApp(App[None]):
             return self._render_runs_center()
         if self.current_view == "diagnostics":
             return self._render_diagnostics_center()
+        if self.current_view == "metrics":
+            return self._render_metrics_center()
         return ""
 
     def _render_right_pane(self) -> str:
@@ -659,7 +671,7 @@ class SyncoreTuiApp(App[None]):
             f"Workspace: {self._selected_workspace_name or 'none'}",
             f"Task: {self._selected_task_title or 'none'}",
             "",
-            "Views: d/w/t/a/x | detail: v/b",
+            "Views: d/w/t/a/x/c | detail: v/b",
             "Nav: j/k | Refresh: r | Quit: q",
             actions_hint,
             "OpenAI: i=signin m=models",
@@ -699,12 +711,14 @@ class SyncoreTuiApp(App[None]):
         return "\n".join(lines)
 
     def _render_dashboard_left(self) -> str:
+        totals = self._context_efficiency.get("totals", {}) if self._context_efficiency else {}
         return "\n".join(
             [
                 "Dashboard",
                 f"Workspaces: {self._summary.get('workspace_count', len(self._workspaces))}",
                 f"Open tasks: {self._summary.get('open_task_count', 0)}",
                 f"Active runs: {self._summary.get('active_run_count', 0)}",
+                f"Saved tokens: {totals.get('saved_tokens', 0)} ({totals.get('savings_pct', 0)}%)",
                 "",
                 "Recent tasks:",
                 *[
@@ -732,6 +746,50 @@ class SyncoreTuiApp(App[None]):
                 for baton in batons[:8]
             ]
         )
+        return "\n".join(lines)
+
+    def _render_metrics_left(self) -> str:
+        totals = self._context_efficiency.get("totals", {}) if self._context_efficiency else {}
+        cost_totals = (
+            self._context_efficiency.get("cost_totals", {}) if self._context_efficiency else {}
+        )
+        return "\n".join(
+            [
+                "Context Efficiency",
+                f"Bundles: {self._context_efficiency.get('bundle_count', 0)}",
+                f"Raw tokens: {totals.get('raw_tokens', 0)}",
+                f"Optimized tokens: {totals.get('optimized_tokens', 0)}",
+                f"Saved tokens: {totals.get('saved_tokens', 0)}",
+                f"Savings: {totals.get('savings_pct', 0)}%",
+                f"Cost saved: {cost_totals.get('saved_usd', 'n/a')}",
+            ]
+        )
+
+    def _render_metrics_center(self) -> str:
+        if not self._context_efficiency:
+            return "No metrics available."
+        by_model = self._context_efficiency.get("by_model", {}) or {}
+        recent = self._context_efficiency.get("recent_bundles", []) or []
+        lines = ["By model:"]
+        if not by_model:
+            lines.append("- none")
+        else:
+            for model, bucket in list(by_model.items())[:12]:
+                lines.append(
+                    f"- {model}: bundles={bucket.get('bundle_count', 0)} "
+                    f"saved={bucket.get('saved_tokens', 0)}"
+                )
+        lines.append("")
+        lines.append("Recent bundles:")
+        if not recent:
+            lines.append("- none")
+        else:
+            for item in recent[:12]:
+                lines.append(
+                    f"- {item.get('bundle_id')} model={item.get('target_model')} "
+                    f"saved={item.get('token_savings_estimate', 0)} "
+                    f"({item.get('token_savings_pct', 0)}%)"
+                )
         return "\n".join(lines)
 
     def _render_workspaces_left(self) -> str:
@@ -929,6 +987,9 @@ class SyncoreTuiApp(App[None]):
 
     def action_show_diagnostics(self) -> None:
         self._switch("diagnostics")
+
+    def action_show_metrics(self) -> None:
+        self._switch("metrics")
 
     def action_open_detail(self) -> None:
         if self.current_view == "tasks":
