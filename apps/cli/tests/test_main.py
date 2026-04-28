@@ -160,6 +160,15 @@ class FakeClient:
                 "savings_pct": 30.0,
             },
             "by_model": {"gpt-4.1-mini": {"bundle_count": 1, "raw_tokens": 1000, "optimized_tokens": 700, "saved_tokens": 300}},
+            "layering_profiles": {
+                "implementation|high|gpt-4.1-mini|coder": {
+                    "bundle_count": 3,
+                    "layering_modes": {"dual": 3},
+                    "legacy_tokens": 3453,
+                    "layered_tokens": 3450,
+                    "comparison_count": 3,
+                }
+            },
             "recent_bundles": [],
         }
 
@@ -237,6 +246,15 @@ def test_metrics_context_json_output(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["totals"]["saved_tokens"] == 300
+
+
+def test_metrics_layering_json_output(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["metrics", "layering", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert "implementation|high|gpt-4.1-mini|coder" in payload
 
 
 def test_open_command_resolves_workspace_and_launches_tui(monkeypatch) -> None:

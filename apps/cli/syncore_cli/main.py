@@ -349,6 +349,54 @@ def metrics_context(
     )
 
 
+@metrics_app.command("layering")
+def metrics_layering(
+    json_output: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(500, "--limit", min=1, max=2000),
+) -> None:
+    client = _client()
+    try:
+        payload = client.context_efficiency_metrics(limit=limit)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        print_json(payload.get("layering_profiles", {}))
+        return
+
+    profiles = payload.get("layering_profiles", {})
+    if not isinstance(profiles, dict) or not profiles:
+        print_kv_panel("Layering Rollout", {"profiles": 0})
+        return
+
+    rows: list[list[str]] = []
+    for profile, stats in profiles.items():
+        if not isinstance(stats, dict):
+            continue
+        legacy_tokens = int(stats.get("legacy_tokens", 0) or 0)
+        layered_tokens = int(stats.get("layered_tokens", 0) or 0)
+        comparison_count = int(stats.get("comparison_count", 0) or 0)
+        delta = legacy_tokens - layered_tokens
+        pct = round((delta / legacy_tokens) * 100.0, 2) if legacy_tokens > 0 else 0.0
+        rows.append(
+            [
+                str(profile),
+                str(stats.get("bundle_count", 0)),
+                str(stats.get("layering_modes", {})),
+                str(delta),
+                f"{pct}%",
+                str(comparison_count),
+            ]
+        )
+    rows.sort(key=lambda row: row[0])
+    print_table(
+        "Layering Rollout Profiles",
+        ["profile", "bundles", "modes", "token_delta", "delta_pct", "samples"],
+        rows,
+    )
+
+
 @workspace_app.command("list")
 def workspace_list(json_output: bool = typer.Option(False, "--json")) -> None:
     client = _client()

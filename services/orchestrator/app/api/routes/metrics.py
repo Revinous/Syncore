@@ -42,6 +42,7 @@ def get_context_efficiency_metrics(
     cost_rows = 0
     by_model: dict[str, dict[str, object]] = {}
     layering_mode_counts: dict[str, int] = {}
+    layering_profiles: dict[str, dict[str, object]] = {}
     dual_mode_count = 0
     dual_legacy_total = 0
     dual_layered_total = 0
@@ -98,6 +99,22 @@ def get_context_efficiency_metrics(
         if isinstance(optimized_context, dict):
             layering_mode = str(optimized_context.get("layering_mode") or "unknown")
             layering_mode_counts[layering_mode] = layering_mode_counts.get(layering_mode, 0) + 1
+            rollout_profile = str(optimized_context.get("rollout_profile") or "").strip()
+            if rollout_profile:
+                profile_bucket = layering_profiles.setdefault(
+                    rollout_profile,
+                    {
+                        "bundle_count": 0,
+                        "layering_modes": {},
+                        "legacy_tokens": 0,
+                        "layered_tokens": 0,
+                        "comparison_count": 0,
+                    },
+                )
+                profile_bucket["bundle_count"] = int(profile_bucket["bundle_count"]) + 1
+                modes = profile_bucket["layering_modes"]
+                if isinstance(modes, dict):
+                    modes[layering_mode] = int(modes.get(layering_mode, 0)) + 1
             comparison = optimized_context.get("layering_comparison")
             if isinstance(comparison, dict):
                 legacy = comparison.get("legacy_estimated_tokens")
@@ -106,6 +123,17 @@ def get_context_efficiency_metrics(
                     dual_mode_count += 1
                     dual_legacy_total += legacy
                     dual_layered_total += layered
+                    if rollout_profile:
+                        profile_bucket = layering_profiles[rollout_profile]
+                        profile_bucket["legacy_tokens"] = (
+                            int(profile_bucket["legacy_tokens"]) + legacy
+                        )
+                        profile_bucket["layered_tokens"] = (
+                            int(profile_bucket["layered_tokens"]) + layered
+                        )
+                        profile_bucket["comparison_count"] = int(
+                            profile_bucket["comparison_count"]
+                        ) + 1
 
     savings_pct = round((total_saved / total_raw) * 100.0, 2) if total_raw > 0 else 0.0
     payload: dict[str, object] = {
@@ -118,6 +146,7 @@ def get_context_efficiency_metrics(
         },
         "by_model": by_model,
         "layering_modes": layering_mode_counts,
+        "layering_profiles": layering_profiles,
         "recent_bundles": recent[:50],
     }
     if cost_rows > 0:

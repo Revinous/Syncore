@@ -58,6 +58,16 @@ export type ContextEfficiencyMetrics = {
   };
   by_model: Record<string, ContextEfficiencyModelBreakdown>;
   layering_modes?: Record<string, number>;
+  layering_profiles?: Record<
+    string,
+    {
+      bundle_count: number;
+      layering_modes: Record<string, number>;
+      legacy_tokens: number;
+      layered_tokens: number;
+      comparison_count: number;
+    }
+  >;
   layering_comparison?: {
     bundle_count: number;
     legacy_tokens: number;
