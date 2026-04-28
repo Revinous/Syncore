@@ -9,7 +9,7 @@ markdown_extensions:
   - admonition
   - tables
 nav:
-  - Home: rtd/index.md
+  - Home: index.md
   - Getting Started: rtd/getting-started.md
   - Environments:
     - Native (SQLite): rtd/environments/native.md
