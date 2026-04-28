@@ -1,0 +1,33 @@
+site_name: Syncore Documentation
+site_description: Syncore orchestration platform docs for Docker and Native modes, plus Web UI, CLI, and TUI.
+site_url: https://syncore.readthedocs.io/
+repo_url: https://github.com/attiluh/Syncore
+repo_name: attiluh/Syncore
+theme:
+  name: readthedocs
+markdown_extensions:
+  - admonition
+  - tables
+nav:
+  - Home: rtd/index.md
+  - Getting Started: rtd/getting-started.md
+  - Environments:
+    - Native (SQLite): rtd/environments/native.md
+    - Docker (Postgres + Redis): rtd/environments/docker.md
+    - Environment Variables: rtd/environments/env-vars.md
+  - Interfaces:
+    - Web UI: rtd/interfaces/webui.md
+    - CLI: rtd/interfaces/cli.md
+    - TUI: rtd/interfaces/tui.md
+  - Workflows:
+    - Workspace Lifecycle: rtd/workflows/workspaces.md
+    - Task and Run Lifecycle: rtd/workflows/tasks-runs.md
+    - Context Optimization: rtd/workflows/context-optimization.md
+    - Autonomy: rtd/workflows/autonomy.md
+  - Reference:
+    - API Endpoints: rtd/reference/api.md
+    - CLI Command Reference: rtd/reference/cli-reference.md
+    - TUI Hotkeys: rtd/reference/tui-hotkeys.md
+  - Operations:
+    - Troubleshooting: rtd/operations/troubleshooting.md
+    - Upgrade and Branch Strategy: rtd/operations/branching-and-versions.md

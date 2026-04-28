@@ -6,6 +6,8 @@ This guide is intentionally focused on **local MVP validation only**. It does no
 
 For full beginner-to-advanced usage, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
+For segmented Read the Docs content (environments, interfaces, workflows, and references), see [docs/rtd/index.md](docs/rtd/index.md).
+
 This repository is optimized for one believable local workflow:
 
 1. Create a task.

@@ -1,6 +1,7 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
 	install-local db-local-init dev-local bootstrap-local local-test \
-	install-cli cli-status tui web ui-check db-migrate db-revision
+	install-cli cli-status tui web ui-check db-migrate db-revision \
+	docs-install docs-serve docs-build
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -44,6 +45,15 @@ web:
 ui-check:
 	npm --prefix apps/web run lint
 	cd apps/cli && ../../.venv/bin/python -m pytest -q
+
+docs-install:
+	uv pip install --python .venv/bin/python -r docs/requirements-rtd.txt
+
+docs-serve:
+	.venv/bin/python -m mkdocs serve
+
+docs-build:
+	.venv/bin/python -m mkdocs build
 
 up:
 	docker compose up -d --build
