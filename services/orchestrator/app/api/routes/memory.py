@@ -9,7 +9,11 @@ router = APIRouter(prefix="/memory", tags=["memory"])
 
 
 def get_context_service(settings: Settings = Depends(get_settings)) -> ContextService:
-    return ContextService(build_memory_store(settings))
+    return ContextService(
+        build_memory_store(settings),
+        layering_enabled=settings.context_layering_enabled,
+        layering_dual_mode=settings.context_layering_dual_mode,
+    )
 
 
 @router.post("/lookup", response_model=MemoryLookupResponse)

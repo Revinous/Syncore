@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS context_references (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS context_reference_layers (
+  layer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ref_id TEXT NOT NULL REFERENCES context_references(ref_id) ON DELETE CASCADE,
+  layer TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(ref_id, layer)
+);
+
 CREATE TABLE IF NOT EXISTS context_bundles (
   bundle_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -136,6 +145,9 @@ CREATE INDEX IF NOT EXISTS idx_workspaces_root_path
 
 CREATE INDEX IF NOT EXISTS idx_context_references_task_id_created_at
   ON context_references (task_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_context_reference_layers_ref_id_layer
+  ON context_reference_layers (ref_id, layer);
 
 CREATE INDEX IF NOT EXISTS idx_context_bundles_task_id_created_at
   ON context_bundles (task_id, created_at DESC);

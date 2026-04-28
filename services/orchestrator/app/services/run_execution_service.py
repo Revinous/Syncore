@@ -65,7 +65,11 @@ class RunExecutionService:
             postgres_dsn=settings.postgres_dsn,
             sqlite_db_path=settings.sqlite_db_path,
         )
-        context_service = ContextService(store)
+        context_service = ContextService(
+            store,
+            layering_enabled=settings.context_layering_enabled,
+            layering_dual_mode=settings.context_layering_dual_mode,
+        )
         providers: dict[str, LlmProvider] = {
             "local_echo": LocalEchoProvider(),
         }

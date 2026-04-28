@@ -41,6 +41,9 @@ def get_context_efficiency_metrics(
     total_cost_saved = 0.0
     cost_rows = 0
     by_model: dict[str, dict[str, object]] = {}
+    dual_mode_count = 0
+    dual_legacy_total = 0
+    dual_layered_total = 0
 
     recent: list[dict[str, object]] = []
     for row in rows:
@@ -90,6 +93,17 @@ def get_context_efficiency_metrics(
             }
         )
 
+        optimized_context = row.get("optimized_context")
+        if isinstance(optimized_context, dict):
+            comparison = optimized_context.get("layering_comparison")
+            if isinstance(comparison, dict):
+                legacy = comparison.get("legacy_estimated_tokens")
+                layered = comparison.get("layered_estimated_tokens")
+                if isinstance(legacy, int) and isinstance(layered, int):
+                    dual_mode_count += 1
+                    dual_legacy_total += legacy
+                    dual_layered_total += layered
+
     savings_pct = round((total_saved / total_raw) * 100.0, 2) if total_raw > 0 else 0.0
     payload: dict[str, object] = {
         "bundle_count": len(rows),
@@ -107,5 +121,19 @@ def get_context_efficiency_metrics(
             "raw_usd": round(total_cost_raw, 8),
             "optimized_usd": round(total_cost_optimized, 8),
             "saved_usd": round(total_cost_saved, 8),
+        }
+    if dual_mode_count > 0:
+        dual_saved = dual_legacy_total - dual_layered_total
+        dual_pct = (
+            round((dual_saved / dual_legacy_total) * 100.0, 2)
+            if dual_legacy_total > 0
+            else 0.0
+        )
+        payload["layering_comparison"] = {
+            "bundle_count": dual_mode_count,
+            "legacy_tokens": dual_legacy_total,
+            "layered_tokens": dual_layered_total,
+            "saved_tokens": dual_saved,
+            "savings_pct": dual_pct,
         }
     return payload

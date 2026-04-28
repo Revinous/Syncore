@@ -74,6 +74,18 @@ class MemoryStoreProtocol(Protocol):
 
     def get_context_reference(self, ref_id: str) -> dict[str, object] | None: ...
 
+    def upsert_context_reference_layer(
+        self,
+        *,
+        ref_id: str,
+        layer: str,
+        content: str,
+    ) -> dict[str, object]: ...
+
+    def get_context_reference_layer(
+        self, *, ref_id: str, layer: str
+    ) -> dict[str, object] | None: ...
+
     def save_context_bundle(
         self,
         *,

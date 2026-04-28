@@ -720,6 +720,54 @@ class SQLiteMemoryStore:
             return None
         return dict(row)
 
+    def upsert_context_reference_layer(
+        self,
+        *,
+        ref_id: str,
+        layer: str,
+        content: str,
+    ) -> dict[str, object]:
+        layer_id = str(uuid4())
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO context_reference_layers (
+                    layer_id, ref_id, layer, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(ref_id, layer) DO UPDATE SET
+                    content=excluded.content
+                """,
+                (layer_id, ref_id, layer, content, self._now()),
+            )
+            row = connection.execute(
+                """
+                SELECT layer_id, ref_id, layer, content, created_at
+                FROM context_reference_layers
+                WHERE ref_id = ? AND layer = ?
+                """,
+                (ref_id, layer),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist context reference layer")
+        return dict(row)
+
+    def get_context_reference_layer(
+        self, *, ref_id: str, layer: str
+    ) -> dict[str, object] | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT layer_id, ref_id, layer, content, created_at
+                FROM context_reference_layers
+                WHERE ref_id = ? AND layer = ?
+                """,
+                (ref_id, layer),
+            ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
     def save_context_bundle(
         self,
         *,

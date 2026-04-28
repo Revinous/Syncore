@@ -17,10 +17,15 @@ class ContextService:
         store: MemoryStoreProtocol,
         assembler: ContextAssembler | None = None,
         optimizer: ContextOptimizer | None = None,
+        *,
+        layering_enabled: bool = False,
+        layering_dual_mode: bool = False,
     ) -> None:
         self._store = store
         self._assembler = assembler or ContextAssembler(store)
         self._optimizer = optimizer or SimpleContextOptimizer(store)
+        self._layering_enabled = layering_enabled
+        self._layering_dual_mode = layering_dual_mode
 
     def lookup_memory(self, task_id: UUID, limit: int = 20) -> MemoryLookupResponse:
         task = self._store.get_task(task_id)
@@ -86,8 +91,32 @@ class ContextService:
             target_model=target_model,
             token_budget=token_budget,
         )
-        policy = default_context_policy(token_budget=token_budget)
+        policy = default_context_policy(
+            token_budget=token_budget,
+            layering_enabled=self._layering_enabled,
+        )
         optimized = self._optimizer.optimize(raw_bundle, policy=policy)
+
+        legacy_tokens: int | None = None
+        layered_tokens: int | None = None
+        if self._layering_enabled and self._layering_dual_mode:
+            legacy_policy = default_context_policy(
+                token_budget=token_budget,
+                layering_enabled=False,
+            )
+            legacy_bundle = self._optimizer.optimize(raw_bundle, policy=legacy_policy)
+            legacy_tokens = legacy_bundle.estimated_token_count
+            layered_tokens = optimized.estimated_token_count
+            optimized.optimized_context["layering_comparison"] = {
+                "legacy_estimated_tokens": legacy_tokens,
+                "layered_estimated_tokens": layered_tokens,
+                "estimated_token_delta": legacy_tokens - layered_tokens,
+            }
+            optimized.optimized_context["layering_mode"] = "dual"
+        elif self._layering_enabled:
+            optimized.optimized_context["layering_mode"] = "layered"
+        else:
+            optimized.optimized_context["layering_mode"] = "legacy"
         cost_raw = estimate_input_cost_usd(
             model=target_model, input_tokens=optimized.raw_estimated_token_count
         )

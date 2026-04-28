@@ -609,6 +609,44 @@ class MemoryStore:
             row = cursor.fetchone()
         return row
 
+    def upsert_context_reference_layer(
+        self,
+        *,
+        ref_id: str,
+        layer: str,
+        content: str,
+    ) -> dict[str, object]:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO context_reference_layers (ref_id, layer, content)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (ref_id, layer) DO UPDATE
+                SET content = EXCLUDED.content
+                RETURNING layer_id, ref_id, layer, content, created_at
+                """,
+                (ref_id, layer, content),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to persist context reference layer")
+        return row
+
+    def get_context_reference_layer(
+        self, *, ref_id: str, layer: str
+    ) -> dict[str, object] | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT layer_id, ref_id, layer, content, created_at
+                FROM context_reference_layers
+                WHERE ref_id = %s AND layer = %s
+                """,
+                (ref_id, layer),
+            )
+            row = cursor.fetchone()
+        return row
+
     def save_context_bundle(
         self,
         *,

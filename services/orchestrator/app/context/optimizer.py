@@ -150,11 +150,24 @@ class SimpleContextOptimizer(ContextOptimizer):
             and len(content) > policy.large_content_threshold_chars
             and not preserve
         ):
-            reference = self._save_reference(task_id, section.section_type, content)
+            reference = self._save_reference(
+                task_id,
+                section.section_type,
+                content,
+                layering_enabled=policy.layering_enabled,
+            )
+            layer_overview = None
+            if policy.layering_enabled:
+                layer_row = self._store.get_context_reference_layer(
+                    ref_id=reference.ref_id,
+                    layer="L1",
+                )
+                if layer_row is not None:
+                    layer_overview = str(layer_row.get("content") or "").strip()
             error_snippets = self._extract_error_lines(content)
             placeholder = render_reference_placeholder(
                 reference.ref_id,
-                reference.summary,
+                layer_overview or reference.summary,
                 reference.retrieval_hint,
             )
             if error_snippets:
@@ -202,6 +215,8 @@ class SimpleContextOptimizer(ContextOptimizer):
         task_id,
         content_type: str,
         original_content: str,
+        *,
+        layering_enabled: bool = False,
     ) -> ContextReference:
         ref_id = build_ref_id(task_id, content_type, original_content)
         summary = summarize_for_reference(original_content)
@@ -214,7 +229,24 @@ class SimpleContextOptimizer(ContextOptimizer):
             summary=summary,
             retrieval_hint=retrieval_hint,
         )
+        l0 = self._build_l0_abstract(original_content)
+        l1 = self._build_l1_overview(original_content)
+        self._store.upsert_context_reference_layer(ref_id=ref_id, layer="L0", content=l0)
+        self._store.upsert_context_reference_layer(ref_id=ref_id, layer="L1", content=l1)
+        self._store.upsert_context_reference_layer(
+            ref_id=ref_id,
+            layer="L2",
+            content=original_content if layering_enabled else summary,
+        )
         return ContextReference.model_validate(row)
+
+    def _build_l0_abstract(self, text: str) -> str:
+        compact = " ".join(text.split())
+        return self._summarize(compact, 120)
+
+    def _build_l1_overview(self, text: str) -> str:
+        compact = " ".join(text.split())
+        return self._summarize(compact, 1200)
 
     def _extract_error_lines(self, text: str) -> list[str]:
         lines = [

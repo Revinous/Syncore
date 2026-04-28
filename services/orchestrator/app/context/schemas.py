@@ -57,6 +57,7 @@ class ContextReference(BaseModel):
 
 class ContextOptimizationPolicy(BaseModel):
     token_budget: int = Field(ge=256, le=200_000)
+    layering_enabled: bool = False
     preserve_section_types: set[ContextSectionType] = Field(default_factory=set)
     large_content_threshold_chars: int = Field(default=2_000, ge=500)
     max_baton_chars: int = Field(default=3_500, ge=512)

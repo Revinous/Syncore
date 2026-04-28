@@ -101,6 +101,8 @@ Key variables:
 - `AUTONOMY_MAX_TOTAL_STEPS` – hard cap on total autonomy stage attempts
 - `AUTONOMY_REVIEW_PASS_KEYWORD` – review pass token required by gate
 - `AUTONOMY_PLAN_MIN_CHARS` / `AUTONOMY_EXECUTE_MIN_CHARS` / `AUTONOMY_REVIEW_MIN_CHARS` – stage output quality gates
+- `CONTEXT_LAYERING_ENABLED` – enable L0/L1/L2 context layering during optimization
+- `CONTEXT_LAYERING_DUAL_MODE` – run legacy+layered comparison and attach token deltas for rollout analysis
 - `API_AUTH_ENABLED` / `API_AUTH_TOKEN` – optional API key protection (`x-api-key`)
 - `RATE_LIMIT_ENABLED` / `RATE_LIMIT_WINDOW_SECONDS` / `RATE_LIMIT_MAX_REQUESTS` – optional request throttling
 - Provider API keys are intentionally omitted from `.env.example`; add any secrets only in your local `.env`.
@@ -236,6 +238,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /metrics`
 - `GET /metrics/slo`
 - `GET /metrics/context-efficiency`
+  - includes `layering_comparison` when dual mode is active
 - `GET /dashboard/summary`
 - `POST /tasks`
 - `GET /tasks`

@@ -15,6 +15,9 @@ class InMemoryContextStore:
     baton_packets: list[BatonPacket] = field(default_factory=list)
     events: list[ProjectEvent] = field(default_factory=list)
     context_references: dict[str, dict[str, object]] = field(default_factory=dict)
+    context_reference_layers: dict[tuple[str, str], dict[str, object]] = field(
+        default_factory=dict
+    )
     context_bundles: list[dict[str, object]] = field(default_factory=list)
 
     def get_task(self, task_id: UUID) -> Task | None:
@@ -61,6 +64,33 @@ class InMemoryContextStore:
 
     def get_context_reference(self, ref_id: str) -> dict[str, object] | None:
         return self.context_references.get(ref_id)
+
+    def upsert_context_reference_layer(
+        self,
+        *,
+        ref_id: str,
+        layer: str,
+        content: str,
+    ) -> dict[str, object]:
+        key = (ref_id, layer)
+        record = self.context_reference_layers.get(key)
+        if record is None:
+            record = {
+                "layer_id": str(uuid4()),
+                "ref_id": ref_id,
+                "layer": layer,
+                "content": content,
+                "created_at": datetime.now(timezone.utc),
+            }
+        else:
+            record["content"] = content
+        self.context_reference_layers[key] = record
+        return record
+
+    def get_context_reference_layer(
+        self, *, ref_id: str, layer: str
+    ) -> dict[str, object] | None:
+        return self.context_reference_layers.get((ref_id, layer))
 
     def save_context_bundle(
         self,

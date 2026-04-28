@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     slo_max_http_error_rate: float = 0.02
     slo_max_http_p95_latency_ms: float = 1200.0
     slo_min_run_success_rate: float = 0.97
+    context_layering_enabled: bool = False
+    context_layering_dual_mode: bool = False
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
     queue_worker_enabled: bool = False
