@@ -1,65 +1,93 @@
 # Documentation Map
 
-This documentation is organized as a product manual. Start with the path that matches your goal, then use the reference sections when you need exact payloads, commands, or troubleshooting details.
+The Syncore documentation is written as a manual, not as a collection of disconnected notes. Use this page to choose the shortest path through the material for the work you are trying to do.
 
-## If you are brand new
+## Start Here
 
-Read in this order:
+If this is your first time using Syncore, read these pages in order:
 
 1. [What Is Syncore](what-is-syncore.md)
 2. [Core Concepts](concepts.md)
 3. [Getting Started](../getting-started.md)
 4. [Tutorial 1: First Project](../tutorials/tutorial-1-first-project.md)
 
-This path explains the vocabulary first, then gets you to a running local system and a complete task/run flow.
+That path gives you the product model, vocabulary, setup steps, and one complete working flow.
 
-## If you are setting up an environment
+## Choose a Runtime Mode
 
-Read:
+Syncore has two first-class runtime modes.
 
-1. [Native Mode](../environments/native.md)
-2. [Docker Mode](../environments/docker.md)
-3. [Environment Variables](../environments/env-vars.md)
-4. [Configuration Reference](../reference/config-reference.md)
+| Goal | Use | Read |
+| --- | --- | --- |
+| Fast solo development without containers | Native mode with SQLite | [Native Mode](../environments/native.md) |
+| Service topology with Postgres and Redis | Docker mode | [Docker Mode](../environments/docker.md) |
+| Understand every environment setting | Config reference | [Configuration Reference](../reference/config-reference.md) |
 
-Native mode is for solo development. Docker mode is for a service topology closer to enterprise deployment.
+Native mode is the normal path for a developer working locally. Docker mode is the normal path when you want the enterprise/local-stack shape.
 
-## If you are using Syncore day to day
+## Choose an Interface
 
-Read:
+All interfaces talk to the same FastAPI orchestrator API.
 
-1. [CLI Guide](../interfaces/cli.md)
-2. [TUI Guide](../interfaces/tui.md)
-3. [Web UI Guide](../interfaces/webui.md)
-4. [Common Recipes](../recipes/common-recipes.md)
+| Interface | Best For | Read |
+| --- | --- | --- |
+| CLI | Repeatable commands, scripts, quick checks | [CLI Guide](../interfaces/cli.md) |
+| TUI | Interactive local work sessions | [TUI Guide](../interfaces/tui.md) |
+| Web UI | Dashboards, visibility, team/operator workflows | [Web UI Guide](../interfaces/webui.md) |
+| HTTP API | Integrations and exact request control | [API Reference](../reference/api.md) |
 
-The CLI is best for repeatable commands, the TUI is best for local interactive sessions, and the Web UI is best for visibility.
+The API is the source of truth. The CLI, TUI, and Web UI should not mutate SQLite or Postgres directly.
 
-## If you are integrating with the API
+## Learn by Workflow
 
-Read:
+Use these chapters when you already understand the basics and want to operate a specific lifecycle.
 
-1. [API Reference](../reference/api.md)
-2. [HTTP Examples](../reference/http-examples.md)
-3. [Data Contracts](../reference/data-contracts.md)
-4. [Error Reference](../reference/error-reference.md)
+| Workflow | What It Covers |
+| --- | --- |
+| [Workspace Lifecycle](../workflows/workspaces.md) | Registering, scanning, and safely listing a local repo |
+| [Task and Run Lifecycle](../workflows/tasks-runs.md) | Creating work, starting runs, and reading results |
+| [Context Optimization](../workflows/context-optimization.md) | Assembling model context, references, and token metrics |
+| [Autonomy](../workflows/autonomy.md) | Staged automatic execution, review, retry, and replan behavior |
 
-The API is the system of record. All first-class interfaces should call the API rather than writing directly to SQLite or Postgres.
+## Use Tutorials for Concrete Practice
 
-## If you are operating or debugging Syncore
+Tutorials are complete guided flows. They assume you can run Syncore locally.
 
-Read:
+| Tutorial | Use It When |
+| --- | --- |
+| [First Project](../tutorials/tutorial-1-first-project.md) | You want to register a repo and run the first task flow |
+| [Model Selection and Switching](../tutorials/tutorial-2-model-selection-and-switching.md) | You want to authenticate a provider and switch task model preferences |
+| [Context Efficiency](../tutorials/tutorial-3-context-efficiency.md) | You want to measure token savings and context optimization behavior |
+| [Build a Small App](../tutorials/tutorial-4-build-small-app-with-syncore.md) | You want to use Syncore to manage a small app build |
 
-1. [Local Development Runbook](../operations/local-development-runbook.md)
-2. [Observability and Metrics](../operations/observability-and-metrics.md)
-3. [Testing and Quality](../operations/testing-and-quality.md)
-4. [Troubleshooting](../operations/troubleshooting.md)
+## Use Reference When You Need Exactness
 
-Use these pages when a local workflow fails, a route behaves unexpectedly, or you need to verify a release candidate.
+Reference pages are deliberately dense and specific.
 
-## If you are changing Syncore internals
+| Reference | What It Contains |
+| --- | --- |
+| [API Reference](../reference/api.md) | Endpoint inventory and route groups |
+| [HTTP Examples](../reference/http-examples.md) | Copy-pasteable requests for common API flows |
+| [CLI Command Reference](../reference/cli-reference.md) | Command inventory |
+| [TUI Hotkeys](../reference/tui-hotkeys.md) | Interactive keybinding list |
+| [Data Contracts](../reference/data-contracts.md) | Core object shapes and semantics |
+| [Error Reference](../reference/error-reference.md) | Common failures and recovery steps |
 
-Read:
+## Operate and Debug
+
+Use these pages when something is running, failing, or being prepared for release.
+
+| Operations Page | Use It For |
+| --- | --- |
+| [Local Development Runbook](../operations/local-development-runbook.md) | Daily developer startup, reset, and validation |
+| [Observability and Metrics](../operations/observability-and-metrics.md) | Health, SLO, and context efficiency signals |
+| [Testing and Quality](../operations/testing-and-quality.md) | Local quality gates before changes are pushed |
+| [Troubleshooting](../operations/troubleshooting.md) | Diagnosing broken setup, routes, services, and docs |
+| [Security Model](../operations/security-model.md) | Current API and workspace safety boundaries |
+
+## Change Syncore Itself
+
+If you are editing Syncore internals, read these before making broad changes:
 
 1. [System Architecture](../architecture/system-architecture.md)
 2. [Data Model](../architecture/data-model.md)
@@ -67,4 +95,4 @@ Read:
 4. [Context Optimizer Internals](../internals/context-optimizer-internals.md)
 5. [Autonomy Policy Internals](../internals/autonomy-policy-internals.md)
 
-These sections describe where behavior lives and which layer owns which responsibility.
+Those pages explain ownership boundaries and reduce the chance of adding duplicate behavior in the wrong layer.

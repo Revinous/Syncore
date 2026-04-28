@@ -1,17 +1,30 @@
 # Syncore Documentation
 
-Syncore is a local-first orchestration platform for structured software work. It coordinates workspaces, tasks, agent runs, project events, baton handoffs, routing decisions, context optimization, autonomy cycles, and analyst digests through one FastAPI orchestrator.
+Syncore is a local-first orchestration platform for software work. It turns a project idea into durable workflow state: workspace, task, run, event, baton, context, route, digest, and optional autonomy.
 
-The documentation is organized like an operator manual:
+The FastAPI orchestrator is the source of truth. The Web UI, CLI, and TUI are different ways to operate the same backend.
 
-- **Overview** explains the product model, concepts, and reading order.
-- **Architecture** explains the system, data model, context layer, and autonomy engine.
-- **Environments** covers native SQLite mode and Docker Postgres/Redis mode.
-- **Interfaces** covers the Web UI, CLI, and TUI.
-- **Workflows** covers the major Syncore lifecycles.
-- **Tutorials** walk through complete tasks from first project to context efficiency.
-- **Recipes** provide copy-pasteable procedures.
-- **Reference** documents endpoints, commands, config, contracts, and errors.
-- **Operations** covers development, deployment modes, migrations, observability, security, quality gates, and troubleshooting.
+## Start Here
 
-Start with [Documentation Map](rtd/overview/documentation-map.md) if you are not sure which section to read first.
+If you are new to Syncore, begin with:
+
+1. [Documentation Map](rtd/overview/documentation-map.md)
+2. [What Is Syncore](rtd/overview/what-is-syncore.md)
+3. [Core Concepts](rtd/overview/concepts.md)
+4. [Getting Started](rtd/getting-started.md)
+
+## Main Paths
+
+| Need | Read |
+| --- | --- |
+| Run Syncore locally without containers | [Native Mode](rtd/environments/native.md) |
+| Run the Docker/Postgres/Redis stack | [Docker Mode](rtd/environments/docker.md) |
+| Use terminal commands | [CLI Guide](rtd/interfaces/cli.md) |
+| Use the interactive terminal UI | [TUI Guide](rtd/interfaces/tui.md) |
+| Use the browser control panel | [Web UI Guide](rtd/interfaces/webui.md) |
+| Integrate directly with HTTP | [API Reference](rtd/reference/api.md) |
+| Debug a problem | [Troubleshooting](rtd/operations/troubleshooting.md) |
+
+## Manual Structure
+
+The manual is organized into Overview, Architecture, Environments, Interfaces, Workflows, Tutorials, Recipes, Reference, Operations, Internals, Appendix, and Project Records.

@@ -12,9 +12,9 @@ nav:
   - Home: index.md
   - Overview:
     - Documentation Map: rtd/overview/documentation-map.md
-    - Getting Started: rtd/getting-started.md
     - What Is Syncore: rtd/overview/what-is-syncore.md
     - Core Concepts: rtd/overview/concepts.md
+    - Getting Started: rtd/getting-started.md
   - Architecture:
     - System Architecture: rtd/architecture/system-architecture.md
     - Data Model: rtd/architecture/data-model.md
