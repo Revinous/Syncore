@@ -4,6 +4,8 @@ Syncore is a local-first orchestration platform prototype where specialized agen
 
 This guide is intentionally focused on **local MVP validation only**. It does not add AWS, staging hardening, or production scope.
 
+For full beginner-to-advanced usage, see [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
 This repository is optimized for one believable local workflow:
 
 1. Create a task.
