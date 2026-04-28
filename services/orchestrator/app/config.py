@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     run_default_timeout_seconds: int = 90
     max_concurrent_runs_per_task: int = 1
     max_concurrent_runs_per_workspace: int = 4
+    slo_max_http_error_rate: float = 0.02
+    slo_max_http_p95_latency_ms: float = 1200.0
+    slo_min_run_success_rate: float = 0.97
     autonomy_enabled: bool = False
     autonomy_poll_interval_seconds: float = 2.0
     autonomy_default_model: str = "local_echo"

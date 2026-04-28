@@ -233,6 +233,7 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /health`
 - `GET /health/services`
 - `GET /metrics`
+- `GET /metrics/slo`
 - `GET /dashboard/summary`
 - `POST /tasks`
 - `GET /tasks`
@@ -299,6 +300,18 @@ Generate a new revision:
 ```bash
 make db-revision m="add_new_table"
 ```
+
+## SLO Metrics
+
+Syncore exposes runtime metrics and threshold evaluation endpoints:
+
+- `GET /metrics` (Prometheus text format)
+- `GET /metrics/slo` (threshold checks and computed status)
+
+Configurable SLO thresholds:
+- `SLO_MAX_HTTP_ERROR_RATE`
+- `SLO_MAX_HTTP_P95_LATENCY_MS`
+- `SLO_MIN_RUN_SUCCESS_RATE`
 
 ### Example payloads
 

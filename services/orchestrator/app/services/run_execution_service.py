@@ -22,6 +22,7 @@ from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
 from app.context.retrieval_refs import build_ref_id, estimate_tokens
+from app.observability import record_run_outcome
 from app.runs.providers import (
     AnthropicMessagesProvider,
     GeminiGenerateContentProvider,
@@ -210,6 +211,7 @@ class RunExecutionService:
                 completed_at=completed_at,
             )
             self._persist_idempotent_response(payload, response)
+            record_run_outcome(success=True)
             return response
         except Exception as error:
             self._store.update_agent_run(
@@ -225,6 +227,7 @@ class RunExecutionService:
                     "error": str(error)[:250],
                 },
             )
+            record_run_outcome(success=False)
             raise RuntimeError(f"Run execution failed: {error}") from error
 
     def stream_execute(self, payload: RunExecutionRequest) -> Iterator[RunStreamEvent]:
@@ -348,6 +351,7 @@ class RunExecutionService:
                 target_model=payload.target_model,
                 estimated_output_tokens=output_tokens,
             )
+            record_run_outcome(success=True)
         except Exception as error:
             self._store.update_agent_run(
                 run.id,
@@ -370,6 +374,7 @@ class RunExecutionService:
                 target_model=payload.target_model,
                 error=str(error),
             )
+            record_run_outcome(success=False)
 
     def _resolve_provider(self, requested_provider: str | None) -> tuple[str, LlmProvider]:
         provider_name = requested_provider or self._default_provider
