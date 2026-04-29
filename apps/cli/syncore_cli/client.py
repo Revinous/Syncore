@@ -158,3 +158,17 @@ class SyncoreApiClient:
             f"/autonomy/tasks/{task_id}/reject",
             {"reason": reason} if reason is not None else {},
         )
+
+    def list_notifications(
+        self, acknowledged: bool | None = None, limit: int = 100
+    ) -> Any:
+        path = f"/notifications?limit={limit}"
+        if acknowledged is not None:
+            path += f"&acknowledged={'true' if acknowledged else 'false'}"
+        return self._request("GET", path)
+
+    def get_notification(self, notification_id: str) -> Any:
+        return self._request("GET", f"/notifications/{notification_id}")
+
+    def acknowledge_notification(self, notification_id: str) -> Any:
+        return self._request("POST", f"/notifications/{notification_id}/ack")

@@ -66,7 +66,7 @@ case "\${1:-dev}" in
     cd "\${REPO_ROOT}"
     if [[ "\${1:-}" != "" ]] && [[ "\${1}" != -* ]]; then
       case "\${1}" in
-        status|dashboard|events|baton|route|digest|diagnostics|open|tui|help|--help|-h|run|auth|metrics)
+        status|dashboard|events|baton|route|digest|diagnostics|open|tui|help|--help|-h|run|auth|metrics|notifications)
           exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main "\$@"
           ;;
         *)

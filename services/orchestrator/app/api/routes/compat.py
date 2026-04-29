@@ -21,6 +21,13 @@ from app.store_factory import build_memory_store
 router = APIRouter(tags=["compat"])
 
 
+def _ensure_eli5(digest: ExecutiveDigest) -> ExecutiveDigest:
+    if (digest.eli5_summary or "").strip():
+        return digest
+    digest.eli5_summary = f"Simple summary: {digest.summary}"
+    return digest
+
+
 def get_event_service(settings: Settings = Depends(get_settings)) -> EventService:
     return EventService(build_memory_store(settings))
 
@@ -95,4 +102,6 @@ def get_task_digest_compat(
 ) -> ExecutiveDigest:
     store = build_memory_store(settings)
     events = store.list_project_events(task_id=task_id, limit=limit)
-    return AnalystDigestService().generate_digest(task_id=task_id, events=events)
+    return _ensure_eli5(
+        AnalystDigestService().generate_digest(task_id=task_id, events=events)
+    )

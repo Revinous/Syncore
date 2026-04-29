@@ -77,6 +77,20 @@ Model switch:
 syncore task switch-model <TASK_ID> --provider openai --model gpt-5.5
 ```
 
+Set autonomy preferences on a task:
+
+```bash
+syncore task set-prefs <TASK_ID> \
+  --agent-role reviewer \
+  --provider openai \
+  --model gpt-5.4 \
+  --prompt "Run implementation then execute tests and summarize failures." \
+  --requires-approval \
+  --sdlc-enforce
+```
+
+`--sdlc-enforce` enables stricter SDLC checklist gating in the autonomy loop for that task.
+
 ## Run Commands
 
 ```bash

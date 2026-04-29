@@ -15,6 +15,7 @@ def test_digest_for_no_events_is_actionable() -> None:
     assert digest.total_events == 0
     assert digest.risk_level == "medium"
     assert "No project activity" in digest.headline
+    assert "simple version" in digest.eli5_summary or "Nothing has happened yet" in digest.eli5_summary
 
 
 def test_digest_includes_breakdown_and_highlights() -> None:
@@ -44,6 +45,7 @@ def test_digest_includes_breakdown_and_highlights() -> None:
     assert digest.event_breakdown["task.created"] == 1
     assert len(digest.highlights) >= 2
     assert "Latest milestone" in digest.headline
+    assert "simple version" in digest.eli5_summary
 
 
 def test_digest_marks_high_risk_for_blocked_signals() -> None:
@@ -63,3 +65,34 @@ def test_digest_marks_high_risk_for_blocked_signals() -> None:
     digest = service.generate_digest(task_id=task_id, events=events)
 
     assert digest.risk_level == "high"
+
+
+def test_digest_eli5_explains_functionality_and_impact() -> None:
+    service = AnalystDigestService()
+    task_id = uuid4()
+    now = datetime.now(timezone.utc)
+    events = [
+        ProjectEvent(
+            id=uuid4(),
+            task_id=task_id,
+            event_type="implementation.completed",
+            event_data={
+                "change": "Added OAuth callback state validation",
+                "impact": "prevents CSRF in login flow",
+                "status": "completed",
+            },
+            created_at=now,
+        ),
+        ProjectEvent(
+            id=uuid4(),
+            task_id=task_id,
+            event_type="analyst.digest.generated",
+            event_data={},
+            created_at=now,
+        ),
+    ]
+
+    digest = service.generate_digest(task_id=task_id, events=events)
+
+    assert "What changed: Added OAuth callback state validation" in digest.eli5_summary
+    assert "Why it matters: prevents CSRF in login flow" in digest.eli5_summary

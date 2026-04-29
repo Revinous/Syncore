@@ -187,6 +187,24 @@ export type AnalystDigest = {
   event_breakdown: Record<string, number>;
   risk_level: string;
   total_events: number;
+  eli5_summary: string;
+};
+
+export type NotificationItem = {
+  id: string;
+  category: string;
+  title: string;
+  body: string;
+  related_task_id: string | null;
+  related_workspace_id: string | null;
+  finding_id: string | null;
+  acknowledged: boolean;
+  acknowledged_at: string | null;
+  created_at: string;
+};
+
+export type NotificationListResponse = {
+  items: NotificationItem[];
 };
 
 export type DiagnosticsConfig = {

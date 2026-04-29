@@ -164,3 +164,52 @@ def test_sqlite_store_tasks_can_link_workspace(tmp_path) -> None:
     filtered = store.list_tasks(workspace_id=workspace.id)
     assert len(filtered) == 1
     assert filtered[0].id == task.id
+
+
+def test_sqlite_store_auto_adds_context_bundle_columns_for_legacy_db(tmp_path) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE tasks (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'new',
+              task_type TEXT NOT NULL DEFAULT 'analysis',
+              complexity TEXT NOT NULL DEFAULT 'medium',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE TABLE context_bundles (
+              bundle_id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              target_agent TEXT NOT NULL,
+              target_model TEXT NOT NULL,
+              token_budget INTEGER NOT NULL,
+              optimized_context TEXT NOT NULL,
+              included_refs TEXT NOT NULL DEFAULT '[]',
+              created_at TEXT NOT NULL
+            );
+            """
+        )
+        connection.commit()
+
+    store = SQLiteMemoryStore(str(db_path))
+    task = store.create_task(TaskCreate(title="Legacy schema task", task_type="analysis"))
+
+    bundle = store.save_context_bundle(
+        task_id=task.id,
+        target_agent="coder",
+        target_model="local_echo",
+        token_budget=2048,
+        raw_estimated_tokens=700,
+        optimized_estimated_tokens=500,
+        token_savings_estimate=200,
+        token_savings_pct=28.57,
+        estimated_cost_raw_usd=0.002,
+        estimated_cost_optimized_usd=0.0014,
+        estimated_cost_saved_usd=0.0006,
+        optimized_context={"rendered_prompt": "legacy"},
+        included_refs=[],
+    )
+    assert bundle["task_id"] == str(task.id)

@@ -86,6 +86,23 @@ export default function TaskDetailPage() {
     setDigest(nextDigest);
   }
 
+  function eli5Text(value: AnalystDigest): string {
+    const text = (value.eli5_summary || "").trim();
+    if (text) return text;
+    const top = Object.entries(value.event_breakdown || {})
+      .sort((a, b) => Number(b[1]) - Number(a[1]))
+      .slice(0, 2)
+      .map(([name, count]) => `${name} (${count})`)
+      .join(", ");
+    const latest = value.highlights?.[0] || "no recent highlight";
+    return (
+      `Simple summary: ${value.headline}. ` +
+      `Top signals: ${top || "none"}. ` +
+      `Latest: ${latest}. ` +
+      `Risk: ${value.risk_level}.`
+    );
+  }
+
   return (
     <Layout title="Task Detail">
       {loading && <LoadingState message="Loading task detail..." />}
@@ -154,7 +171,17 @@ export default function TaskDetailPage() {
 
           <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
             <h2>Analyst Digest</h2>
-            {digest ? <pre>{JSON.stringify(digest, null, 2)}</pre> : <EmptyState message="No digest yet." />}
+            {digest ? (
+              <>
+                <p><strong>Headline:</strong> {digest.headline}</p>
+                <p><strong>ELI5:</strong> {eli5Text(digest)}</p>
+                <p><strong>Risk:</strong> {digest.risk_level}</p>
+                <p><strong>Total events:</strong> {digest.total_events}</p>
+                <pre>{JSON.stringify(digest, null, 2)}</pre>
+              </>
+            ) : (
+              <EmptyState message="No digest yet." />
+            )}
           </section>
         </>
       )}

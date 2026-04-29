@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from uuid import UUID
 
 from packages.contracts.python.models import (
@@ -12,6 +13,7 @@ from packages.contracts.python.models import (
     RoutingRequest,
     RunExecutionRequest,
     Task,
+    TaskCreate,
     TaskUpdate,
 )
 from services.analyst.digest import AnalystDigestService
@@ -29,6 +31,14 @@ AUTONOMY_STRATEGIES = (
     "increase_detail",
     "raise_verification",
     "switch_execution_role",
+)
+SDLC_CHECKLIST_ITEMS = (
+    "requirements",
+    "design",
+    "implementation",
+    "tests",
+    "docs",
+    "release",
 )
 
 
@@ -114,6 +124,7 @@ class AutonomyService:
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
         requires_approval = _as_bool(prefs.get("requires_approval"))
+        enforce_sdlc = self._should_enforce_sdlc(task=task, prefs=prefs)
         now_epoch = datetime.now(timezone.utc).timestamp()
         total_steps = self._total_step_events(events)
         if total_steps >= self._max_total_steps:
@@ -200,6 +211,7 @@ class AutonomyService:
             prefs=prefs,
             cycle=cycle,
             strategy=strategy,
+            enforce_sdlc=enforce_sdlc,
         )
         stage_role = self._role_for_stage(
             stage=next_stage,
@@ -245,7 +257,9 @@ class AutonomyService:
                 stage=next_stage,
                 output_text=run.output_text,
                 strategy=strategy,
+                enforce_sdlc=enforce_sdlc,
             )
+            checklist_status = _extract_sdlc_checklist_status(run.output_text)
             self._store.save_project_event(
                 ProjectEventCreate(
                     task_id=task_id,
@@ -271,6 +285,8 @@ class AutonomyService:
                     "quality_passed": quality["passed"],
                     "quality_reasons": "; ".join(quality["reasons"]),
                     "run_id": str(run.run_id),
+                    "sdlc_enforced": enforce_sdlc,
+                    "sdlc_checked_count": sum(1 for v in checklist_status.values() if v),
                 },
             )
             if not bool(quality["passed"]):
@@ -402,6 +418,8 @@ class AutonomyService:
                 strategy=strategy,
                 outcome="success",
             )
+            if next_stage == "plan":
+                self._spawn_subtasks_once(task=task, prefs=prefs)
             return AutonomyResult(
                 task_id=task_id,
                 status="in_progress",
@@ -711,8 +729,21 @@ class AutonomyService:
         prefs: dict[str, str],
         cycle: int,
         strategy: str,
+        enforce_sdlc: bool,
     ) -> str:
         guidance = self._strategy_guidance(strategy)
+        sdlc_instruction = ""
+        if enforce_sdlc:
+            sdlc_instruction = (
+                "\nSDLC enforcement is ON. Use this exact checklist and mark status explicitly:\n"
+                "- [ ] requirements\n"
+                "- [ ] design\n"
+                "- [ ] implementation\n"
+                "- [ ] tests\n"
+                "- [ ] docs\n"
+                "- [ ] release\n"
+                "Use [x] only when done with concrete evidence."
+            )
         if stage == "plan":
             mode = "Replan" if cycle > 1 else "Plan"
             return (
@@ -722,6 +753,7 @@ class AutonomyService:
                 f"Complexity: {task.complexity}\n"
                 f"Strategy: {strategy}.\n"
                 f"Guidance: {guidance}\n"
+                f"{sdlc_instruction}\n"
                 "Produce a short implementation plan with clear first action, "
                 "risks, and checkpoints."
             )
@@ -734,6 +766,7 @@ class AutonomyService:
             "You are Syncore reviewer.\n"
             f"Review task outcome for: {task.title}\n"
             f"Strategy used: {strategy}. Guidance: {guidance}\n"
+            f"{sdlc_instruction}\n"
             f"If acceptable, include exact token: {self._review_pass_keyword}\n"
             "Return pass/fail with key risks, coverage notes, and next verification step."
         )
@@ -748,7 +781,12 @@ class AutonomyService:
         return "reviewer"
 
     def _stage_quality_gate(
-        self, *, stage: str, output_text: str, strategy: str
+        self,
+        *,
+        stage: str,
+        output_text: str,
+        strategy: str,
+        enforce_sdlc: bool,
     ) -> dict[str, object]:
         text = (output_text or "").strip()
         minimum = self._execute_min_chars
@@ -774,6 +812,13 @@ class AutonomyService:
             if "risk" not in text.lower():
                 reasons.append("Plan missing risk notes.")
                 score -= 10
+            if enforce_sdlc:
+                missing = _missing_sdlc_topics(text)
+                if missing:
+                    reasons.append(
+                        f"Plan missing SDLC coverage for: {', '.join(missing)}."
+                    )
+                    score -= min(10 + (len(missing) * 5), 35)
         if stage == "execute":
             has_actionable = (
                 ("```" in text)
@@ -784,6 +829,9 @@ class AutonomyService:
             if not has_actionable:
                 reasons.append("Execute output missing concrete code/command artifacts.")
                 score -= 25
+            if enforce_sdlc and "test" not in text.lower() and "verify" not in text.lower():
+                reasons.append("Execute output missing test/verification evidence.")
+                score -= 20
         if stage == "review":
             lowered = text.lower()
             if "pass" not in lowered and "fail" not in lowered:
@@ -795,6 +843,16 @@ class AutonomyService:
             if self._review_pass_keyword and self._review_pass_keyword.upper() not in text.upper():
                 reasons.append(f"Missing review pass keyword '{self._review_pass_keyword}'.")
                 score -= 40
+            if enforce_sdlc:
+                checklist_status = _extract_sdlc_checklist_status(text)
+                missing_checks = [
+                    item for item in SDLC_CHECKLIST_ITEMS if not checklist_status.get(item, False)
+                ]
+                if missing_checks:
+                    reasons.append(
+                        f"Review checklist incomplete: {', '.join(missing_checks)}."
+                    )
+                    score -= min(12 + (len(missing_checks) * 4), 45)
         if strategy == "raise_verification":
             if "test" not in text.lower() and "verify" not in text.lower():
                 reasons.append("Verification-focused strategy requires tests/verification notes.")
@@ -802,6 +860,71 @@ class AutonomyService:
 
         score = max(score, 0)
         return {"passed": score >= 70, "score": score, "reasons": reasons}
+
+    def _should_enforce_sdlc(self, *, task: Task, prefs: dict[str, str]) -> bool:
+        if _as_bool(prefs.get("sdlc_enforce")):
+            return True
+        if task.workspace_id is None:
+            return False
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            return False
+        return workspace.name.strip().lower() == "syncore"
+
+    def _spawn_subtasks_once(self, *, task: Task, prefs: dict[str, str]) -> None:
+        if not _as_bool(prefs.get("auto_spawn")):
+            return
+        existing_events = self._store.list_project_events(task_id=task.id, limit=500)
+        if self._latest_event(existing_events, "autonomy.subtasks.spawned") is not None:
+            return
+
+        count = _parse_positive_int(prefs.get("auto_spawn_count"), default=3, maximum=8)
+        templates = [
+            ("Requirements and design pass", "analysis"),
+            ("Implementation pass", "implementation"),
+            ("Verification and release pass", "review"),
+            ("Documentation and polish pass", "integration"),
+        ]
+        selected = templates[:count]
+        spawned_ids: list[str] = []
+        for title_suffix, task_type in selected:
+            child = self._store.create_task(
+                TaskCreate(
+                    title=f"{task.title} :: {title_suffix}",
+                    task_type=task_type,  # type: ignore[arg-type]
+                    complexity=task.complexity,
+                    workspace_id=task.workspace_id,
+                )
+            )
+            child_event_data: dict[str, str] = {
+                "parent_task_id": str(task.id),
+                "preferred_agent_role": prefs.get("preferred_agent_role", "coder"),
+                "preferred_provider": prefs.get("preferred_provider", self._default_provider),
+                "preferred_model": prefs.get("preferred_model", self._default_model),
+                "execution_prompt": prefs.get("execution_prompt", ""),
+                "requires_approval": prefs.get("requires_approval", "false"),
+                "sdlc_enforce": prefs.get("sdlc_enforce", "false"),
+                "auto_spawn": "false",
+            }
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=child.id,
+                    event_type="task.preferences",
+                    event_data=child_event_data,
+                )
+            )
+            spawned_ids.append(str(child.id))
+
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.subtasks.spawned",
+                event_data={
+                    "count": len(spawned_ids),
+                    "child_task_ids": ",".join(spawned_ids),
+                },
+            )
+        )
 
     def _select_replan_strategy(
         self,
@@ -1028,3 +1151,35 @@ def _event_int(value: str | int | float | bool | None) -> int | None:
         except ValueError:
             return None
     return None
+
+
+def _parse_positive_int(value: str | None, *, default: int, maximum: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value.strip())
+    except ValueError:
+        return default
+    if parsed < 1:
+        return default
+    return min(parsed, maximum)
+
+
+def _missing_sdlc_topics(text: str) -> list[str]:
+    lowered = text.lower()
+    missing: list[str] = []
+    for item in SDLC_CHECKLIST_ITEMS:
+        token = "test" if item == "tests" else item
+        if token not in lowered:
+            missing.append(item)
+    return missing
+
+
+def _extract_sdlc_checklist_status(text: str) -> dict[str, bool]:
+    status = {item: False for item in SDLC_CHECKLIST_ITEMS}
+    lowered = (text or "").lower()
+    for item in SDLC_CHECKLIST_ITEMS:
+        pattern = rf"\[\s*[xX]\s*\]\s*{re.escape(item)}\b"
+        if re.search(pattern, lowered):
+            status[item] = True
+    return status

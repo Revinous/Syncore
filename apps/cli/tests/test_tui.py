@@ -84,6 +84,12 @@ class FakeClient:
     def list_agent_runs(self):
         return []
 
+    def list_notifications(self, acknowledged: bool | None = None, limit: int = 100):
+        return {"items": []}
+
+    def acknowledge_notification(self, notification_id: str):
+        return {"notification": {"id": notification_id, "acknowledged": True}}
+
 
 def test_tui_initializes() -> None:
     app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
@@ -119,6 +125,7 @@ def test_action_new_task_creates_task(monkeypatch) -> None:
                 "preferred_agent_role": "coder",
                 "execution_prompt": "Implement and test the feature.",
                 "requires_approval": "true",
+                "sdlc_enforce": "true",
             }
         )
 
@@ -135,6 +142,7 @@ def test_action_new_task_creates_task(monkeypatch) -> None:
     assert fake.created_event_payload["event_data"]["preferred_model"] == "gpt-5.5"
     assert fake.created_event_payload["event_data"]["preferred_provider"] == "openai"
     assert fake.created_event_payload["event_data"]["requires_approval"] == "true"
+    assert fake.created_event_payload["event_data"]["sdlc_enforce"] == "true"
 
 
 def test_action_scan_workspace_calls_api() -> None:

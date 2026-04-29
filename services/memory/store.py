@@ -14,12 +14,15 @@ from packages.contracts.python.models import (
     BatonPacketCreate,
     ProjectEvent,
     ProjectEventCreate,
+    ResearchFinding,
+    ResearchFindingCreate,
     Task,
     TaskCreate,
     TaskUpdate,
     Workspace,
     WorkspaceCreate,
     WorkspaceUpdate,
+    Notification,
 )
 
 
@@ -538,6 +541,132 @@ class MemoryStore:
             )
             deleted = cursor.rowcount
         return bool(deleted)
+
+    def create_research_finding(self, payload: ResearchFindingCreate) -> ResearchFinding:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO research_findings (
+                    task_id, workspace_id, title, summary, details, impact_level, source
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING finding_id, task_id, workspace_id, title, summary, details, impact_level, source, created_at
+                """,
+                (
+                    payload.task_id,
+                    payload.workspace_id,
+                    payload.title,
+                    payload.summary,
+                    payload.details,
+                    payload.impact_level,
+                    payload.source,
+                ),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create research finding")
+        return ResearchFinding.model_validate(row)
+
+    def list_research_findings(
+        self, task_id: UUID | None = None, workspace_id: UUID | None = None, limit: int = 100
+    ) -> list[ResearchFinding]:
+        bounded_limit = min(max(limit, 1), 500)
+        query = """
+            SELECT finding_id, task_id, workspace_id, title, summary, details, impact_level, source, created_at
+            FROM research_findings
+        """
+        clauses: list[str] = []
+        values: list[object] = []
+        if task_id is not None:
+            clauses.append("task_id = %s")
+            values.append(task_id)
+        if workspace_id is not None:
+            clauses.append("workspace_id = %s")
+            values.append(workspace_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT %s"
+        values.append(bounded_limit)
+        with self._cursor() as cursor:
+            cursor.execute(query, tuple(values))
+            rows = cursor.fetchall()
+        return [ResearchFinding.model_validate(row) for row in rows]
+
+    def create_notification(
+        self,
+        *,
+        category: str,
+        title: str,
+        body: str,
+        related_task_id: UUID | None = None,
+        related_workspace_id: UUID | None = None,
+        finding_id: UUID | None = None,
+    ) -> Notification:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO notifications (
+                    category, title, body, related_task_id, related_workspace_id, finding_id
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                """,
+                (category, title, body, related_task_id, related_workspace_id, finding_id),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create notification")
+        return Notification.model_validate(row)
+
+    def list_notifications(
+        self, *, acknowledged: bool | None = None, limit: int = 100
+    ) -> list[Notification]:
+        bounded_limit = min(max(limit, 1), 500)
+        query = """
+            SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+            FROM notifications
+        """
+        values: list[object] = []
+        if acknowledged is not None:
+            query += " WHERE acknowledged = %s"
+            values.append(acknowledged)
+        query += " ORDER BY created_at DESC LIMIT %s"
+        values.append(bounded_limit)
+        with self._cursor() as cursor:
+            cursor.execute(query, tuple(values))
+            rows = cursor.fetchall()
+        return [Notification.model_validate(row) for row in rows]
+
+    def get_notification(self, notification_id: UUID) -> Notification | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                FROM notifications
+                WHERE id = %s
+                """,
+                (notification_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return Notification.model_validate(row)
+
+    def acknowledge_notification(self, notification_id: UUID) -> Notification | None:
+        with self._cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE notifications
+                SET acknowledged = TRUE, acknowledged_at = NOW()
+                WHERE id = %s
+                RETURNING id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                """,
+                (notification_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return Notification.model_validate(row)
 
     def upsert_context_reference(
         self,

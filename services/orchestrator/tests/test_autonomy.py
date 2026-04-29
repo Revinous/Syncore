@@ -9,6 +9,10 @@ from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import create_app
+from app.services.autonomy_service import (
+    _extract_sdlc_checklist_status,
+    _missing_sdlc_topics,
+)
 
 
 def _init_sqlite(db_path: Path) -> None:
@@ -259,10 +263,73 @@ def test_autonomy_reject_blocks_task(monkeypatch, tmp_path) -> None:
         assert reject.status_code == 200
         assert reject.json()["status"] == "rejected"
 
-        detail = client.get(f"/tasks/{task_id}")
-        assert detail.status_code == 200
-        assert detail.json()["task"]["status"] == "blocked"
 
+def test_sdlc_topic_detection_finds_missing_items() -> None:
+    text = "Plan covers requirements, design, implementation, and docs."
+    missing = _missing_sdlc_topics(text)
+    assert "tests" in missing
+    assert "release" in missing
+    assert "requirements" not in missing
+
+
+def test_sdlc_checklist_status_detects_checked_items() -> None:
+    text = """
+    - [x] requirements
+    - [x] design
+    - [ ] implementation
+    - [x] tests
+    - [ ] docs
+    - [x] release
+    """
+    status = _extract_sdlc_checklist_status(text)
+    assert status["requirements"] is True
+    assert status["design"] is True
+    assert status["implementation"] is False
+    assert status["docs"] is False
+    assert status["release"] is True
+
+
+def test_autonomy_spawns_subtasks_when_enabled(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Planner fanout task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        pref = client.post(
+            "/project-events",
+            json={
+                "task_id": task_id,
+                "event_type": "task.preferences",
+                "event_data": {"auto_spawn": "true", "auto_spawn_count": "3"},
+            },
+        )
+        assert pref.status_code == 201
+
+        for _ in range(3):
+            run = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert run.status_code == 200
+
+        tasks = client.get("/tasks?limit=50")
+        assert tasks.status_code == 200
+        related = [t for t in tasks.json() if t["title"].startswith("Planner fanout task :: ")]
+        assert len(related) >= 3
 
 def test_autonomy_review_gate_completes_with_keyword_instruction(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"

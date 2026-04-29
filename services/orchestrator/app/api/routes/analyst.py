@@ -11,6 +11,13 @@ from app.store_factory import build_memory_store
 router = APIRouter(prefix="/analyst", tags=["analyst"])
 
 
+def _ensure_eli5(digest: ExecutiveDigest) -> ExecutiveDigest:
+    if (digest.eli5_summary or "").strip():
+        return digest
+    digest.eli5_summary = f"Simple summary: {digest.summary}"
+    return digest
+
+
 def get_memory_store(settings: Settings = Depends(get_settings)) -> MemoryStoreProtocol:
     return build_memory_store(settings)
 
@@ -33,7 +40,7 @@ def get_task_digest(
             status_code=503, detail=f"Memory service unavailable: {error}"
         ) from error
 
-    return digest_service.generate_digest(task_id=task_id, events=events)
+    return _ensure_eli5(digest_service.generate_digest(task_id=task_id, events=events))
 
 
 @router.post("/digest", response_model=ExecutiveDigest)
@@ -49,4 +56,6 @@ def generate_digest(
             status_code=503, detail=f"Memory service unavailable: {error}"
         ) from error
 
-    return digest_service.generate_digest(task_id=payload.task_id, events=events)
+    return _ensure_eli5(
+        digest_service.generate_digest(task_id=payload.task_id, events=events)
+    )

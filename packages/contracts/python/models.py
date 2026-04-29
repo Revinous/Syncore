@@ -179,6 +179,46 @@ class ExecutiveDigest(BaseModel):
     event_breakdown: dict[str, int]
     risk_level: RiskLevel
     total_events: int = Field(ge=0)
+    eli5_summary: str = Field(min_length=1)
+
+
+class ResearchFindingCreate(BaseModel):
+    task_id: UUID | None = None
+    workspace_id: UUID | None = None
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    details: str = Field(min_length=1)
+    impact_level: Literal["low", "medium", "high"] = "medium"
+    source: str = Field(default="researcher", min_length=1)
+
+
+class ResearchFinding(BaseModel):
+    finding_id: UUID
+    task_id: UUID | None = None
+    workspace_id: UUID | None = None
+    title: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    details: str = Field(min_length=1)
+    impact_level: Literal["low", "medium", "high"] = "medium"
+    source: str = Field(default="researcher", min_length=1)
+    created_at: datetime
+
+
+class Notification(BaseModel):
+    id: UUID
+    category: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    related_task_id: UUID | None = None
+    related_workspace_id: UUID | None = None
+    finding_id: UUID | None = None
+    acknowledged: bool = False
+    acknowledged_at: datetime | None = None
+    created_at: datetime
+
+
+class NotificationAcknowledgeResponse(BaseModel):
+    notification: Notification
 
 
 class RunExecutionRequest(BaseModel):

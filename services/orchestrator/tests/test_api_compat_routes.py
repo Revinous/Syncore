@@ -114,7 +114,9 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     )
     assert client.get(f"/tasks/{task_id}/routing").status_code == 200
     assert client.post("/analyst/digest", json={"task_id": task_id}).status_code == 200
-    assert client.get(f"/tasks/{task_id}/digest").status_code == 200
+    digest_response = client.get(f"/tasks/{task_id}/digest")
+    assert digest_response.status_code == 200
+    assert digest_response.json().get("eli5_summary")
     assert client.get("/diagnostics").status_code == 200
     assert client.get("/diagnostics/config").status_code == 200
     assert client.get("/diagnostics/routes").status_code == 200

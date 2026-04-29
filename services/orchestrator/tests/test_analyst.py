@@ -53,6 +53,7 @@ def test_analyst_digest_endpoint_returns_summary() -> None:
     assert payload["total_events"] == 2
     assert payload["headline"]
     assert payload["summary"]
+    assert payload["eli5_summary"]
 
     app.dependency_overrides.clear()
 

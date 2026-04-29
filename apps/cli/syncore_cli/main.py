@@ -26,12 +26,14 @@ workspace_app = typer.Typer(help="Workspace commands")
 task_app = typer.Typer(help="Task commands")
 run_app = typer.Typer(help="Agent run commands")
 metrics_app = typer.Typer(help="Metrics commands")
+notifications_app = typer.Typer(help="Notification inbox commands")
 auth_app = typer.Typer(help="Authentication commands")
 openai_auth_app = typer.Typer(help="OpenAI auth commands")
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(metrics_app, name="metrics")
+app.add_typer(notifications_app, name="notifications")
 app.add_typer(auth_app, name="auth")
 auth_app.add_typer(openai_auth_app, name="openai")
 
@@ -615,6 +617,41 @@ def task_switch_model(
     print_kv_panel("Task Model Switch", result)
 
 
+@task_app.command("set-prefs")
+def task_set_prefs(
+    task_id: str,
+    preferred_agent_role: str = typer.Option("coder", "--agent-role"),
+    preferred_provider: str = typer.Option("", "--provider"),
+    preferred_model: str = typer.Option("", "--model"),
+    execution_prompt: str = typer.Option("", "--prompt"),
+    requires_approval: bool = typer.Option(False, "--requires-approval"),
+    sdlc_enforce: bool = typer.Option(False, "--sdlc-enforce"),
+) -> None:
+    client = _client()
+    payload = {
+        "task_id": task_id,
+        "event_type": "task.preferences",
+        "event_data": {
+            "preferred_agent_role": preferred_agent_role.strip().lower() or "coder",
+            "execution_prompt": execution_prompt.strip(),
+            "requires_approval": "true" if requires_approval else "false",
+            "sdlc_enforce": "true" if sdlc_enforce else "false",
+        },
+    }
+    provider = preferred_provider.strip().lower()
+    model = preferred_model.strip()
+    if provider:
+        payload["event_data"]["preferred_provider"] = provider
+    if model:
+        payload["event_data"]["preferred_model"] = model
+    try:
+        event = client.create_project_event(payload)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    print_json(event)
+
+
 @run_app.command("list")
 def run_list() -> None:
     client = _client()
@@ -776,6 +813,72 @@ def diagnostics() -> None:
         raise typer.Exit(code=1)
 
     print_json(payload)
+
+
+@notifications_app.command("list")
+def notifications_list(
+    json_output: bool = typer.Option(False, "--json"),
+    acknowledged: bool | None = typer.Option(None, "--acknowledged"),
+    limit: int = typer.Option(100, "--limit", min=1, max=500),
+) -> None:
+    client = _client()
+    try:
+        payload = client.list_notifications(acknowledged=acknowledged, limit=limit)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if json_output:
+        print_json(payload)
+        return
+    rows = [
+        [
+            str(item.get("id")),
+            str(item.get("category")),
+            str(item.get("title")),
+            "yes" if item.get("acknowledged") else "no",
+            str(item.get("created_at")),
+        ]
+        for item in items
+    ]
+    print_table(
+        "Notifications",
+        ["id", "category", "title", "ack", "created_at"],
+        rows,
+    )
+
+
+@notifications_app.command("show")
+def notifications_show(
+    notification_id: str, json_output: bool = typer.Option(False, "--json")
+) -> None:
+    client = _client()
+    try:
+        payload = client.get_notification(notification_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(payload)
+        return
+    print_kv_panel("Notification", payload)
+
+
+@notifications_app.command("ack")
+def notifications_ack(
+    notification_id: str, json_output: bool = typer.Option(False, "--json")
+) -> None:
+    client = _client()
+    try:
+        payload = client.acknowledge_notification(notification_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(payload)
+        return
+    print_kv_panel("Acknowledged", payload)
 
 
 @app.command("providers")

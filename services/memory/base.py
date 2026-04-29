@@ -11,12 +11,15 @@ from packages.contracts.python.models import (
     BatonPacketCreate,
     ProjectEvent,
     ProjectEventCreate,
+    ResearchFinding,
+    ResearchFindingCreate,
     Task,
     TaskCreate,
     TaskUpdate,
     Workspace,
     WorkspaceCreate,
     WorkspaceUpdate,
+    Notification,
 )
 
 
@@ -138,6 +141,31 @@ class MemoryStoreProtocol(Protocol):
     def list_autonomy_snapshots(
         self, *, task_id: UUID, limit: int = 200
     ) -> list[dict[str, object]]: ...
+
+    def create_research_finding(self, payload: ResearchFindingCreate) -> ResearchFinding: ...
+
+    def list_research_findings(
+        self, task_id: UUID | None = None, workspace_id: UUID | None = None, limit: int = 100
+    ) -> list[ResearchFinding]: ...
+
+    def create_notification(
+        self,
+        *,
+        category: str,
+        title: str,
+        body: str,
+        related_task_id: UUID | None = None,
+        related_workspace_id: UUID | None = None,
+        finding_id: UUID | None = None,
+    ) -> Notification: ...
+
+    def list_notifications(
+        self, *, acknowledged: bool | None = None, limit: int = 100
+    ) -> list[Notification]: ...
+
+    def get_notification(self, notification_id: UUID) -> Notification | None: ...
+
+    def acknowledge_notification(self, notification_id: UUID) -> Notification | None: ...
 
     def create_workspace(self, payload: WorkspaceCreate) -> Workspace: ...
 

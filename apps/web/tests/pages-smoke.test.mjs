@@ -28,3 +28,14 @@ test("diagnostics page renders service health", () => {
   assert.match(page, /Service Health/);
   assert.match(page, /getServicesHealth/);
 });
+
+test("notifications page has empty state", () => {
+  const page = read("../pages/notifications.tsx");
+  assert.match(page, /No unread notifications/);
+});
+
+test("analyst page renders digest controls", () => {
+  const page = read("../pages/analyst.tsx");
+  assert.match(page, /Analyst Digest/);
+  assert.match(page, /Generate Digest/);
+});

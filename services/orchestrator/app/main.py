@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.agent_runs import router as agent_runs_router
 from app.api.routes.analyst import router as analyst_router
@@ -11,6 +12,7 @@ from app.api.routes.diagnostics import router as diagnostics_router
 from app.api.routes.health import router as health_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.metrics import router as metrics_router
+from app.api.routes.notifications import router as notifications_router
 from app.api.routes.project_events import router as project_events_router
 from app.api.routes.routing import router as routing_router
 from app.api.routes.runs import router as runs_router
@@ -26,11 +28,22 @@ def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
     app = FastAPI(title="Agent Workforce Orchestrator", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.middleware("http")(create_security_middleware(settings))
     app.middleware("http")(request_observability_middleware)
 
     app.include_router(health_router)
     app.include_router(metrics_router)
+    app.include_router(notifications_router)
     app.include_router(tasks_router)
     app.include_router(workspaces_router)
     app.include_router(agent_runs_router)

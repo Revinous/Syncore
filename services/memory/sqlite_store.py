@@ -16,12 +16,15 @@ from packages.contracts.python.models import (
     BatonPacketCreate,
     ProjectEvent,
     ProjectEventCreate,
+    ResearchFinding,
+    ResearchFindingCreate,
     Task,
     TaskCreate,
     TaskUpdate,
     Workspace,
     WorkspaceCreate,
     WorkspaceUpdate,
+    Notification,
 )
 
 
@@ -30,6 +33,8 @@ class SQLiteMemoryStore:
         self._sqlite_db_path = sqlite_db_path
         Path(self._sqlite_db_path).parent.mkdir(parents=True, exist_ok=True)
         self._ensure_task_workspace_column()
+        self._ensure_context_bundle_columns()
+        self._ensure_research_and_notifications_tables()
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -51,6 +56,69 @@ class SQLiteMemoryStore:
             if columns and "workspace_id" not in columns:
                 connection.execute("ALTER TABLE tasks ADD COLUMN workspace_id TEXT")
                 connection.commit()
+
+    def _ensure_context_bundle_columns(self) -> None:
+        required_columns: dict[str, str] = {
+            "raw_estimated_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "optimized_estimated_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "token_savings_estimate": "INTEGER NOT NULL DEFAULT 0",
+            "token_savings_pct": "REAL NOT NULL DEFAULT 0",
+            "estimated_cost_raw_usd": "REAL",
+            "estimated_cost_optimized_usd": "REAL",
+            "estimated_cost_saved_usd": "REAL",
+        }
+        with sqlite3.connect(self._sqlite_db_path) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(context_bundles)").fetchall()
+            }
+            if not columns:
+                return
+            for name, definition in required_columns.items():
+                if name in columns:
+                    continue
+                connection.execute(
+                    f"ALTER TABLE context_bundles ADD COLUMN {name} {definition}"
+                )
+            connection.commit()
+
+    def _ensure_research_and_notifications_tables(self) -> None:
+        with sqlite3.connect(self._sqlite_db_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_findings (
+                  finding_id TEXT PRIMARY KEY,
+                  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+                  title TEXT NOT NULL,
+                  summary TEXT NOT NULL,
+                  details TEXT NOT NULL,
+                  impact_level TEXT NOT NULL DEFAULT 'medium',
+                  source TEXT NOT NULL DEFAULT 'researcher',
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notifications (
+                  id TEXT PRIMARY KEY,
+                  category TEXT NOT NULL,
+                  title TEXT NOT NULL,
+                  body TEXT NOT NULL,
+                  related_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                  related_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+                  finding_id TEXT REFERENCES research_findings(finding_id) ON DELETE SET NULL,
+                  acknowledged INTEGER NOT NULL DEFAULT 0,
+                  acknowledged_at TEXT,
+                  created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_ack_created ON notifications (acknowledged, created_at DESC)"
+            )
+            connection.commit()
 
     def create_task(self, task: TaskCreate) -> Task:
         task_id = str(uuid4())
@@ -1105,3 +1173,167 @@ class SQLiteMemoryStore:
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def create_research_finding(self, payload: ResearchFindingCreate) -> ResearchFinding:
+        finding_id = str(uuid4())
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO research_findings (
+                    finding_id, task_id, workspace_id, title, summary, details, impact_level, source, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    finding_id,
+                    str(payload.task_id) if payload.task_id else None,
+                    str(payload.workspace_id) if payload.workspace_id else None,
+                    payload.title,
+                    payload.summary,
+                    payload.details,
+                    payload.impact_level,
+                    payload.source,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT finding_id, task_id, workspace_id, title, summary, details, impact_level, source, created_at
+                FROM research_findings
+                WHERE finding_id = ?
+                """,
+                (finding_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create research finding")
+        return ResearchFinding.model_validate(dict(row))
+
+    def list_research_findings(
+        self, task_id: UUID | None = None, workspace_id: UUID | None = None, limit: int = 100
+    ) -> list[ResearchFinding]:
+        bounded_limit = min(max(limit, 1), 500)
+        query = """
+            SELECT finding_id, task_id, workspace_id, title, summary, details, impact_level, source, created_at
+            FROM research_findings
+        """
+        clauses: list[str] = []
+        values: list[object] = []
+        if task_id is not None:
+            clauses.append("task_id = ?")
+            values.append(str(task_id))
+        if workspace_id is not None:
+            clauses.append("workspace_id = ?")
+            values.append(str(workspace_id))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        values.append(bounded_limit)
+        with self._connection() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [ResearchFinding.model_validate(dict(row)) for row in rows]
+
+    def create_notification(
+        self,
+        *,
+        category: str,
+        title: str,
+        body: str,
+        related_task_id: UUID | None = None,
+        related_workspace_id: UUID | None = None,
+        finding_id: UUID | None = None,
+    ) -> Notification:
+        notification_id = str(uuid4())
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO notifications (
+                    id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                """,
+                (
+                    notification_id,
+                    category,
+                    title,
+                    body,
+                    str(related_task_id) if related_task_id else None,
+                    str(related_workspace_id) if related_workspace_id else None,
+                    str(finding_id) if finding_id else None,
+                    now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                FROM notifications
+                WHERE id = ?
+                """,
+                (notification_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Failed to create notification")
+        return Notification.model_validate({**dict(row), "acknowledged": bool(dict(row)["acknowledged"])})
+
+    def list_notifications(
+        self, *, acknowledged: bool | None = None, limit: int = 100
+    ) -> list[Notification]:
+        bounded_limit = min(max(limit, 1), 500)
+        query = """
+            SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+            FROM notifications
+        """
+        values: list[object] = []
+        if acknowledged is not None:
+            query += " WHERE acknowledged = ?"
+            values.append(1 if acknowledged else 0)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        values.append(bounded_limit)
+        with self._connection() as connection:
+            rows = connection.execute(query, tuple(values)).fetchall()
+        return [
+            Notification.model_validate({**dict(row), "acknowledged": bool(dict(row)["acknowledged"])})
+            for row in rows
+        ]
+
+    def get_notification(self, notification_id: UUID) -> Notification | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                FROM notifications
+                WHERE id = ?
+                """,
+                (str(notification_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["acknowledged"] = bool(record["acknowledged"])
+        return Notification.model_validate(record)
+
+    def acknowledge_notification(self, notification_id: UUID) -> Notification | None:
+        now = self._now()
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE notifications
+                SET acknowledged = 1, acknowledged_at = ?
+                WHERE id = ?
+                """,
+                (now, str(notification_id)),
+            )
+            row = connection.execute(
+                """
+                SELECT id, category, title, body, related_task_id, related_workspace_id, finding_id, acknowledged, acknowledged_at, created_at
+                FROM notifications
+                WHERE id = ?
+                """,
+                (str(notification_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["acknowledged"] = bool(record["acknowledged"])
+        return Notification.model_validate(record)

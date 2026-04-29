@@ -116,6 +116,10 @@ class FakeClient:
     def list_task_events(self, task_id: str):
         return [{"id": "e1", "task_id": task_id, "event_type": "started"}]
 
+    def create_project_event(self, payload):
+        self.created_event_payload = payload
+        return payload
+
     def list_task_batons(self, task_id: str):
         return [{"id": "b1", "task_id": task_id}]
 
@@ -170,6 +174,42 @@ class FakeClient:
                 }
             },
             "recent_bundles": [],
+        }
+
+    def list_notifications(self, acknowledged: bool | None = None, limit: int = 100):
+        return {
+            "items": [
+                {
+                    "id": "n1",
+                    "category": "research.finding",
+                    "title": "Research update",
+                    "body": "Upgrade path available",
+                    "acknowledged": False,
+                    "created_at": "now",
+                }
+            ][:limit]
+        }
+
+    def get_notification(self, notification_id: str):
+        return {
+            "id": notification_id,
+            "category": "research.finding",
+            "title": "Research update",
+            "body": "Upgrade path available",
+            "acknowledged": False,
+            "created_at": "now",
+        }
+
+    def acknowledge_notification(self, notification_id: str):
+        return {
+            "notification": {
+                "id": notification_id,
+                "category": "research.finding",
+                "title": "Research update",
+                "body": "Upgrade path available",
+                "acknowledged": True,
+                "created_at": "now",
+            }
         }
 
 
@@ -228,6 +268,50 @@ def test_task_create_sends_payload(monkeypatch) -> None:
     assert result.exit_code == 0
     assert fake.created_task_payload["title"] == "Test task"
     assert fake.created_task_payload["task_type"] == "analysis"
+
+
+def test_notifications_list_and_ack(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    listed = runner.invoke(app, ["notifications", "list"])
+    assert listed.exit_code == 0
+    assert "research.finding" in listed.stdout
+
+    acked = runner.invoke(app, ["notifications", "ack", "n1"])
+    assert acked.exit_code == 0
+    assert "Acknowledged" in acked.stdout
+
+
+def test_task_set_prefs_sends_preference_event(monkeypatch) -> None:
+    runner = CliRunner()
+    fake = FakeClient()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: fake)
+    result = runner.invoke(
+        app,
+        [
+            "task",
+            "set-prefs",
+            "t1",
+            "--agent-role",
+            "reviewer",
+            "--provider",
+            "openai",
+            "--model",
+            "gpt-5.4",
+            "--prompt",
+            "Run full local checks",
+            "--requires-approval",
+            "--sdlc-enforce",
+        ],
+    )
+    assert result.exit_code == 0
+    assert fake.created_event_payload["event_type"] == "task.preferences"
+    event_data = fake.created_event_payload["event_data"]
+    assert event_data["preferred_agent_role"] == "reviewer"
+    assert event_data["preferred_provider"] == "openai"
+    assert event_data["preferred_model"] == "gpt-5.4"
+    assert event_data["requires_approval"] == "true"
+    assert event_data["sdlc_enforce"] == "true"
 
 
 def test_json_output_is_valid(monkeypatch) -> None:

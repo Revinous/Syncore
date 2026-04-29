@@ -99,6 +99,33 @@ def upgrade() -> None:
         sa.Column("created_at", sa.Text(), nullable=False),
     )
 
+    op.create_table(
+        "research_findings",
+        sa.Column("finding_id", sa.String(length=64), primary_key=True),
+        sa.Column("task_id", sa.String(length=64), nullable=True),
+        sa.Column("workspace_id", sa.String(length=64), nullable=True),
+        sa.Column("title", sa.Text(), nullable=False),
+        sa.Column("summary", sa.Text(), nullable=False),
+        sa.Column("details", sa.Text(), nullable=False),
+        sa.Column("impact_level", sa.String(length=16), nullable=False, server_default="medium"),
+        sa.Column("source", sa.String(length=64), nullable=False, server_default="researcher"),
+        sa.Column("created_at", sa.Text(), nullable=False),
+    )
+
+    op.create_table(
+        "notifications",
+        sa.Column("id", sa.String(length=64), primary_key=True),
+        sa.Column("category", sa.String(length=64), nullable=False),
+        sa.Column("title", sa.Text(), nullable=False),
+        sa.Column("body", sa.Text(), nullable=False),
+        sa.Column("related_task_id", sa.String(length=64), nullable=True),
+        sa.Column("related_workspace_id", sa.String(length=64), nullable=True),
+        sa.Column("finding_id", sa.String(length=64), nullable=True),
+        sa.Column("acknowledged", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column("acknowledged_at", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.Text(), nullable=False),
+    )
+
     op.create_index(
         "idx_agent_runs_task_id_created_at",
         "agent_runs",
@@ -126,10 +153,22 @@ def upgrade() -> None:
         "context_bundles",
         ["task_id", "created_at"],
     )
+    op.create_index(
+        "idx_research_findings_task_created",
+        "research_findings",
+        ["task_id", "created_at"],
+    )
+    op.create_index(
+        "idx_notifications_ack_created",
+        "notifications",
+        ["acknowledged", "created_at"],
+    )
 
 
 def downgrade() -> None:
     op.drop_index("idx_context_bundles_task_id_created_at", table_name="context_bundles")
+    op.drop_index("idx_notifications_ack_created", table_name="notifications")
+    op.drop_index("idx_research_findings_task_created", table_name="research_findings")
     op.drop_index("idx_context_references_task_id_created_at", table_name="context_references")
     op.drop_index("idx_workspaces_root_path", table_name="workspaces")
     op.drop_index("idx_project_events_task_id_created_at", table_name="project_events")
@@ -138,6 +177,8 @@ def downgrade() -> None:
     op.drop_index("idx_agent_runs_task_id_created_at", table_name="agent_runs")
 
     op.drop_table("context_bundles")
+    op.drop_table("notifications")
+    op.drop_table("research_findings")
     op.drop_table("context_references")
     op.drop_table("workspaces")
     op.drop_table("project_events")

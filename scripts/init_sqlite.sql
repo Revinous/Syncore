@@ -116,6 +116,31 @@ CREATE TABLE IF NOT EXISTS autonomy_snapshots (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS research_findings (
+  finding_id TEXT PRIMARY KEY,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  details TEXT NOT NULL,
+  impact_level TEXT NOT NULL DEFAULT 'medium',
+  source TEXT NOT NULL DEFAULT 'researcher',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  related_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  related_workspace_id TEXT REFERENCES workspaces(id) ON DELETE SET NULL,
+  finding_id TEXT REFERENCES research_findings(finding_id) ON DELETE SET NULL,
+  acknowledged INTEGER NOT NULL DEFAULT 0,
+  acknowledged_at TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_agent_runs_task_id_created_at
   ON agent_runs (task_id, created_at ASC);
 
@@ -145,3 +170,9 @@ CREATE INDEX IF NOT EXISTS idx_run_queue_status_available_created
 
 CREATE INDEX IF NOT EXISTS idx_autonomy_snapshots_task_created
   ON autonomy_snapshots (task_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_research_findings_task_created
+  ON research_findings (task_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_ack_created
+  ON notifications (acknowledged, created_at DESC);

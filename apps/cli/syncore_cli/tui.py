@@ -116,6 +116,11 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
                 id="task-requires-approval",
             )
             yield Input(
+                value="true",
+                placeholder="sdlc_enforce (true/false)",
+                id="task-sdlc-enforce",
+            )
+            yield Input(
                 placeholder="execution prompt (optional)",
                 id="task-prompt",
             )
@@ -167,7 +172,8 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
             "task-description": "task-type",
             "task-type": "task-agent-role",
             "task-agent-role": "task-requires-approval",
-            "task-requires-approval": "task-prompt",
+            "task-requires-approval": "task-sdlc-enforce",
+            "task-sdlc-enforce": "task-prompt",
         }.get(event.input.id or "")
         if next_field:
             self.query_one(f"#{next_field}", Input).focus()
@@ -255,6 +261,9 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
         requires_approval = (
             self.query_one("#task-requires-approval", Input).value.strip().lower()
         )
+        sdlc_enforce = (
+            self.query_one("#task-sdlc-enforce", Input).value.strip().lower()
+        )
         preferred_model = self.query_one("#task-model", Input).value.strip()
         prompt = self.query_one("#task-prompt", Input).value.strip()
 
@@ -289,6 +298,9 @@ class NewTaskScreen(ModalScreen[dict[str, str] | None]):
                 "requires_approval": "true"
                 if requires_approval in {"true", "1", "yes", "on"}
                 else "false",
+                "sdlc_enforce": "true"
+                if sdlc_enforce in {"true", "1", "yes", "on"}
+                else "false",
             }
         )
 
@@ -317,6 +329,7 @@ class SyncoreTuiApp(App[None]):
         ("t", "show_tasks", "Tasks"),
         ("a", "show_runs", "Runs"),
         ("x", "show_diagnostics", "Diagnostics"),
+        ("f", "show_notifications", "Notifications"),
         ("c", "show_metrics", "Metrics"),
         ("v", "open_detail", "Open Detail"),
         ("b", "back_view", "Back"),
@@ -333,6 +346,7 @@ class SyncoreTuiApp(App[None]):
         ("z", "toggle_autonomy", "Autonomy"),
         ("y", "approve_task", "Approve"),
         ("u", "reject_task", "Reject"),
+        ("h", "ack_notification", "Ack Notification"),
     ]
 
     current_view = reactive("dashboard")
@@ -363,6 +377,8 @@ class SyncoreTuiApp(App[None]):
         self._diag_config: dict[str, Any] = {}
         self._diag_routes: dict[str, Any] = {}
         self._context_efficiency: dict[str, Any] = {}
+        self._notifications: list[dict[str, Any]] = []
+        self._selected_notification_index = 0
         self._task_events: list[dict[str, Any]] = []
         self._task_batons: list[dict[str, Any]] = []
         self._task_runs: list[dict[str, Any]] = []
@@ -422,6 +438,19 @@ class SyncoreTuiApp(App[None]):
             self._workspaces = self._safe_request(self._client.list_workspaces, [])
             self._tasks = self._safe_request(self._client.list_tasks, [])
             self._runs = self._safe_request(self._client.list_agent_runs, [])
+            list_notifications = getattr(self._client, "list_notifications", None)
+            if callable(list_notifications):
+                notifications_payload = self._safe_request(
+                    lambda: list_notifications(acknowledged=False, limit=100),
+                    {"items": []},
+                )
+            else:
+                notifications_payload = {"items": []}
+            self._notifications = (
+                notifications_payload.get("items", [])
+                if isinstance(notifications_payload, dict)
+                else []
+            )
             if self._autonomy_enabled:
                 autonomy = self._safe_request(
                     lambda: self._client.autonomy_scan_once(limit=50), None
@@ -443,6 +472,7 @@ class SyncoreTuiApp(App[None]):
             self._sync_workspace_selection()
             self._sync_task_selection()
             self._sync_run_selection()
+            self._sync_notification_selection()
             self._refresh_task_context()
 
             if not self._update_panes():
@@ -547,6 +577,19 @@ class SyncoreTuiApp(App[None]):
             return None
         return self._runs[self._selected_run_index]
 
+    def _sync_notification_selection(self) -> None:
+        if not self._notifications:
+            self._selected_notification_index = 0
+            return
+        self._selected_notification_index = min(
+            self._selected_notification_index, len(self._notifications) - 1
+        )
+
+    def _selected_notification(self) -> dict[str, Any] | None:
+        if not self._notifications:
+            return None
+        return self._notifications[self._selected_notification_index]
+
     def _refresh_task_context(self) -> None:
         task = self._selected_task()
         if task is None:
@@ -601,12 +644,14 @@ class SyncoreTuiApp(App[None]):
             preferred_agent = str(data.get("preferred_agent_role") or "").strip()
             execution_prompt = str(data.get("execution_prompt") or "").strip()
             requires_approval = str(data.get("requires_approval") or "").strip()
+            sdlc_enforce = str(data.get("sdlc_enforce") or "").strip()
             return {
                 "preferred_provider": preferred_provider,
                 "preferred_model": preferred_model,
                 "preferred_agent_role": preferred_agent,
                 "execution_prompt": execution_prompt,
                 "requires_approval": requires_approval,
+                "sdlc_enforce": sdlc_enforce,
             }
         return {}
 
@@ -634,6 +679,8 @@ class SyncoreTuiApp(App[None]):
             return self._render_runs_left()
         if self.current_view == "diagnostics":
             return self._render_diagnostics_left()
+        if self.current_view == "notifications":
+            return self._render_notifications_left()
         if self.current_view == "metrics":
             return self._render_metrics_left()
         return "Unknown view"
@@ -651,6 +698,8 @@ class SyncoreTuiApp(App[None]):
             return self._render_runs_center()
         if self.current_view == "diagnostics":
             return self._render_diagnostics_center()
+        if self.current_view == "notifications":
+            return self._render_notifications_center()
         if self.current_view == "metrics":
             return self._render_metrics_center()
         return ""
@@ -663,6 +712,8 @@ class SyncoreTuiApp(App[None]):
             actions_hint = "Actions: g o p e"
         elif self.current_view == "diagnostics":
             actions_hint = "Actions: m i"
+        elif self.current_view == "notifications":
+            actions_hint = "Actions: h=ack"
 
         lines = [
             f"API: {self._config.api_url}",
@@ -670,8 +721,9 @@ class SyncoreTuiApp(App[None]):
             f"Health: {self._summary.get('health')}",
             f"Workspace: {self._selected_workspace_name or 'none'}",
             f"Task: {self._selected_task_title or 'none'}",
+            f"Unread notifications: {len(self._notifications)}",
             "",
-            "Views: d/w/t/a/x/c | detail: v/b",
+            "Views: d/w/t/a/x/c/f | detail: v/b",
             "Nav: j/k | Refresh: r | Quit: q",
             actions_hint,
             "OpenAI: i=signin m=models",
@@ -691,6 +743,7 @@ class SyncoreTuiApp(App[None]):
                     f"model={self._task_preferences.get('preferred_model', '-')}",
                     f"agent={self._task_preferences.get('preferred_agent_role', '-')}",
                     f"requires_approval={self._task_preferences.get('requires_approval', '-')}",
+                    f"sdlc_enforce={self._task_preferences.get('sdlc_enforce', '-')}",
                 ]
             )
         if self._latest_model_switch:
@@ -920,6 +973,7 @@ class SyncoreTuiApp(App[None]):
             lines.append(
                 f"digest: {self._task_digest.get('headline') or self._task_digest.get('summary', '')[:90]}"
             )
+            lines.append(f"eli5: {self._task_digest.get('eli5_summary', '')[:120]}")
         else:
             lines.append("digest: none")
         lines.append("")
@@ -980,6 +1034,36 @@ class SyncoreTuiApp(App[None]):
             ]
         )
 
+    def _render_notifications_left(self) -> str:
+        lines = ["Notifications (j/k select, h ack)"]
+        if not self._notifications:
+            lines.append("- none")
+            return "\n".join(lines)
+        for index, item in enumerate(self._notifications):
+            marker = "*" if index == self._selected_notification_index else "-"
+            lines.append(
+                f"{marker} [{item.get('category')}] {item.get('title')}"
+            )
+        return "\n".join(lines)
+
+    def _render_notifications_center(self) -> str:
+        item = self._selected_notification()
+        if item is None:
+            return "No unread notifications."
+        return "\n".join(
+            [
+                "Selected notification",
+                f"id: {item.get('id')}",
+                f"category: {item.get('category')}",
+                f"title: {item.get('title')}",
+                f"body: {item.get('body')}",
+                f"task: {item.get('related_task_id') or '-'}",
+                f"workspace: {item.get('related_workspace_id') or '-'}",
+                f"finding: {item.get('finding_id') or '-'}",
+                f"created_at: {item.get('created_at')}",
+            ]
+        )
+
     def _switch(self, view: str) -> None:
         if self.current_view != view:
             self._last_view = self.current_view
@@ -1000,6 +1084,9 @@ class SyncoreTuiApp(App[None]):
 
     def action_show_diagnostics(self) -> None:
         self._switch("diagnostics")
+
+    def action_show_notifications(self) -> None:
+        self._switch("notifications")
 
     def action_show_metrics(self) -> None:
         self._switch("metrics")
@@ -1046,6 +1133,10 @@ class SyncoreTuiApp(App[None]):
             self._selected_task_title = str(task.get("title", "unknown"))
         elif self.current_view == "runs" and self._runs:
             self._selected_run_index = (self._selected_run_index + 1) % len(self._runs)
+        elif self.current_view == "notifications" and self._notifications:
+            self._selected_notification_index = (
+                self._selected_notification_index + 1
+            ) % len(self._notifications)
         self.action_refresh()
 
     def action_prev_item(self) -> None:
@@ -1063,6 +1154,10 @@ class SyncoreTuiApp(App[None]):
             self._selected_task_title = str(task.get("title", "unknown"))
         elif self.current_view == "runs" and self._runs:
             self._selected_run_index = (self._selected_run_index - 1) % len(self._runs)
+        elif self.current_view == "notifications" and self._notifications:
+            self._selected_notification_index = (
+                self._selected_notification_index - 1
+            ) % len(self._notifications)
         self.action_refresh()
 
     def action_new_task(self) -> None:
@@ -1105,6 +1200,7 @@ class SyncoreTuiApp(App[None]):
                         "preferred_agent_role": payload.get("preferred_agent_role", "coder"),
                         "execution_prompt": payload.get("execution_prompt", ""),
                         "requires_approval": payload.get("requires_approval", "false"),
+                        "sdlc_enforce": payload.get("sdlc_enforce", "false"),
                     },
                 }
             )
@@ -1311,6 +1407,20 @@ class SyncoreTuiApp(App[None]):
             self.notify(str(error), severity="error")
             return
         self.notify(f"Autonomy rejection: {task_id} -> {result.get('status')}")
+        self.action_refresh()
+
+    def action_ack_notification(self) -> None:
+        item = self._selected_notification()
+        if item is None:
+            self.notify("No notification selected.", severity="warning")
+            return
+        notification_id = str(item.get("id"))
+        try:
+            self._client.acknowledge_notification(notification_id)
+        except SyncoreApiError as error:
+            self.notify(str(error), severity="error")
+            return
+        self.notify(f"Acknowledged notification {notification_id}")
         self.action_refresh()
 
 

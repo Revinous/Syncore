@@ -11,6 +11,8 @@ import {
   HealthResponse,
   ProjectEvent,
   RoutingDecision,
+  NotificationItem,
+  NotificationListResponse,
   ServicesHealthResponse,
   Task,
   TaskCreatePayload,
@@ -210,4 +212,22 @@ export function getDiagnosticsConfig() {
 
 export function getDiagnosticsRoutes() {
   return request<DiagnosticsRoutes>("/diagnostics/routes");
+}
+
+export function listNotifications(acknowledged?: boolean, limit = 100) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (acknowledged !== undefined) {
+    params.set("acknowledged", acknowledged ? "true" : "false");
+  }
+  return request<NotificationListResponse>(`/notifications?${params.toString()}`);
+}
+
+export function getNotification(id: string) {
+  return request<NotificationItem>(`/notifications/${id}`);
+}
+
+export function acknowledgeNotification(id: string) {
+  return request<{ notification: NotificationItem }>(`/notifications/${id}/ack`, {
+    method: "POST",
+  });
 }
