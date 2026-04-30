@@ -26,6 +26,16 @@ def get_digest_service() -> AnalystDigestService:
     return AnalystDigestService()
 
 
+def _latest_baton(store: MemoryStoreProtocol, task_id: UUID):
+    getter = getattr(store, "get_latest_baton_packet", None)
+    if callable(getter):
+        try:
+            return getter(task_id)
+        except Exception:
+            return None
+    return None
+
+
 @router.get("/digest/{task_id}", response_model=ExecutiveDigest)
 def get_task_digest(
     task_id: UUID,
@@ -40,7 +50,13 @@ def get_task_digest(
             status_code=503, detail=f"Memory service unavailable: {error}"
         ) from error
 
-    return _ensure_eli5(digest_service.generate_digest(task_id=task_id, events=events))
+    return _ensure_eli5(
+        digest_service.generate_digest(
+            task_id=task_id,
+            events=events,
+            latest_baton=_latest_baton(store, task_id),
+        )
+    )
 
 
 @router.post("/digest", response_model=ExecutiveDigest)
@@ -57,5 +73,9 @@ def generate_digest(
         ) from error
 
     return _ensure_eli5(
-        digest_service.generate_digest(task_id=payload.task_id, events=events)
+        digest_service.generate_digest(
+            task_id=payload.task_id,
+            events=events,
+            latest_baton=_latest_baton(store, payload.task_id),
+        )
     )

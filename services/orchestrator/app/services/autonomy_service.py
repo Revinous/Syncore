@@ -124,6 +124,35 @@ class AutonomyService:
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
         requires_approval = _as_bool(prefs.get("requires_approval"))
+
+        child_gate = self._child_gate_status(task=task, events=events)
+        if child_gate["mode"] == "awaiting_children":
+            return AutonomyResult(
+                task_id=task_id,
+                status="in_progress",
+                note=str(child_gate.get("note") or "Waiting for child tasks."),
+            )
+        if child_gate["mode"] == "children_failed":
+            self._store.update_task(task_id, TaskUpdate(status="blocked"))
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task_id,
+                    event_type="autonomy.failed",
+                    event_data={"error": str(child_gate.get("note") or "Child tasks failed.")},
+                )
+            )
+            return AutonomyResult(
+                task_id=task_id,
+                status="failed",
+                note=str(child_gate.get("note") or "Child tasks failed."),
+            )
+        if child_gate["mode"] == "children_completed":
+            self._finalize_task(task_id)
+            return AutonomyResult(
+                task_id=task_id,
+                status="completed",
+                note=str(child_gate.get("note") or "Child tasks completed successfully."),
+            )
         enforce_sdlc = self._should_enforce_sdlc(task=task, prefs=prefs)
         now_epoch = datetime.now(timezone.utc).timestamp()
         total_steps = self._total_step_events(events)
@@ -420,6 +449,18 @@ class AutonomyService:
             )
             if next_stage == "plan":
                 self._spawn_subtasks_once(task=task, prefs=prefs)
+                post_spawn_events = self._store.list_project_events(task_id=task.id, limit=500)
+                post_spawn_gate = self._child_gate_status(task=task, events=post_spawn_events)
+                if post_spawn_gate["mode"] == "awaiting_children":
+                    return AutonomyResult(
+                        task_id=task_id,
+                        status="in_progress",
+                        run_id=run.run_id,
+                        note=str(
+                            post_spawn_gate.get("note")
+                            or "Plan complete; child tasks spawned and running."
+                        ),
+                    )
             return AutonomyResult(
                 task_id=task_id,
                 status="in_progress",
@@ -1084,9 +1125,64 @@ class AutonomyService:
                 return event
         return None
 
+    def _child_gate_status(
+        self, *, task: Task, events: list[ProjectEvent]
+    ) -> dict[str, str]:
+        spawned = self._latest_event(events, "autonomy.subtasks.spawned")
+        if spawned is None:
+            return {"mode": "none"}
+        raw_ids = str(spawned.event_data.get("child_task_ids") or "").strip()
+        if not raw_ids:
+            return {"mode": "none"}
+        child_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+        if not child_ids:
+            return {"mode": "none"}
+
+        blocked: list[str] = []
+        completed = 0
+        active = 0
+        for raw in child_ids:
+            try:
+                child_id = UUID(raw)
+            except ValueError:
+                continue
+            child = self._store.get_task(child_id)
+            if child is None:
+                continue
+            if child.status == "completed":
+                completed += 1
+            elif child.status == "blocked":
+                blocked.append(str(child.id))
+            else:
+                active += 1
+
+        if blocked:
+            return {
+                "mode": "children_failed",
+                "note": f"Child tasks blocked: {', '.join(blocked[:5])}.",
+            }
+        if completed >= len(child_ids) and len(child_ids) > 0:
+            if self._latest_event(events, "autonomy.children.completed") is None:
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task.id,
+                        event_type="autonomy.children.completed",
+                        event_data={"count": len(child_ids)},
+                    )
+                )
+            return {"mode": "children_completed", "note": "All child tasks completed."}
+        return {
+            "mode": "awaiting_children",
+            "note": f"Waiting for child tasks: completed={completed}, active={active}.",
+        }
+
     def _generate_digest_event(self, task_id: UUID) -> None:
         events = self._store.list_project_events(task_id=task_id, limit=200)
-        digest = self._digest_service.generate_digest(task_id=task_id, events=events)
+        digest = self._digest_service.generate_digest(
+            task_id=task_id,
+            events=events,
+            latest_baton=self._store.get_latest_baton_packet(task_id),
+        )
         self._store.save_project_event(
             ProjectEventCreate(
                 task_id=task_id,

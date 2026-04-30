@@ -47,6 +47,11 @@ class QueueScanResponse(BaseModel):
     results: list[QueueScanItem]
 
 
+class WorkspaceRunRequest(BaseModel):
+    run: RunExecutionRequest
+    max_steps: int = Field(default=3, ge=1, le=8)
+
+
 def get_run_execution_service(settings: Settings = Depends(get_settings)) -> RunExecutionService:
     return RunExecutionService.from_settings(settings)
 
@@ -66,6 +71,30 @@ def execute_run(
         if x_idempotency_key and not payload.idempotency_key:
             effective_payload = payload.model_copy(update={"idempotency_key": x_idempotency_key})
         return service.execute(effective_payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.post("/execute-workspace")
+def execute_workspace_run(
+    payload: WorkspaceRunRequest,
+    x_idempotency_key: str | None = Header(default=None),
+    service: RunExecutionService = Depends(get_run_execution_service),
+):
+    try:
+        effective_payload = payload.run
+        if x_idempotency_key and not payload.run.idempotency_key:
+            effective_payload = payload.run.model_copy(
+                update={"idempotency_key": x_idempotency_key}
+            )
+        return service.execute_workspace_loop(
+            effective_payload,
+            max_steps=payload.max_steps,
+        )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

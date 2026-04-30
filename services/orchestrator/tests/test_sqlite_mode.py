@@ -68,6 +68,11 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     assert len(task_list.json()) >= 1
     assert task_list.json()[0]["workspace_id"] == workspace_id
 
+    children = client.get(f"/tasks/{task_id}/children")
+    assert children.status_code == 200
+    assert children.json()["parent_task_id"] == task_id
+    assert children.json()["has_children"] is False
+
     event = client.post(
         "/project-events",
         json={

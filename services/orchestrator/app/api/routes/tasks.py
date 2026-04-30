@@ -5,7 +5,11 @@ from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskU
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.services.task_service import TaskModelSwitchResult, TaskService
+from app.services.task_service import (
+    ChildTaskStatusBoard,
+    TaskModelSwitchResult,
+    TaskService,
+)
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -75,6 +79,17 @@ def update_task(
     if updated is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return updated
+
+
+@router.get("/{task_id}/children", response_model=ChildTaskStatusBoard)
+def get_task_children_status(
+    task_id: UUID,
+    service: TaskService = Depends(get_task_service),
+) -> ChildTaskStatusBoard:
+    board = service.get_child_status_board(task_id)
+    if board is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return board
 
 
 class TaskModelSwitchRequest(BaseModel):

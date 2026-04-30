@@ -5,13 +5,22 @@ import {
   createAgentRun,
   generateDigest,
   getTask,
+  getTaskChildren,
   getTaskDigest,
   getTaskRouting,
   listTaskBatonPackets,
   listTaskEvents,
   routeNextAction,
 } from "../../src/lib/api";
-import { AgentRun, AnalystDigest, BatonPacket, ProjectEvent, RoutingDecision, TaskDetail } from "../../src/lib/types";
+import {
+  AgentRun,
+  AnalystDigest,
+  BatonPacket,
+  ProjectEvent,
+  RoutingDecision,
+  TaskChildrenBoard,
+  TaskDetail,
+} from "../../src/lib/types";
 import { EmptyState } from "../../src/components/EmptyState";
 import { ErrorState } from "../../src/components/ErrorState";
 import { Layout } from "../../src/components/Layout";
@@ -27,6 +36,7 @@ export default function TaskDetailPage() {
   const [batons, setBatons] = useState<BatonPacket[]>([]);
   const [routing, setRouting] = useState<RoutingDecision | null>(null);
   const [digest, setDigest] = useState<AnalystDigest | null>(null);
+  const [childrenBoard, setChildrenBoard] = useState<TaskChildrenBoard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +62,11 @@ export default function TaskDetailPage() {
         setDigest(await getTaskDigest(taskId));
       } catch {
         setDigest(null);
+      }
+      try {
+        setChildrenBoard(await getTaskChildren(taskId));
+      } catch {
+        setChildrenBoard(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load task detail");
@@ -103,6 +118,10 @@ export default function TaskDetailPage() {
     );
   }
 
+  function formatEli5ForDisplay(text: string): string {
+    return text.replace(/\. /g, ".\n");
+  }
+
   return (
     <Layout title="Task Detail">
       {loading && <LoadingState message="Loading task detail..." />}
@@ -133,6 +152,26 @@ export default function TaskDetailPage() {
                   </li>
                 ))}
               </ul>
+            )}
+          </section>
+
+          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
+            <h2>Child Tasks</h2>
+            {!childrenBoard || !childrenBoard.has_children ? (
+              <EmptyState message="No spawned child tasks." />
+            ) : (
+              <>
+                <p>
+                  Total: {childrenBoard.total_children} | Completed: {childrenBoard.completed_children} | Active: {childrenBoard.active_children} | Blocked: {childrenBoard.blocked_children}
+                </p>
+                <ul>
+                  {childrenBoard.children.map((child) => (
+                    <li key={child.task_id}>
+                      {child.title} [{child.status}] ({child.task_type}/{child.complexity})
+                    </li>
+                  ))}
+                </ul>
+              </>
             )}
           </section>
 
@@ -174,7 +213,24 @@ export default function TaskDetailPage() {
             {digest ? (
               <>
                 <p><strong>Headline:</strong> {digest.headline}</p>
-                <p><strong>ELI5:</strong> {eli5Text(digest)}</p>
+                <div>
+                  <strong>ELI5:</strong>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 6,
+                      background: "#f9fafb",
+                      whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {formatEli5ForDisplay(eli5Text(digest))}
+                  </div>
+                </div>
                 <p><strong>Risk:</strong> {digest.risk_level}</p>
                 <p><strong>Total events:</strong> {digest.total_events}</p>
                 <pre>{JSON.stringify(digest, null, 2)}</pre>

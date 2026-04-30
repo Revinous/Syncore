@@ -227,7 +227,8 @@ def test_execute_uses_context_and_marks_run_completed() -> None:
         max_concurrent_runs_per_workspace=4,
     )
 
-    result = service.execute(_request(task_id))
+    payload = _request(task_id).model_copy(update={"provider": None})
+    result = service.execute(payload)
 
     assert context_service.called is True
     assert "## Optimized Context" in provider.last_prompt
@@ -309,7 +310,30 @@ def test_execute_failover_uses_secondary_provider() -> None:
         max_concurrent_runs_per_workspace=4,
     )
 
-    payload = _request(task_id).model_copy(update={"provider": "primary"})
-    result = service.execute(payload)
+    result = service.execute(_request(task_id).model_copy(update={"provider": None}))
     assert result.status == "completed"
     assert result.provider == "secondary"
+
+
+def test_execute_explicit_provider_disables_failover() -> None:
+    task_id = uuid4()
+    store = FakeStore(task_id=task_id)
+    primary = FakeProvider()
+    primary.should_fail = True
+    secondary = FakeProvider()
+    context_service = FakeContextService(task_id=task_id)
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"primary": primary, "secondary": secondary},
+        default_provider="primary",
+        failover_enabled=True,
+        fallback_order=["secondary"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
+    )
+
+    payload = _request(task_id).model_copy(update={"provider": "primary"})
+    with pytest.raises(RuntimeError):
+        service.execute(payload)

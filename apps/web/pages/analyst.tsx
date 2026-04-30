@@ -25,6 +25,10 @@ function toEli5(digest: AnalystDigest | null): string {
   );
 }
 
+function formatEli5ForDisplay(text: string): string {
+  return text.replace(/\. /g, ".\n");
+}
+
 export default function AnalystPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
@@ -144,7 +148,24 @@ export default function AnalystPage() {
             ) : (
               <>
                 <p><strong>Headline:</strong> {digest.headline}</p>
-                <p><strong>ELI5:</strong> {toEli5(digest)}</p>
+                <div>
+                  <strong>ELI5:</strong>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      padding: "8px 10px",
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 6,
+                      background: "#f9fafb",
+                      whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {formatEli5ForDisplay(toEli5(digest))}
+                  </div>
+                </div>
                 <p><strong>Risk:</strong> {digest.risk_level}</p>
                 <p><strong>Total events:</strong> {digest.total_events}</p>
                 <p><strong>Summary:</strong> {digest.summary}</p>

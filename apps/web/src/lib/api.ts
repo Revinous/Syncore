@@ -15,6 +15,7 @@ import {
   NotificationListResponse,
   ServicesHealthResponse,
   Task,
+  TaskChildrenBoard,
   TaskCreatePayload,
   TaskDetail,
   TaskUpdatePayload,
@@ -126,6 +127,10 @@ export function createTask(payload: TaskCreatePayload) {
 
 export function getTask(id: string) {
   return request<TaskDetail>(`/tasks/${id}`);
+}
+
+export function getTaskChildren(id: string) {
+  return request<TaskChildrenBoard>(`/tasks/${id}/children`);
 }
 
 export function updateTask(id: string, payload: TaskUpdatePayload) {

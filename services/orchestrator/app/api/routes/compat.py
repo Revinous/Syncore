@@ -102,6 +102,11 @@ def get_task_digest_compat(
 ) -> ExecutiveDigest:
     store = build_memory_store(settings)
     events = store.list_project_events(task_id=task_id, limit=limit)
+    latest_baton = store.get_latest_baton_packet(task_id)
     return _ensure_eli5(
-        AnalystDigestService().generate_digest(task_id=task_id, events=events)
+        AnalystDigestService().generate_digest(
+            task_id=task_id,
+            events=events,
+            latest_baton=latest_baton,
+        )
     )

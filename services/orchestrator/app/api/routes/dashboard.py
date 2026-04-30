@@ -64,7 +64,11 @@ def dashboard_summary(settings: Settings = Depends(get_settings)) -> DashboardSu
     for task in tasks:
         events = store.list_project_events(task.id, limit=50)
         if events:
-            latest_digest = digest_service.generate_digest(task.id, events).model_dump(mode="json")
+            latest_digest = digest_service.generate_digest(
+                task.id,
+                events,
+                latest_baton=store.get_latest_baton_packet(task.id),
+            ).model_dump(mode="json")
             break
 
     health = "ok"

@@ -218,6 +218,65 @@ def test_autonomy_requires_approval_and_resumes_after_approve(monkeypatch, tmp_p
         assert final_detail.json()["task"]["status"] == "completed"
 
 
+def test_autonomy_parent_waits_for_spawned_children(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        parent = client.post(
+            "/tasks",
+            json={
+                "title": "Planner parent task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert parent.status_code == 201
+        parent_id = parent.json()["id"]
+
+        pref = client.post(
+            "/project-events",
+            json={
+                "task_id": parent_id,
+                "event_type": "task.preferences",
+                "event_data": {"auto_spawn": "true", "auto_spawn_count": "3"},
+            },
+        )
+        assert pref.status_code == 201
+
+        completed = False
+        for _ in range(20):
+            scan = client.post("/autonomy/scan-once")
+            assert scan.status_code == 200
+            parent_detail = client.get(f"/tasks/{parent_id}")
+            assert parent_detail.status_code == 200
+            if parent_detail.json()["task"]["status"] == "completed":
+                completed = True
+                break
+            time.sleep(0.05)
+
+        assert completed is True
+
+        events = client.get(f"/tasks/{parent_id}/events")
+        assert events.status_code == 200
+        event_types = {event["event_type"] for event in events.json()}
+        assert "autonomy.subtasks.spawned" in event_types
+        assert "autonomy.children.completed" in event_types
+
+        board = client.get(f"/tasks/{parent_id}/children")
+        assert board.status_code == 200
+        payload = board.json()
+        assert payload["has_children"] is True
+        assert payload["total_children"] >= 1
+
+
 def test_autonomy_reject_blocks_task(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"
     _init_sqlite(db_path)

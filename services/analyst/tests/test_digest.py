@@ -45,7 +45,7 @@ def test_digest_includes_breakdown_and_highlights() -> None:
     assert digest.event_breakdown["task.created"] == 1
     assert len(digest.highlights) >= 2
     assert "Latest milestone" in digest.headline
-    assert "simple version" in digest.eli5_summary
+    assert "In plain language" in digest.eli5_summary
 
 
 def test_digest_marks_high_risk_for_blocked_signals() -> None:
@@ -94,5 +94,5 @@ def test_digest_eli5_explains_functionality_and_impact() -> None:
 
     digest = service.generate_digest(task_id=task_id, events=events)
 
-    assert "What changed: Added OAuth callback state validation" in digest.eli5_summary
+    assert "What was done: Added OAuth callback state validation" in digest.eli5_summary
     assert "Why it matters: prevents CSRF in login flow" in digest.eli5_summary

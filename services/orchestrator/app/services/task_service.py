@@ -28,6 +28,25 @@ class TaskModelSwitchResult(BaseModel):
     continuity_notes: list[str] = Field(default_factory=list)
 
 
+class ChildTaskStatusItem(BaseModel):
+    task_id: UUID
+    title: str
+    status: str
+    task_type: str
+    complexity: str
+    updated_at: str
+
+
+class ChildTaskStatusBoard(BaseModel):
+    parent_task_id: UUID
+    has_children: bool
+    total_children: int = Field(ge=0)
+    completed_children: int = Field(ge=0)
+    blocked_children: int = Field(ge=0)
+    active_children: int = Field(ge=0)
+    children: list[ChildTaskStatusItem] = Field(default_factory=list)
+
+
 class TaskService:
     def __init__(
         self,
@@ -162,6 +181,70 @@ class TaskService:
             included_refs=optimized.included_refs,
             continuity_status=continuity_status,
             continuity_notes=continuity_notes,
+        )
+
+    def get_child_status_board(self, parent_task_id: UUID) -> ChildTaskStatusBoard | None:
+        parent = self._store.get_task(parent_task_id)
+        if parent is None:
+            return None
+
+        children_by_id: dict[UUID, Task] = {}
+        parent_events = self._store.list_project_events(task_id=parent_task_id, limit=200)
+        for event in reversed(parent_events):
+            if event.event_type != "autonomy.subtasks.spawned":
+                continue
+            raw_ids = str(event.event_data.get("child_task_ids") or "").strip()
+            if not raw_ids:
+                continue
+            for raw in [item.strip() for item in raw_ids.split(",") if item.strip()]:
+                try:
+                    child_id = UUID(raw)
+                except ValueError:
+                    continue
+                child = self._store.get_task(child_id)
+                if child is not None:
+                    children_by_id[child.id] = child
+            if children_by_id:
+                break
+
+        children: list[Task] = list(children_by_id.values())
+        if parent.workspace_id is None:
+            all_tasks = self._store.list_tasks(limit=1000, workspace_id=None)
+        else:
+            all_tasks = self._store.list_tasks(limit=1000, workspace_id=parent.workspace_id)
+        for candidate in all_tasks:
+            if candidate.id in children_by_id:
+                continue
+            events = self._store.list_project_events(task_id=candidate.id, limit=20)
+            for event in reversed(events):
+                if event.event_type != "task.preferences":
+                    continue
+                raw_parent = str(event.event_data.get("parent_task_id") or "").strip()
+                if raw_parent == str(parent_task_id):
+                    children.append(candidate)
+                break
+
+        completed = len([task for task in children if task.status == "completed"])
+        blocked = len([task for task in children if task.status == "blocked"])
+        active = len([task for task in children if task.status in {"new", "in_progress"}])
+        return ChildTaskStatusBoard(
+            parent_task_id=parent_task_id,
+            has_children=len(children) > 0,
+            total_children=len(children),
+            completed_children=completed,
+            blocked_children=blocked,
+            active_children=active,
+            children=[
+                ChildTaskStatusItem(
+                    task_id=task.id,
+                    title=task.title,
+                    status=task.status,
+                    task_type=task.task_type,
+                    complexity=task.complexity,
+                    updated_at=task.updated_at.isoformat(),
+                )
+                for task in children
+            ],
         )
 
     def _latest_preferences(

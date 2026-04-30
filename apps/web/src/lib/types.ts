@@ -237,6 +237,25 @@ export type TaskDetail = {
   digest_path: string;
 };
 
+export type TaskChildStatusItem = {
+  task_id: string;
+  title: string;
+  status: string;
+  task_type: string;
+  complexity: string;
+  updated_at: string;
+};
+
+export type TaskChildrenBoard = {
+  parent_task_id: string;
+  has_children: boolean;
+  total_children: number;
+  completed_children: number;
+  blocked_children: number;
+  active_children: number;
+  children: TaskChildStatusItem[];
+};
+
 export type WorkspaceCreatePayload = {
   name: string;
   root_path: string;

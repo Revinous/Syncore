@@ -2,7 +2,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from uuid import UUID
 
-from packages.contracts.python.models import ExecutiveDigest, ProjectEvent
+from packages.contracts.python.models import BatonPacket, ExecutiveDigest, ProjectEvent
 
 
 class AnalystDigestService:
@@ -16,7 +16,10 @@ class AnalystDigestService:
     )
 
     def generate_digest(
-        self, task_id: UUID, events: list[ProjectEvent]
+        self,
+        task_id: UUID,
+        events: list[ProjectEvent],
+        latest_baton: BatonPacket | None = None,
     ) -> ExecutiveDigest:
         meaningful_events = [
             event
@@ -53,6 +56,7 @@ class AnalystDigestService:
                 event_breakdown=event_breakdown,
                 highlights=highlights,
                 events=ordered_events,
+                latest_baton=latest_baton,
             ),
         )
 
@@ -137,6 +141,7 @@ class AnalystDigestService:
         event_breakdown: dict[str, int],
         highlights: list[str],
         events: list[ProjectEvent] | None = None,
+        latest_baton: BatonPacket | None = None,
     ) -> str:
         if total_events == 0:
             return (
@@ -149,18 +154,28 @@ class AnalystDigestService:
         )[:2]
         top_text = ", ".join(f"{name} ({count})" for name, count in top_events) or "no dominant signals"
         latest = highlights[0] if highlights else "no latest highlight"
-        what_changed = self._extract_what_changed(events or [])
+        what_changed = self._extract_what_changed(events or [], latest_baton)
         why_matter = self._extract_why_it_matters(events or [], risk_level)
+        next_step = self._extract_next_step(latest_baton, events or [])
         return (
-            f"Here is the simple version: {headline}. "
-            f"What changed: {what_changed}. "
+            f"In plain language: {headline}. "
+            f"What was done: {what_changed}. "
             f"Why it matters: {why_matter}. "
-            f"We saw {total_events} updates. "
-            f"Main signals were {top_text}. "
-            f"Most recent update: {latest}."
+            f"What happens next: {next_step}. "
+            f"Signals: {top_text}. "
+            f"Latest: {latest}."
         )
 
-    def _extract_what_changed(self, events: list[ProjectEvent]) -> str:
+    def _extract_what_changed(
+        self, events: list[ProjectEvent], latest_baton: BatonPacket | None
+    ) -> str:
+        if latest_baton is not None:
+            completed_work = [item.strip() for item in latest_baton.payload.completed_work if item.strip()]
+            if completed_work:
+                return "; ".join(completed_work[:3])
+            summary = latest_baton.summary.strip()
+            if summary:
+                return summary
         for event in events:
             data = event.event_data
             for key in ("change", "feature", "functionality", "summary", "title", "notes"):
@@ -181,14 +196,41 @@ class AnalystDigestService:
             for key in ("impact", "reason", "user_impact", "business_impact"):
                 value = str(data.get(key, "")).strip()
                 if value:
+                    if key == "reason":
+                        return self._humanize_reason(value)
                     return value
             if str(data.get("status", "")).lower() == "blocked":
                 reason = str(data.get("reason", "")).strip()
                 if reason:
-                    return f"it removes a blocker: {reason}"
+                    return f"it removes a blocker: {self._humanize_reason(reason)}"
                 return "it unblocks delivery progress"
         if risk_level == "high":
             return "there is delivery risk, so this change reduces failure or blocker exposure"
         if risk_level == "medium":
             return "it helps keep the task moving toward completion with fewer surprises"
         return "it improves completion confidence and quality for the task"
+
+    def _extract_next_step(
+        self, latest_baton: BatonPacket | None, events: list[ProjectEvent]
+    ) -> str:
+        if latest_baton is not None:
+            action = latest_baton.payload.next_best_action.strip()
+            if action:
+                return action
+            questions = [q.strip() for q in latest_baton.payload.open_questions if q.strip()]
+            if questions:
+                return f"resolve open question: {questions[0]}"
+        for event in events:
+            note = str(event.event_data.get("next_step", "")).strip()
+            if note:
+                return note
+        return "continue implementation and run verification checks"
+
+    def _humanize_reason(self, reason: str) -> str:
+        cleaned = reason.strip()
+        if not cleaned:
+            return "a technical risk was found"
+        lowered = cleaned.lower()
+        if "missing" in lowered:
+            return f"there was a missing required check ({cleaned})"
+        return cleaned

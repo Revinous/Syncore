@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
+from difflib import unified_diff
 from pathlib import Path
 from textwrap import shorten
 from typing import Iterator
@@ -13,11 +16,14 @@ from uuid import UUID
 from packages.contracts.python.models import (
     AgentRunCreate,
     AgentRunUpdate,
+    BatonPacketCreate,
+    BatonPayload,
     ProjectEventCreate,
     RunExecutionRequest,
     RunExecutionResponse,
     RunStreamEvent,
 )
+from services.analyst.digest import AnalystDigestService
 from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
@@ -57,6 +63,7 @@ class RunExecutionService:
         self._default_timeout_seconds = max(default_timeout_seconds, 5)
         self._max_concurrent_runs_per_task = max(max_concurrent_runs_per_task, 1)
         self._max_concurrent_runs_per_workspace = max(max_concurrent_runs_per_workspace, 1)
+        self._digest_service = AnalystDigestService()
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RunExecutionService":
@@ -235,6 +242,146 @@ class RunExecutionService:
             )
             record_run_outcome(success=False)
             raise RuntimeError(f"Run execution failed: {error}") from error
+
+    def execute_workspace_loop(
+        self,
+        payload: RunExecutionRequest,
+        *,
+        max_steps: int = 3,
+    ) -> dict[str, object]:
+        task = self._store.get_task(payload.task_id)
+        if task is None:
+            raise LookupError("Task not found")
+        if task.workspace_id is None:
+            raise ValueError("Task does not have a workspace_id")
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            raise LookupError("Workspace not found")
+
+        root = Path(workspace.root_path).resolve()
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"Workspace path not found: {root}")
+
+        changed_files: list[str] = []
+        diff_refs: list[str] = []
+        command_results: list[dict[str, object]] = []
+        completed_work: list[str] = []
+        next_action = "Run tests and verify calculator behavior."
+        finish_summary = ""
+
+        provider_name, provider = self._resolve_provider(payload.provider)
+        max_steps = max(1, min(max_steps, 8))
+
+        for step in range(1, max_steps + 1):
+            file_snapshot = self._workspace_snapshot(root)
+            worker_prompt = self._build_workspace_worker_prompt(
+                base_prompt=payload.prompt,
+                file_snapshot=file_snapshot,
+                step=step,
+                max_steps=max_steps,
+            )
+            result = provider.complete(
+                model=payload.target_model,
+                prompt=worker_prompt,
+                system_prompt=payload.system_prompt,
+                max_output_tokens=payload.max_output_tokens,
+                temperature=payload.temperature,
+            )
+            actions = self._parse_worker_actions(result.output_text)
+            if not actions:
+                continue
+
+            for action in actions:
+                action_type = str(action.get("type", "")).strip().lower()
+                if action_type == "write_file":
+                    rel = str(action.get("path", "")).strip()
+                    content = str(action.get("content", ""))
+                    if not rel:
+                        continue
+                    ref_id = self._safe_write_with_diff(
+                        task_id=payload.task_id,
+                        root=root,
+                        relative_path=rel,
+                        content=content,
+                    )
+                    changed_files.append(rel)
+                    diff_refs.append(ref_id)
+                    completed_work.append(f"Updated {rel}")
+                elif action_type == "run_command":
+                    command = str(action.get("command", "")).strip()
+                    if not command:
+                        continue
+                    command_results.append(self._safe_run_workspace_command(root, command))
+                elif action_type == "complete_work":
+                    text = str(action.get("text", "")).strip()
+                    if text:
+                        completed_work.append(text)
+                elif action_type == "next_action":
+                    text = str(action.get("text", "")).strip()
+                    if text:
+                        next_action = text
+                elif action_type == "finish":
+                    finish_summary = str(action.get("summary", "")).strip()
+                    if not finish_summary:
+                        finish_summary = "Workspace execution loop completed."
+                    step = max_steps
+                    break
+
+        self._record_event(
+            task_id=payload.task_id,
+            event_type="workspace.execution.completed",
+            event_data={
+                "provider": provider_name,
+                "model": payload.target_model,
+                "changed_files": len(changed_files),
+                "diff_refs": len(diff_refs),
+            },
+        )
+
+        baton = self._store.save_baton_packet(
+            BatonPacketCreate(
+                task_id=payload.task_id,
+                from_agent=payload.target_agent,
+                to_agent="analyst",
+                summary=finish_summary or "Workspace implementation batch completed",
+                payload=BatonPayload(
+                    objective=payload.prompt,
+                    completed_work=completed_work[:20],
+                    constraints=[],
+                    open_questions=[],
+                    next_best_action=next_action,
+                    relevant_artifacts=changed_files[:20],
+                ),
+            )
+        )
+
+        events = self._store.list_project_events(task_id=payload.task_id, limit=200)
+        digest = self._digest_service.generate_digest(
+            task_id=payload.task_id,
+            events=events,
+            latest_baton=baton,
+        )
+        self._record_event(
+            task_id=payload.task_id,
+            event_type="analyst.digest.generated",
+            event_data={
+                "headline": digest.headline[:250],
+                "risk_level": digest.risk_level,
+                "total_events": digest.total_events,
+            },
+        )
+
+        return {
+            "task_id": str(payload.task_id),
+            "workspace_id": str(task.workspace_id),
+            "provider": provider_name,
+            "target_model": payload.target_model,
+            "changed_files": changed_files,
+            "diff_ref_ids": diff_refs,
+            "commands": command_results,
+            "baton_id": str(baton.id),
+            "digest": digest.model_dump(mode="json"),
+        }
 
     def stream_execute(self, payload: RunExecutionRequest) -> Iterator[RunStreamEvent]:
         duplicate = self._maybe_get_idempotent_response(payload)
@@ -419,7 +566,10 @@ class RunExecutionService:
         raise RuntimeError("All provider attempts failed: " + " | ".join(errors))
 
     def _provider_candidates(self, requested_provider: str | None) -> list[str]:
-        primary = (requested_provider or self._default_provider).strip().lower()
+        explicit = (requested_provider or "").strip().lower()
+        primary = (explicit or self._default_provider).strip().lower()
+        if explicit:
+            return [primary]
         if not self._failover_enabled:
             return [primary]
         ordered = [primary]
@@ -523,6 +673,145 @@ class RunExecutionService:
             rendered_context,
         ]
         return "\n".join(prompt_parts).strip()
+
+    def _build_workspace_worker_prompt(
+        self,
+        *,
+        base_prompt: str,
+        file_snapshot: str,
+        step: int,
+        max_steps: int,
+    ) -> str:
+        return (
+            "You are Syncore workspace coder.\n"
+            f"Step {step}/{max_steps}.\n"
+            "Return ONLY JSON with schema: "
+            "{\"actions\":[{\"type\":\"write_file|run_command|complete_work|next_action|finish\","
+            "\"path\":\"...\",\"content\":\"...\",\"command\":\"...\",\"text\":\"...\",\"summary\":\"...\"}]}\n"
+            "Prefer write_file with full file content for deterministic updates.\n"
+            "Use run_command only for safe test commands.\n\n"
+            "Task:\n"
+            f"{base_prompt}\n\n"
+            "Workspace snapshot:\n"
+            f"{file_snapshot}"
+        )
+
+    def _workspace_snapshot(self, root: Path) -> str:
+        entries: list[str] = []
+        for path in root.rglob("*"):
+            if len(entries) >= 200:
+                break
+            if path.is_dir():
+                continue
+            rel = path.relative_to(root).as_posix()
+            blocked_parts = {".git", "node_modules", ".venv", "__pycache__", ".next"}
+            rel_parts = path.relative_to(root).parts
+            if any(part in blocked_parts for part in rel_parts):
+                continue
+            entries.append(rel)
+        if not entries:
+            return "(empty workspace)"
+        return "\n".join(f"- {item}" for item in entries)
+
+    def _parse_worker_actions(self, output_text: str) -> list[dict[str, object]]:
+        candidate = output_text.strip()
+        fenced = re.search(r"```json\s*(\{.*?\})\s*```", candidate, re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1)
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            return []
+        actions = payload.get("actions", [])
+        if not isinstance(actions, list):
+            return []
+        parsed: list[dict[str, object]] = []
+        for action in actions:
+            if isinstance(action, dict):
+                parsed.append(action)
+        return parsed
+
+    def _resolve_workspace_path(self, root: Path, relative_path: str) -> Path:
+        target = (root / relative_path).resolve()
+        if root != target and root not in target.parents:
+            raise PermissionError(f"Path traversal blocked: {relative_path}")
+        name = target.name
+        blocked = (
+            name == ".env"
+            or name.startswith(".env.")
+            or name in {"id_rsa", "id_dsa"}
+            or name.endswith((".pem", ".key"))
+            or name.startswith(("secrets.", "credentials."))
+        )
+        if blocked:
+            raise PermissionError(f"Blocked file path: {relative_path}")
+        return target
+
+    def _safe_write_with_diff(
+        self,
+        *,
+        task_id: UUID,
+        root: Path,
+        relative_path: str,
+        content: str,
+    ) -> str:
+        target = self._resolve_workspace_path(root, relative_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        before = ""
+        if target.exists():
+            before = target.read_text(encoding="utf-8", errors="replace")
+        target.write_text(content, encoding="utf-8")
+        after = target.read_text(encoding="utf-8", errors="replace")
+        diff = "".join(
+            unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{relative_path}",
+                tofile=f"b/{relative_path}",
+            )
+        )
+        if not diff.strip():
+            diff = f"(no textual diff) {relative_path}"
+        ref = self._store.upsert_context_reference(
+            ref_id=build_ref_id(task_id, "workspace_diff", diff),
+            task_id=task_id,
+            content_type="workspace_diff",
+            original_content=diff,
+            summary=shorten(" ".join(diff.split()), width=220, placeholder=" ..."),
+            retrieval_hint=f"Diff for workspace file {relative_path}",
+        )
+        ref_id = str(ref["ref_id"])
+        self._record_event(
+            task_id=task_id,
+            event_type="artifact.diff.stored",
+            event_data={"path": relative_path, "ref_id": ref_id},
+        )
+        return ref_id
+
+    def _safe_run_workspace_command(self, root: Path, command: str) -> dict[str, object]:
+        allowed_prefixes = (
+            "pytest",
+            "python -m pytest",
+            "npm test",
+            "npm run test",
+        )
+        if not any(command.startswith(prefix) for prefix in allowed_prefixes):
+            return {"command": command, "status": "blocked", "output": "Command not allowed"}
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=root,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+        output = (completed.stdout or "") + (("\n" + completed.stderr) if completed.stderr else "")
+        return {
+            "command": command,
+            "status": "ok" if completed.returncode == 0 else "failed",
+            "exit_code": completed.returncode,
+            "output": output[:4000],
+        }
 
     def _record_event(
         self,
