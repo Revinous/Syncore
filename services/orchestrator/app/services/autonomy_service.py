@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 from packages.contracts.python.models import (
@@ -68,6 +69,10 @@ class AutonomyService:
         plan_min_chars: int,
         execute_min_chars: int,
         review_min_chars: int,
+        workspace_execution_enabled: bool,
+        workspace_execution_profile: str,
+        workspace_auto_approve_low_risk: bool,
+        workspace_max_steps: int,
     ) -> None:
         self._store = store
         self._run_execution_service = run_execution_service
@@ -83,6 +88,10 @@ class AutonomyService:
         self._plan_min_chars = max(plan_min_chars, 20)
         self._execute_min_chars = max(execute_min_chars, 40)
         self._review_min_chars = max(review_min_chars, 20)
+        self._workspace_execution_enabled = workspace_execution_enabled
+        self._workspace_execution_profile = workspace_execution_profile
+        self._workspace_auto_approve_low_risk = workspace_auto_approve_low_risk
+        self._workspace_max_steps = max(workspace_max_steps, 1)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
@@ -102,6 +111,10 @@ class AutonomyService:
             plan_min_chars=settings.autonomy_plan_min_chars,
             execute_min_chars=settings.autonomy_execute_min_chars,
             review_min_chars=settings.autonomy_review_min_chars,
+            workspace_execution_enabled=settings.autonomy_workspace_execution_enabled,
+            workspace_execution_profile=settings.autonomy_workspace_execution_profile,
+            workspace_auto_approve_low_risk=settings.autonomy_workspace_auto_approve_low_risk,
+            workspace_max_steps=settings.autonomy_workspace_max_steps,
         )
 
     def process_pending_tasks_once(self, limit: int = 50) -> list[AutonomyResult]:
@@ -124,6 +137,12 @@ class AutonomyService:
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
         requires_approval = _as_bool(prefs.get("requires_approval"))
+        if (
+            self._workspace_auto_approve_low_risk
+            and task.workspace_id is not None
+            and task.complexity == "low"
+        ):
+            requires_approval = False
 
         child_gate = self._child_gate_status(task=task, events=events)
         if child_gate["mode"] == "awaiting_children":
@@ -281,7 +300,46 @@ class AutonomyService:
         )
 
         try:
-            run = self._run_execution_service.execute(request)
+            if (
+                next_stage == "execute"
+                and task.workspace_id is not None
+                and self._workspace_execution_enabled
+                and _as_bool(prefs.get("workspace_execution_enabled"), default=True)
+            ):
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.execution.mode",
+                        event_data={
+                            "mode": "workspace",
+                            "profile": str(
+                                prefs.get("workspace_policy_profile")
+                                or self._workspace_execution_profile
+                            ),
+                        },
+                    )
+                )
+                workspace_result = self._run_execution_service.execute_workspace_loop(
+                    request,
+                    max_steps=_parse_positive_int(
+                        prefs.get("workspace_max_steps"),
+                        default=self._workspace_max_steps,
+                        maximum=8,
+                    ),
+                    policy_profile=str(
+                        prefs.get("workspace_policy_profile") or self._workspace_execution_profile
+                    ),
+                    require_approval=requires_approval,
+                    dry_run=False,
+                )
+                run = SimpleNamespace(
+                    run_id=None,
+                    provider=str(workspace_result.get("provider") or (provider or "")),
+                    target_model=str(workspace_result.get("target_model") or model),
+                    output_text=str(workspace_result.get("digest") or workspace_result),
+                )
+            else:
+                run = self._run_execution_service.execute(request)
             quality = self._stage_quality_gate(
                 stage=next_stage,
                 output_text=run.output_text,

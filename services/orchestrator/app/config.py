@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     autonomy_plan_min_chars: int = 80
     autonomy_execute_min_chars: int = 120
     autonomy_review_min_chars: int = 80
+    autonomy_workspace_execution_enabled: bool = True
+    autonomy_workspace_execution_profile: str = "balanced"
+    autonomy_workspace_auto_approve_low_risk: bool = True
+    autonomy_workspace_max_steps: int = 4
     api_auth_enabled: bool = False
     api_auth_token: str | None = None
     rate_limit_enabled: bool = False

@@ -53,6 +53,9 @@ class QueueScanResponse(BaseModel):
 class WorkspaceRunRequest(BaseModel):
     run: RunExecutionRequest
     max_steps: int = Field(default=3, ge=1, le=8)
+    policy_profile: str = Field(default="balanced")
+    dry_run: bool = False
+    require_approval: bool = False
 
 
 class AutoRunExecutionRequest(BaseModel):
@@ -169,6 +172,9 @@ def execute_workspace_run(
         return service.execute_workspace_loop(
             effective_payload,
             max_steps=payload.max_steps,
+            policy_profile=payload.policy_profile,
+            dry_run=payload.dry_run,
+            require_approval=payload.require_approval,
         )
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error

@@ -32,3 +32,5 @@ def test_scanner_detects_stack_and_docs(tmp_path) -> None:
     assert "README.md" in result["docs"]
     assert "package.json" in result["important_files"]
     assert "requirements.txt" in result["important_files"]
+    assert "runbook_commands" in result
+    assert any("pytest" in item for item in result["runbook_commands"])

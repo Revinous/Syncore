@@ -40,9 +40,14 @@ class WorkspaceService:
             raise LookupError("Workspace not found")
 
         scan_metadata = scan_project(root_path=Path(workspace.root_path))
+        runbook = {
+            "commands": scan_metadata.get("runbook_commands", []),
+            "updated_at": workspace.updated_at.isoformat(),
+        }
         updated_metadata = {
             **workspace.metadata,
             "scan": scan_metadata,
+            "workspace_runbook": runbook,
         }
         updated_workspace = self._store.update_workspace(
             workspace_id,

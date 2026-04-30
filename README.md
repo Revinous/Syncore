@@ -329,6 +329,32 @@ Configurable SLO thresholds:
 - `SLO_MIN_CONTEXT_SAVINGS_PCT`
 - `SLO_MAX_CONTEXT_LAYERING_FALLBACK_RATE`
 
+## Autonomous Workspace Execution Profiles
+
+Syncore now supports policy-driven workspace execution profiles for autonomy:
+
+- `strict`: safest command allowlist (`pytest` only family), shorter timeouts
+- `balanced`: default local profile for iterative coding + test loops
+- `full-dev`: broader build/test allowlist for advanced repos
+
+Use `POST /runs/execute-workspace` with:
+
+- `policy_profile` (`strict|balanced|full-dev`)
+- `dry_run` (plan only, no writes)
+- `require_approval` (force approval gate before writes)
+
+Autonomy can run workspace execution during execute stage when:
+
+- `AUTONOMY_WORKSPACE_EXECUTION_ENABLED=true`
+- task has a `workspace_id`
+
+Related env vars:
+
+- `AUTONOMY_WORKSPACE_EXECUTION_ENABLED`
+- `AUTONOMY_WORKSPACE_EXECUTION_PROFILE`
+- `AUTONOMY_WORKSPACE_AUTO_APPROVE_LOW_RISK`
+- `AUTONOMY_WORKSPACE_MAX_STEPS`
+
 ### Example payloads
 
 Create task:

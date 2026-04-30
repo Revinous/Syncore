@@ -141,6 +141,12 @@ def scan_project(root_path: Path) -> dict[str, list[str]]:
     if "javascript" in languages or "typescript" in languages:
         test_commands.add("npm test")
 
+    runbook_commands = _build_runbook_commands(
+        languages=languages,
+        package_managers=package_managers,
+        test_commands=test_commands,
+    )
+
     return {
         "languages": sorted(languages),
         "frameworks": sorted(frameworks),
@@ -149,6 +155,7 @@ def scan_project(root_path: Path) -> dict[str, list[str]]:
         "entrypoints": sorted(entrypoints),
         "docs": sorted(docs)[:100],
         "important_files": sorted(important_files)[:200],
+        "runbook_commands": runbook_commands,
     }
 
 
@@ -182,8 +189,34 @@ def _detect_node_ecosystem(
 
     if "test" in scripts:
         test_commands.add("npm test")
-    if "lint" in scripts:
-        package_managers.add("npm")
+
+
+def _build_runbook_commands(
+    *,
+    languages: set[str],
+    package_managers: set[str],
+    test_commands: set[str],
+) -> list[str]:
+    commands: list[str] = []
+    if "uv" in package_managers:
+        commands.extend(["uv sync", "uv run pytest -q"])
+    elif "pip" in package_managers:
+        commands.extend(["python -m pip install -r requirements.txt", "pytest -q"])
+    if "npm" in package_managers:
+        commands.extend(["npm install", "npm test"])
+    if "pnpm" in package_managers:
+        commands.extend(["pnpm install", "pnpm test"])
+    if "yarn" in package_managers:
+        commands.extend(["yarn install", "yarn test"])
+    if "cargo" in package_managers:
+        commands.extend(["cargo build", "cargo test"])
+    if "go modules" in package_managers:
+        commands.extend(["go mod tidy", "go test ./..."])
+    if not commands:
+        commands.extend(sorted(test_commands))
+    if not commands and "python" in languages:
+        commands.append("pytest -q")
+    return commands[:20]
 
 
 def _detect_python_requirements(requirements_path: Path, frameworks: set[str]) -> None:

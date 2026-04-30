@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
 from app.services.autonomy_service import AutonomyService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/autonomy", tags=["autonomy"])
 
@@ -23,6 +24,18 @@ class AutonomyScanResponse(BaseModel):
 
 class AutonomyApprovalRequest(BaseModel):
     reason: str | None = None
+
+
+class AutonomySnapshot(BaseModel):
+    snapshot_id: str
+    task_id: UUID
+    cycle: int
+    stage: str
+    state: str
+    strategy: str
+    quality_score: int
+    details: dict[str, object]
+    created_at: str
 
 
 def get_autonomy_service(settings: Settings = Depends(get_settings)) -> AutonomyService:
@@ -91,3 +104,27 @@ def autonomy_reject_task(
         run_id=result.run_id,
         note=result.note,
     )
+
+
+@router.get("/tasks/{task_id}/snapshots", response_model=list[AutonomySnapshot])
+def autonomy_task_snapshots(
+    task_id: UUID,
+    limit: int = Query(default=100, ge=1, le=500),
+    settings: Settings = Depends(get_settings),
+) -> list[AutonomySnapshot]:
+    store = build_memory_store(settings)
+    snapshots = store.list_autonomy_snapshots(task_id=task_id, limit=limit)
+    return [
+        AutonomySnapshot(
+            snapshot_id=str(row.get("snapshot_id")),
+            task_id=task_id,
+            cycle=int(row.get("cycle") or 0),
+            stage=str(row.get("stage") or ""),
+            state=str(row.get("state") or ""),
+            strategy=str(row.get("strategy") or ""),
+            quality_score=int(row.get("quality_score") or 0),
+            details=dict(row.get("details") or {}),
+            created_at=str(row.get("created_at") or ""),
+        )
+        for row in snapshots
+    ]

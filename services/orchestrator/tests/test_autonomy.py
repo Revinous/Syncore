@@ -270,6 +270,10 @@ def test_autonomy_parent_waits_for_spawned_children(monkeypatch, tmp_path) -> No
         assert "autonomy.subtasks.spawned" in event_types
         assert "autonomy.children.completed" in event_types
 
+        snapshots = client.get(f"/autonomy/tasks/{parent_id}/snapshots")
+        assert snapshots.status_code == 200
+        assert len(snapshots.json()) >= 1
+
         board = client.get(f"/tasks/{parent_id}/children")
         assert board.status_code == 200
         payload = board.json()
