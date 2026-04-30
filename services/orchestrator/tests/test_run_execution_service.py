@@ -210,6 +210,24 @@ def _request(task_id: UUID) -> RunExecutionRequest:
     )
 
 
+def _service(task_id: UUID) -> tuple[RunExecutionService, FakeStore, FakeProvider]:
+    store = FakeStore(task_id=task_id)
+    provider = FakeProvider()
+    context_service = FakeContextService(task_id=task_id)
+    service = RunExecutionService(
+        store=store,  # type: ignore[arg-type]
+        context_service=context_service,  # type: ignore[arg-type]
+        providers={"fake": provider},
+        default_provider="fake",
+        failover_enabled=True,
+        fallback_order=["fake"],
+        default_timeout_seconds=30,
+        max_concurrent_runs_per_task=1,
+        max_concurrent_runs_per_workspace=4,
+    )
+    return service, store, provider
+
+
 def test_execute_uses_context_and_marks_run_completed() -> None:
     task_id = uuid4()
     store = FakeStore(task_id=task_id)
@@ -337,3 +355,74 @@ def test_execute_explicit_provider_disables_failover() -> None:
     payload = _request(task_id).model_copy(update={"provider": "primary"})
     with pytest.raises(RuntimeError):
         service.execute(payload)
+
+
+def test_workspace_policy_profile_blocks_disallowed_command(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path
+    blocked = service._safe_run_workspace_command(  # type: ignore[attr-defined]
+        root,
+        "npm run build",
+        policy=RunExecutionService.WORKSPACE_POLICY_PROFILES["strict"],
+    )
+    allowed = service._safe_run_workspace_command(  # type: ignore[attr-defined]
+        root,
+        "pytest -q",
+        policy=RunExecutionService.WORKSPACE_POLICY_PROFILES["strict"],
+    )
+
+    assert blocked["status"] == "blocked"
+    assert "not allowed" in str(blocked["output"]).lower()
+    assert allowed["status"] in {"ok", "failed"}
+
+
+def test_workspace_path_traversal_is_blocked(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+
+    with pytest.raises(PermissionError):
+        service._resolve_workspace_path(root, "../outside.txt")  # type: ignore[attr-defined]
+
+
+def test_workspace_patch_requires_before_text(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = root / "main.py"
+    target.write_text("print('hello')\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        service._safe_patch_with_diff(  # type: ignore[attr-defined]
+            task_id=task_id,
+            root=root,
+            relative_path="main.py",
+            before_text="missing_text",
+            after_text="print('updated')",
+        )
+
+
+def test_workspace_preflight_fails_for_unconfigured_provider(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    result = service._workspace_preflight(  # type: ignore[attr-defined]
+        root=root,
+        provider_hint="openai",
+    )
+    assert result["status"] == "failed"
+    assert "not configured" in result["reason"]
+
+
+def test_workspace_verifier_rejects_empty_execution() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=[],
+        command_results=[],
+    )
+    assert result["status"] == "failed"

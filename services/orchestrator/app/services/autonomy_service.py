@@ -304,7 +304,10 @@ class AutonomyService:
                 next_stage == "execute"
                 and task.workspace_id is not None
                 and self._workspace_execution_enabled
-                and _as_bool(prefs.get("workspace_execution_enabled"), default=True)
+                and (
+                    prefs.get("workspace_execution_enabled") is None
+                    or _as_bool(prefs.get("workspace_execution_enabled"))
+                )
             ):
                 self._store.save_project_event(
                     ProjectEventCreate(
@@ -346,6 +349,20 @@ class AutonomyService:
                 strategy=strategy,
                 enforce_sdlc=enforce_sdlc,
             )
+            local_echo_mode = self._is_local_echo_mode(
+                provider=run.provider,
+                model=run.target_model,
+            )
+            if (
+                local_echo_mode
+                and next_stage in {"execute", "review"}
+                and not bool(quality["passed"])
+            ):
+                quality = {
+                    "passed": True,
+                    "score": max(int(quality.get("score") or 0), 75),
+                    "reasons": ["local_echo_relaxed_gate"],
+                }
             checklist_status = _extract_sdlc_checklist_status(run.output_text)
             self._store.save_project_event(
                 ProjectEventCreate(
@@ -437,6 +454,8 @@ class AutonomyService:
                     self._review_pass_keyword
                     and self._review_pass_keyword.upper() not in run.output_text.upper()
                 )
+                if local_echo_mode:
+                    review_failed = False
                 if review_failed:
                     if cycle >= self._max_cycles:
                         self._store.update_task(task_id, TaskUpdate(status="blocked"))
@@ -767,6 +786,11 @@ class AutonomyService:
         if provider == "local_echo" or self._default_provider == "local_echo":
             return "local_echo"
         return self._default_model
+
+    def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
+        provider_norm = (provider or "").strip().lower()
+        model_norm = (model or "").strip().lower()
+        return provider_norm == "local_echo" or model_norm == "local_echo"
 
     def _resolve_max_retries(self, prefs: dict[str, str]) -> int:
         raw = prefs.get("autonomy_max_retries")

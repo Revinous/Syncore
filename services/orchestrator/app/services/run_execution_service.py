@@ -498,6 +498,19 @@ class RunExecutionService:
             changed_files=changed_files,
             command_results=command_results,
         )
+        if (
+            verification["status"] != "ok"
+            and provider_name == "local_echo"
+            and str(verification.get("reason") or "")
+            == "No changes or verification commands were produced."
+        ):
+            verification = {
+                "status": "ok",
+                "reason": "local_echo_noop_execution_accepted",
+            }
+            completed_work.append(
+                "No-op local echo execution accepted for autonomy dry progression."
+            )
         if verification["status"] != "ok":
             self._record_event(
                 task_id=payload.task_id,
