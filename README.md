@@ -187,6 +187,7 @@ Examples:
 - `syncore task create \"Analyze the auth flow\" --workspace my-app`
 - `syncore task switch-model TASK_ID --provider openai --model gpt-5.4`
 - `syncore run start TASK_ID --agent-role backend`
+- `syncore run execute TASK_ID "Implement feature X" --target-agent coder`
 - `syncore run result RUN_ID`
 - `syncore providers`
 - `syncore open my-app`
@@ -251,6 +252,8 @@ syncore task create Syncore "Implement workspace scan route tests"
 - `GET /tasks/{task_id}`
 - `PATCH /tasks/{task_id}`
 - `POST /tasks/{task_id}/model-switch`
+- `GET /tasks/{task_id}/model-switches`
+- `POST /runs/execute-auto`
 - `POST /agent-runs`
 - `GET /agent-runs`
 - `GET /agent-runs/{run_id}`
@@ -323,6 +326,8 @@ Configurable SLO thresholds:
 - `SLO_MAX_HTTP_ERROR_RATE`
 - `SLO_MAX_HTTP_P95_LATENCY_MS`
 - `SLO_MIN_RUN_SUCCESS_RATE`
+- `SLO_MIN_CONTEXT_SAVINGS_PCT`
+- `SLO_MAX_CONTEXT_LAYERING_FALLBACK_RATE`
 
 ### Example payloads
 

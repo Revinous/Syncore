@@ -74,6 +74,44 @@ def test_client_builds_execute_run_url(monkeypatch) -> None:
     assert captured["url"] == "http://localhost:8000/runs/execute"
 
 
+def test_client_builds_execute_auto_run_url(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, url: str, json=None, timeout=None):
+        captured["method"] = method
+        captured["url"] = url
+        return DummyResponse()
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    client = SyncoreApiClient("http://localhost:8000")
+    client.execute_run_auto(
+        {
+            "task_id": "00000000-0000-0000-0000-000000000001",
+            "prompt": "p",
+            "target_agent": "coder",
+        }
+    )
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://localhost:8000/runs/execute-auto"
+
+
+def test_client_builds_model_switches_url(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_request(method: str, url: str, json=None, timeout=None):
+        captured["method"] = method
+        captured["url"] = url
+        return DummyResponse()
+
+    monkeypatch.setattr(httpx, "request", fake_request)
+    client = SyncoreApiClient("http://localhost:8000")
+    client.list_task_model_switches("task-1", limit=25)
+
+    assert captured["method"] == "GET"
+    assert captured["url"] == "http://localhost:8000/tasks/task-1/model-switches?limit=25"
+
+
 def test_client_builds_autonomy_scan_url(monkeypatch) -> None:
     captured: dict[str, str] = {}
 

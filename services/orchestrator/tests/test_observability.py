@@ -41,3 +41,5 @@ def test_metrics_slo_endpoint_returns_status() -> None:
     assert "checks" in payload
     assert "thresholds" in payload
     assert "metrics" in payload
+    assert "runtime" in payload
+    assert "context_efficiency" in payload

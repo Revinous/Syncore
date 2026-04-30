@@ -47,6 +47,17 @@ class ChildTaskStatusBoard(BaseModel):
     children: list[ChildTaskStatusItem] = Field(default_factory=list)
 
 
+class TaskModelSwitchRecord(BaseModel):
+    switched_at: str
+    from_provider: str | None = None
+    from_model: str | None = None
+    to_provider: str
+    to_model: str
+    target_agent: str | None = None
+    continuity_status: str | None = None
+    context_bundle_id: str | None = None
+
+
 class TaskService:
     def __init__(
         self,
@@ -182,6 +193,46 @@ class TaskService:
             continuity_status=continuity_status,
             continuity_notes=continuity_notes,
         )
+
+    def list_model_switches(self, task_id: UUID, limit: int = 100) -> list[TaskModelSwitchRecord]:
+        if self._store.get_task(task_id) is None:
+            raise LookupError("Task not found")
+        events = self._store.list_project_events(task_id=task_id, limit=max(limit, 1))
+        records: list[TaskModelSwitchRecord] = []
+        for event in reversed(events):
+            if event.event_type != "model.switch.completed":
+                continue
+            data = event.event_data
+            to_provider = str(data.get("to_provider") or "").strip()
+            to_model = str(data.get("to_model") or "").strip()
+            if not to_provider or not to_model:
+                continue
+            records.append(
+                TaskModelSwitchRecord(
+                    switched_at=event.created_at.isoformat(),
+                    from_provider=str(data.get("from_provider") or "").strip() or None,
+                    from_model=str(data.get("from_model") or "").strip() or None,
+                    to_provider=to_provider,
+                    to_model=to_model,
+                    target_agent=str(data.get("target_agent") or "").strip() or None,
+                    continuity_status=str(data.get("continuity_status") or "").strip() or None,
+                    context_bundle_id=str(data.get("context_bundle_id") or "").strip() or None,
+                )
+            )
+        return records
+
+    def resolve_task_model_preference(self, task_id: UUID) -> tuple[str, str]:
+        task = self._store.get_task(task_id)
+        if task is None:
+            raise LookupError("Task not found")
+        events = self._store.list_project_events(task_id=task_id, limit=500)
+        provider, model, _ = self._latest_preferences(events)
+        resolved_provider = provider or "local_echo"
+        resolved_model = model or self._provider_model_hints.get(resolved_provider, "local_echo")
+        if resolved_provider not in self._configured_providers:
+            resolved_provider = "local_echo"
+            resolved_model = "local_echo"
+        return resolved_provider, resolved_model
 
     def get_child_status_board(self, parent_task_id: UUID) -> ChildTaskStatusBoard | None:
         parent = self._store.get_task(parent_task_id)

@@ -143,6 +143,35 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     assert isinstance(run_result.json()["output_text"], str)
     assert len(run_result.json()["output_text"]) > 0
 
+    switched = client.post(
+        f"/tasks/{task_id}/model-switch",
+        json={
+            "provider": "local_echo",
+            "model": "local_echo",
+            "target_agent": "coder",
+            "token_budget": 1200,
+            "reason": "validate switch path",
+        },
+    )
+    assert switched.status_code == 200
+    switch_history = client.get(f"/tasks/{task_id}/model-switches")
+    assert switch_history.status_code == 200
+    assert len(switch_history.json()) >= 1
+
+    auto_run = client.post(
+        "/runs/execute-auto",
+        json={
+            "task_id": task_id,
+            "prompt": "Use preferred model/provider for this task.",
+            "target_agent": "coder",
+            "token_budget": 1200,
+            "agent_role": "coder",
+        },
+    )
+    assert auto_run.status_code == 200
+    assert auto_run.json()["provider"] == "local_echo"
+    assert auto_run.json()["target_model"] == "local_echo"
+
     queued = client.post(
         "/runs/queue/enqueue",
         json={

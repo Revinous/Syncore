@@ -1,4 +1,5 @@
 import json
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -8,6 +9,8 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.services.run_execution_service import RunExecutionService
 from app.services.run_queue_service import RunQueueService
+from app.services.task_service import TaskService
+from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -52,12 +55,46 @@ class WorkspaceRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=8)
 
 
+class AutoRunExecutionRequest(BaseModel):
+    task_id: UUID
+    prompt: str = Field(min_length=1)
+    target_agent: str = Field(min_length=1)
+    token_budget: int = Field(default=8_000, ge=256, le=200_000)
+    provider: str | None = None
+    target_model: str | None = None
+    idempotency_key: str | None = None
+    agent_role: str = Field(default="coder", min_length=1)
+    system_prompt: str | None = None
+    max_output_tokens: int = Field(default=1_200, ge=64, le=64_000)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    timeout_seconds: int | None = Field(default=None, ge=5, le=600)
+
+
 def get_run_execution_service(settings: Settings = Depends(get_settings)) -> RunExecutionService:
     return RunExecutionService.from_settings(settings)
 
 
 def get_run_queue_service(settings: Settings = Depends(get_settings)) -> RunQueueService:
     return RunQueueService.from_settings(settings)
+
+
+def get_task_service(settings: Settings = Depends(get_settings)) -> TaskService:
+    configured = {"local_echo"}
+    hints = {"local_echo": "local_echo"}
+    if (settings.openai_api_key or "").strip():
+        configured.add("openai")
+        hints["openai"] = "gpt-5.4"
+    if (settings.anthropic_api_key or "").strip():
+        configured.add("anthropic")
+        hints["anthropic"] = "claude-3-7-sonnet-latest"
+    if (settings.gemini_api_key or "").strip():
+        configured.add("gemini")
+        hints["gemini"] = "gemini-2.5-pro"
+    return TaskService(
+        build_memory_store(settings),
+        configured_providers=configured,
+        provider_model_hints=hints,
+    )
 
 
 @router.post("/execute", response_model=RunExecutionResponse)
@@ -71,6 +108,44 @@ def execute_run(
         if x_idempotency_key and not payload.idempotency_key:
             effective_payload = payload.model_copy(update={"idempotency_key": x_idempotency_key})
         return service.execute(effective_payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@router.post("/execute-auto", response_model=RunExecutionResponse)
+def execute_run_auto(
+    payload: AutoRunExecutionRequest,
+    x_idempotency_key: str | None = Header(default=None),
+    run_service: RunExecutionService = Depends(get_run_execution_service),
+    task_service: TaskService = Depends(get_task_service),
+) -> RunExecutionResponse:
+    try:
+        preferred_provider, preferred_model = task_service.resolve_task_model_preference(
+            payload.task_id
+        )
+        provider = (payload.provider or "").strip() or preferred_provider
+        model = (payload.target_model or "").strip() or preferred_model
+        resolved = RunExecutionRequest(
+            task_id=payload.task_id,
+            prompt=payload.prompt,
+            target_agent=payload.target_agent,
+            target_model=model,
+            provider=provider,
+            idempotency_key=payload.idempotency_key,
+            agent_role=payload.agent_role,
+            token_budget=payload.token_budget,
+            system_prompt=payload.system_prompt,
+            max_output_tokens=payload.max_output_tokens,
+            temperature=payload.temperature,
+            timeout_seconds=payload.timeout_seconds,
+        )
+        if x_idempotency_key and not resolved.idempotency_key:
+            resolved = resolved.model_copy(update={"idempotency_key": x_idempotency_key})
+        return run_service.execute(resolved)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:

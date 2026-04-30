@@ -570,6 +570,10 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
             digest = client.get_task_digest(task_id)
         except SyncoreApiError:
             digest = None
+        try:
+            model_switches = client.list_task_model_switches(task_id, limit=25)
+        except SyncoreApiError:
+            model_switches = []
     except SyncoreApiError as error:
         print_error(str(error))
         raise typer.Exit(code=1)
@@ -580,6 +584,7 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
         "latest_baton": baton,
         "digest": digest,
         "latest_model_switch": _latest_model_switch(events),
+        "model_switches": model_switches,
     }
     if json_output:
         print_json(payload)
@@ -691,6 +696,38 @@ def run_start(
         print_error(str(error))
         raise typer.Exit(code=1)
     print_json(run)
+
+
+@run_app.command("execute")
+def run_execute(
+    task_id: str,
+    prompt: str = typer.Argument(...),
+    target_agent: str = typer.Option("coder", "--target-agent"),
+    token_budget: int = typer.Option(8000, "--token-budget"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
+    agent_role: str = typer.Option("coder", "--agent-role"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    client = _client()
+    payload = {
+        "task_id": task_id,
+        "prompt": prompt,
+        "target_agent": target_agent,
+        "token_budget": token_budget,
+        "provider": provider,
+        "target_model": model,
+        "agent_role": agent_role,
+    }
+    try:
+        response = client.execute_run_auto(payload)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(response)
+        return
+    print_kv_panel("Run Executed", response)
 
 
 @run_app.command("result")

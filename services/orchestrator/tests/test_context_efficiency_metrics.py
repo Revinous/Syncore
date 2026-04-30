@@ -85,3 +85,25 @@ def test_context_efficiency_metrics_aggregates_bundles(monkeypatch, tmp_path) ->
     assert "by_model" in payload
     assert "gpt-4.1-mini" in payload["by_model"]
     assert len(payload["recent_bundles"]) >= 2
+
+
+def test_metrics_slo_includes_context_efficiency(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+
+    client = TestClient(create_app())
+    _ = client.get("/health")
+    response = client.get("/metrics/slo")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert "context_efficiency" in payload
+    section = payload["context_efficiency"]
+    assert "checks" in section
+    assert "thresholds" in section
+    assert "metrics" in section

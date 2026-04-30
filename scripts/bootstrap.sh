@@ -13,6 +13,11 @@ done
 echo "PostgreSQL is ready."
 echo "Applying database initialization/migration script..."
 docker exec -i agent-postgres psql -U agentos -d agentos < scripts/init_db.sql
+echo "Stamping and applying Alembic migrations..."
+docker compose run --rm \
+  -e SYNCORE_DB_BACKEND=postgres \
+  -e POSTGRES_DSN="postgresql://agentos:agentos@postgres:5432/agentos" \
+  orchestrator bash -lc "cd /workspace/services/orchestrator && alembic -c alembic.ini stamp head && alembic -c alembic.ini upgrade head"
 
 docker compose up -d --build orchestrator web
 

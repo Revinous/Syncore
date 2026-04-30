@@ -37,3 +37,11 @@ finally:
 
 print(f"[db-local-init] initialized sqlite database at {db_path}")
 PY
+
+if [[ -x ".venv/bin/alembic" ]]; then
+  SYNCORE_DB_BACKEND=sqlite SQLITE_DB_PATH="${DB_PATH}" \
+    .venv/bin/alembic -c services/orchestrator/alembic.ini stamp head >/dev/null
+  SYNCORE_DB_BACKEND=sqlite SQLITE_DB_PATH="${DB_PATH}" \
+    .venv/bin/alembic -c services/orchestrator/alembic.ini upgrade head >/dev/null
+  echo "[db-local-init] alembic schema version aligned to head"
+fi

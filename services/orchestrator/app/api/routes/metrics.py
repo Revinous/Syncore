@@ -18,11 +18,55 @@ def get_metrics() -> PlainTextResponse:
 
 @router.get("/metrics/slo")
 def get_metrics_slo(settings: Settings = Depends(get_settings)) -> dict[str, object]:
-    return get_slo_status(
+    runtime_slo = get_slo_status(
         max_http_error_rate=settings.slo_max_http_error_rate,
         max_http_p95_latency_ms=settings.slo_max_http_p95_latency_ms,
         min_run_success_rate=settings.slo_min_run_success_rate,
     )
+    context = _context_efficiency_payload(settings=settings, limit=200)
+    totals = context.get("totals", {})
+    savings_pct = float(totals.get("savings_pct") or 0.0)
+    layering = context.get("layering_modes", {})
+    layered_count = int(layering.get("layered", 0) or 0)
+    fallback_count = int(layering.get("fallback_legacy", 0) or 0)
+    fallback_rate = (
+        (fallback_count / (fallback_count + layered_count))
+        if (fallback_count + layered_count) > 0
+        else 0.0
+    )
+
+    context_checks = {
+        "context_savings_pct": savings_pct >= settings.slo_min_context_savings_pct,
+        "context_layering_fallback_rate": (
+            fallback_rate <= settings.slo_max_context_layering_fallback_rate
+        ),
+    }
+    return {
+        "status": (
+            "ok"
+            if runtime_slo.get("status") == "ok" and all(context_checks.values())
+            else "degraded"
+        ),
+        "checks": runtime_slo.get("checks", {}),
+        "thresholds": runtime_slo.get("thresholds", {}),
+        "metrics": runtime_slo.get("metrics", {}),
+        "runtime": runtime_slo,
+        "context_efficiency": {
+            "checks": context_checks,
+            "thresholds": {
+                "min_context_savings_pct": settings.slo_min_context_savings_pct,
+                "max_context_layering_fallback_rate": (
+                    settings.slo_max_context_layering_fallback_rate
+                ),
+            },
+            "metrics": {
+                "savings_pct": round(savings_pct, 2),
+                "fallback_rate": round(fallback_rate, 4),
+                "layering_modes": layering,
+                "bundle_count": context.get("bundle_count", 0),
+            },
+        },
+    }
 
 
 @router.get("/metrics/context-efficiency")
@@ -30,8 +74,15 @@ def get_context_efficiency_metrics(
     limit: int = 200,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
+    return _context_efficiency_payload(settings=settings, limit=limit)
+
+
+def _context_efficiency_payload(*, settings: Settings, limit: int) -> dict[str, object]:
     store = build_memory_store(settings)
-    rows = store.list_recent_context_bundles(limit=limit)
+    try:
+        rows = store.list_recent_context_bundles(limit=limit)
+    except Exception:
+        rows = []
 
     total_raw = 0
     total_optimized = 0

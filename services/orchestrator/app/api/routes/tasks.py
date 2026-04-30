@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.services.task_service import (
     ChildTaskStatusBoard,
+    TaskModelSwitchRecord,
     TaskModelSwitchResult,
     TaskService,
 )
@@ -119,3 +120,15 @@ def switch_task_model(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/{task_id}/model-switches", response_model=list[TaskModelSwitchRecord])
+def list_task_model_switches(
+    task_id: UUID,
+    limit: int = Query(default=100, ge=1, le=500),
+    service: TaskService = Depends(get_task_service),
+) -> list[TaskModelSwitchRecord]:
+    try:
+        return service.list_model_switches(task_id=task_id, limit=limit)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     slo_max_http_error_rate: float = 0.02
     slo_max_http_p95_latency_ms: float = 1200.0
     slo_min_run_success_rate: float = 0.97
+    slo_min_context_savings_pct: float = 5.0
+    slo_max_context_layering_fallback_rate: float = 0.4
     context_layering_enabled: bool = False
     context_layering_dual_mode: bool = False
     context_layering_fallback_threshold_pct: float = 2.0
