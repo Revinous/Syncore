@@ -430,6 +430,22 @@ def test_workspace_effective_policy_keeps_explicit_requested_profile() -> None:
     assert policy["profile"] == "full-dev"
 
 
+def test_workspace_effective_policy_allows_runbook_probe_commands() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+
+    policy = service._effective_workspace_policy(  # type: ignore[attr-defined]
+        requested_profile="full-dev",
+        workspace_metadata={
+            "policy_pack": "python-fastapi",
+            "workspace_runbook": {"probe_commands": ["python -c \"print('python-ready')\""]},
+        },
+        task_preferences={},
+    )
+
+    assert "python -c \"print('python-ready')\"" in policy["allow_commands"]
+
+
 def test_workspace_path_traversal_is_blocked(tmp_path) -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)

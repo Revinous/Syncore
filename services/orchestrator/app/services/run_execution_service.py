@@ -434,7 +434,7 @@ class RunExecutionService:
         command_results: list[dict[str, object]] = []
         read_refs: list[str] = []
         completed_work: list[str] = []
-        next_action = "Run tests and verify calculator behavior."
+        next_action = "Run the repo's verification checks for the changed files."
         finish_summary = ""
         planned_actions: list[str] = []
 
@@ -1985,6 +1985,11 @@ class RunExecutionService:
         runbook_allowed = tuple(self._string_list(runbook.get("allowed_commands")))
         if runbook_allowed:
             base["allow_commands"] = runbook_allowed
+        runbook_probe_commands = tuple(self._string_list(runbook.get("probe_commands")))
+        if runbook_probe_commands:
+            base["allow_commands"] = (
+                tuple(base.get("allow_commands") or ()) + runbook_probe_commands
+            )
         runbook_patterns = tuple(self._string_list(runbook.get("allowed_command_patterns")))
         if runbook_patterns:
             base["allowed_command_patterns"] = runbook_patterns

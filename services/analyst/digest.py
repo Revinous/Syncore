@@ -155,7 +155,7 @@ class AnalystDigestService:
         top_text = ", ".join(f"{name} ({count})" for name, count in top_events) or "no dominant signals"
         latest = highlights[0] if highlights else "no latest highlight"
         what_changed = self._extract_what_changed(events or [], latest_baton)
-        why_matter = self._extract_why_it_matters(events or [], risk_level)
+        why_matter = self._extract_why_it_matters(events or [], risk_level, latest_baton)
         next_step = self._extract_next_step(latest_baton, events or [])
         return (
             f"In plain language: {headline}. "
@@ -176,6 +176,9 @@ class AnalystDigestService:
             summary = latest_baton.summary.strip()
             if summary:
                 return summary
+            artifacts = [item.strip() for item in latest_baton.payload.relevant_artifacts if item.strip()]
+            if artifacts:
+                return "; ".join(f"updated {item}" for item in artifacts[:3])
         for event in events:
             data = event.event_data
             for key in ("change", "feature", "functionality", "summary", "title", "notes"):
@@ -190,7 +193,15 @@ class AnalystDigestService:
             return f"latest activity was {events[0].event_type}"
         return "no implementation change logged yet"
 
-    def _extract_why_it_matters(self, events: list[ProjectEvent], risk_level: str) -> str:
+    def _extract_why_it_matters(
+        self,
+        events: list[ProjectEvent],
+        risk_level: str,
+        latest_baton: BatonPacket | None,
+    ) -> str:
+        artifact_reason = self._artifact_impact_reason(latest_baton)
+        if artifact_reason:
+            return artifact_reason
         for event in events:
             data = event.event_data
             for key in ("impact", "reason", "user_impact", "business_impact"):
@@ -215,16 +226,52 @@ class AnalystDigestService:
     ) -> str:
         if latest_baton is not None:
             action = latest_baton.payload.next_best_action.strip()
-            if action:
+            if action and not self._is_generic_next_step(action):
                 return action
             questions = [q.strip() for q in latest_baton.payload.open_questions if q.strip()]
             if questions:
                 return f"resolve open question: {questions[0]}"
+            artifact_step = self._artifact_next_step(latest_baton)
+            if artifact_step:
+                return artifact_step
         for event in events:
             note = str(event.event_data.get("next_step", "")).strip()
             if note:
                 return note
         return "continue implementation and run verification checks"
+
+    def _artifact_impact_reason(self, latest_baton: BatonPacket | None) -> str:
+        if latest_baton is None:
+            return ""
+        artifacts = [item.strip().lower() for item in latest_baton.payload.relevant_artifacts if item.strip()]
+        if not artifacts:
+            return ""
+        if any(item.endswith("syncore.yaml") for item in artifacts):
+            return "it gives Syncore repo-specific commands and safety rules for future runs"
+        if any("test" in item for item in artifacts):
+            return "it adds automated checks so future changes are easier to trust"
+        if any(item.endswith(("pyproject.toml", "package.json", "go.mod", "cargo.toml")) for item in artifacts):
+            return "it defines how this repo should be built, tested, or tooled going forward"
+        return "it changes concrete project files that future work will depend on"
+
+    def _artifact_next_step(self, latest_baton: BatonPacket | None) -> str:
+        if latest_baton is None:
+            return ""
+        artifacts = [item.strip().lower() for item in latest_baton.payload.relevant_artifacts if item.strip()]
+        if any(item.endswith("syncore.yaml") for item in artifacts):
+            return "rescan the workspace so future autonomous runs use the new repo contract"
+        if artifacts:
+            return "run the relevant verification checks for the changed files"
+        return ""
+
+    def _is_generic_next_step(self, action: str) -> bool:
+        normalized = action.strip().lower()
+        generic_prefixes = (
+            "continue implementation and run verification checks",
+            "run the repo's verification checks for the changed files",
+            "run tests and verify",
+        )
+        return any(normalized.startswith(prefix) for prefix in generic_prefixes)
 
     def _humanize_reason(self, reason: str) -> str:
         cleaned = reason.strip()
