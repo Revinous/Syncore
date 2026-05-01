@@ -36,6 +36,15 @@ from app.services.workspace_runners import select_workspace_runner
         ),
         (
             {
+                "app.py": "print('flask')\n",
+                "requirements.txt": "flask\npytest\n",
+            },
+            "python-flask",
+            "python-flask",
+            "pytest -q",
+        ),
+        (
+            {
                 "package.json": (
                     '{"dependencies":{"next":"16.2.4"},'
                     '"scripts":{"test":"vitest"}}'
@@ -55,6 +64,17 @@ from app.services.workspace_runners import select_workspace_runner
             },
             "node-express",
             "node-express",
+            "npm test",
+        ),
+        (
+            {
+                "package.json": (
+                    '{"dependencies":{"@nestjs/core":"11.0.0"},'
+                    '"scripts":{"test":"jest","build":"nest build"}}'
+                ),
+            },
+            "node-nest",
+            "node-nest",
             "npm test",
         ),
         (

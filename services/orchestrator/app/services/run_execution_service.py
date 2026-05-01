@@ -382,6 +382,26 @@ class RunExecutionService:
             runner=runner,
         )
         if preflight["status"] != "ok":
+            repaired = self._attempt_workspace_auto_repair(
+                task_id=payload.task_id,
+                root=root,
+                runner=runner,
+                runbook=runbook,
+                policy=policy,
+            )
+            if repaired:
+                preflight = self._workspace_preflight(
+                    root=root,
+                    provider_hint=payload.provider,
+                    required_env=self._string_list(runbook.get("required_env")),
+                    required_binaries=self._string_list(runbook.get("required_binaries"))
+                    or self._string_list(runner.get("required_binaries")),
+                    required_files=self._string_list(runbook.get("required_files"))
+                    or self._string_list(runner.get("expected_files")),
+                    supported_os=self._string_list(runner.get("supported_os")),
+                    runner=runner,
+                )
+        if preflight["status"] != "ok":
             classification = self._classify_workspace_issue(
                 stage="preflight",
                 reason=str(preflight.get("reason") or "unknown"),
@@ -399,6 +419,12 @@ class RunExecutionService:
                     "reason": str(preflight.get("reason") or "unknown"),
                     "failure_category": classification["category"],
                     "recommended_strategy": classification["strategy"],
+                    "provider": str(payload.provider or self._default_provider),
+                    "suggestions": shorten(
+                        " | ".join(str(item) for item in preflight.get("suggestions", [])),
+                        width=250,
+                        placeholder=" ...",
+                    ),
                 },
             )
             raise ValueError(str(preflight.get("reason") or "Workspace preflight failed"))
@@ -723,6 +749,7 @@ class RunExecutionService:
                     "reason": str(verification.get("reason") or "verification failed"),
                     "failure_category": classification["category"],
                     "recommended_strategy": classification["strategy"],
+                    "provider": provider_name,
                 },
             )
             raise RuntimeError(str(verification.get("reason") or "Workspace verification failed"))
@@ -1476,6 +1503,59 @@ class RunExecutionService:
             [f"Install '{binary}' and ensure it is available on PATH before retrying."],
         )
 
+    def _attempt_workspace_auto_repair(
+        self,
+        *,
+        task_id: UUID,
+        root: Path,
+        runner: dict[str, object],
+        runbook: dict[str, object],
+        policy: dict[str, object],
+    ) -> bool:
+        if self._needs_dependency_bootstrap(root=root, runner=runner, runbook=runbook) is False:
+            return False
+        setup_command = self._runner_default_command(runner, "setup", "")
+        if not setup_command:
+            return False
+        result = self._safe_run_workspace_command(root, setup_command, policy=policy)
+        self._record_event(
+            task_id=task_id,
+            event_type="workspace.auto_repair.attempted",
+            event_data={
+                "command": setup_command[:200],
+                "status": str(result.get("status") or ""),
+            },
+        )
+        return str(result.get("status")) == "ok"
+
+    def _needs_dependency_bootstrap(
+        self,
+        *,
+        root: Path,
+        runner: dict[str, object],
+        runbook: dict[str, object],
+    ) -> bool:
+        package_manager = str(runbook.get("package_manager") or runner.get("package_manager") or "")
+        runner_name = str(runner.get("name") or "")
+        if (
+            package_manager in {"npm", "pnpm", "yarn"}
+            or runner_name.startswith("node-")
+            or runner_name == "monorepo-pnpm"
+        ):
+            return (root / "package.json").exists() and not (root / "node_modules").exists()
+        if runner_name.startswith("python-"):
+            if (root / "pyproject.toml").exists() and not (root / ".venv").exists():
+                return True
+            if (root / "requirements.txt").exists():
+                return True
+        if runner_name == "rust-cli":
+            return (root / "Cargo.toml").exists()
+        if runner_name == "go-service":
+            return (root / "go.mod").exists()
+        if runner_name == "java-gradle":
+            return (root / "build.gradle").exists() or (root / "build.gradle.kts").exists()
+        return False
+
     def _safe_run_workspace_command(
         self,
         root: Path,
@@ -1879,6 +1959,7 @@ class RunExecutionService:
             else runbook.get("acceptance")
         )
         source_dict = dict(source) if isinstance(source, dict) else {}
+        runner_commands = dict(runbook.get("runner", {}).get("commands") or {})
         merged = {
             "must_pass_commands": self._string_list(source_dict.get("must_pass_commands")),
             "must_modify_paths": self._string_list(source_dict.get("must_modify_paths")),
@@ -1888,6 +1969,15 @@ class RunExecutionService:
             "must_observe_output": self._string_list(source_dict.get("must_observe_output")),
             "probe_commands": self._string_list(source_dict.get("probe_commands")),
         }
+        if not merged["probe_commands"]:
+            merged["probe_commands"] = (
+                self._string_list(runbook.get("probe_commands"))
+                or self._string_list(runner_commands.get("probe"))
+            )
+        if not merged["must_observe_output"]:
+            merged["must_observe_output"] = self._default_probe_markers(
+                probe_commands=merged["probe_commands"]
+            )
         for key in tuple(merged.keys()):
             pref_value = task_preferences.get(key)
             if pref_value:
@@ -2076,6 +2166,27 @@ class RunExecutionService:
                     "missing_output_markers": missing_output,
                 }
         return {"status": "ok", "reason": ""}
+
+    def _default_probe_markers(self, *, probe_commands: list[str]) -> list[str]:
+        markers: list[str] = []
+        for command in probe_commands:
+            if "python-ready" in command:
+                markers.append("python-ready")
+            elif "flask-ready" in command:
+                markers.append("flask-ready")
+            elif "node-ready" in command:
+                markers.append("node-ready")
+            elif "pnpm-ready" in command:
+                markers.append("pnpm-ready")
+            elif "go version" in command:
+                markers.append("go version")
+            elif "cargo --version" in command:
+                markers.append("cargo")
+            elif "java -version" in command:
+                markers.append("version")
+            elif "manage.py check" in command:
+                markers.append("system check")
+        return markers[:10]
 
     def _string_list(self, value: object) -> list[str]:
         if isinstance(value, list):

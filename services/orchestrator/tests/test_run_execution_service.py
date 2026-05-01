@@ -573,6 +573,52 @@ def test_workspace_verifier_fails_when_behavioral_output_missing(tmp_path) -> No
     assert result["reason"] == "Expected behavioral output markers were not observed."
 
 
+def test_workspace_auto_repair_runs_setup_when_dependency_artifacts_missing(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "package.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+
+    repaired = service._attempt_workspace_auto_repair(  # type: ignore[attr-defined]
+        task_id=task_id,
+        root=root,
+        runner={
+            "name": "node-express",
+            "commands": {"setup": ["mkdir -p node_modules"]},
+            "package_manager": "npm",
+        },
+        runbook={"package_manager": "npm"},
+        policy={"allow_commands": ("mkdir -p node_modules",)},
+    )
+
+    assert repaired is True
+    assert (root / "node_modules").exists()
+
+
+def test_workspace_auto_repair_skips_when_no_bootstrap_needed(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "package.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+    (root / "node_modules").mkdir()
+
+    repaired = service._attempt_workspace_auto_repair(  # type: ignore[attr-defined]
+        task_id=task_id,
+        root=root,
+        runner={
+            "name": "node-express",
+            "commands": {"setup": ["mkdir -p node_modules"]},
+            "package_manager": "npm",
+        },
+        runbook={"package_manager": "npm"},
+        policy={"allow_commands": ("mkdir -p node_modules",)},
+    )
+
+    assert repaired is False
+
+
 def test_workspace_verifier_accepts_when_contract_criteria_met(tmp_path) -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)

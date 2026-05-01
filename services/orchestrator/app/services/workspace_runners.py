@@ -12,6 +12,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["python -m ruff check ."],
             "build": [],
             "format": ["python -m ruff format ."],
+            "probe": ['python -c "print(\'python-ready\')"'],
         },
     },
     "python-django": {
@@ -23,6 +24,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["python -m ruff check ."],
             "build": [],
             "format": ["python -m ruff format ."],
+            "probe": ["python manage.py check"],
         },
     },
     "python-flask": {
@@ -34,6 +36,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["python -m ruff check ."],
             "build": [],
             "format": ["python -m ruff format ."],
+            "probe": ['python -c "print(\'flask-ready\')"'],
         },
     },
     "node-next": {
@@ -45,6 +48,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["npm run lint"],
             "build": ["npm run build"],
             "format": [],
+            "probe": ['node -e "console.log(\'node-ready\')"'],
         },
     },
     "node-express": {
@@ -56,6 +60,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["npm run lint"],
             "build": [],
             "format": [],
+            "probe": ['node -e "console.log(\'node-ready\')"'],
         },
     },
     "node-nest": {
@@ -67,6 +72,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["npm run lint"],
             "build": ["npm run build"],
             "format": [],
+            "probe": ['node -e "console.log(\'node-ready\')"'],
         },
     },
     "vite-react": {
@@ -78,6 +84,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["npm run lint"],
             "build": ["npm run build"],
             "format": [],
+            "probe": ['node -e "console.log(\'node-ready\')"'],
         },
     },
     "monorepo-pnpm": {
@@ -89,6 +96,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["pnpm lint"],
             "build": ["pnpm build"],
             "format": [],
+            "probe": ['node -e "console.log(\'pnpm-ready\')"'],
         },
     },
     "go-service": {
@@ -100,6 +108,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["go vet ./..."],
             "build": ["go build ./..."],
             "format": ["gofmt -w ."],
+            "probe": ["go version"],
         },
     },
     "rust-cli": {
@@ -111,6 +120,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": ["cargo clippy --all-targets --all-features"],
             "build": ["cargo build"],
             "format": ["cargo fmt --all"],
+            "probe": ["cargo --version"],
         },
     },
     "java-gradle": {
@@ -122,6 +132,7 @@ RUNNERS: dict[str, dict[str, Any]] = {
             "lint": [],
             "build": ["./gradlew build", "gradle build"],
             "format": [],
+            "probe": ["java -version"],
         },
     },
 }
@@ -191,7 +202,7 @@ def _apply_contract_overrides(base: dict[str, Any], contract: dict[str, Any]) ->
     environment = dict(contract.get("environment") or {})
     commands = dict(contract.get("commands") or {})
     merged_commands = dict(base.get("commands") or {})
-    for key in ("setup", "build", "test", "lint", "format", "run", "migrations"):
+    for key in ("setup", "build", "test", "lint", "format", "run", "migrations", "probe"):
         values = commands.get(key)
         if isinstance(values, list) and values:
             merged_commands[key] = [str(item).strip() for item in values if str(item).strip()]

@@ -81,6 +81,7 @@ class WorkspaceService:
             "risk_rules": contract_runbook.get("risk_rules", {}),
             "network_policy": contract_runbook.get("network_policy", "offline"),
             "runner": runner,
+            "probe_commands": list((runner.get("commands") or {}).get("probe", [])),
             "updated_at": workspace.updated_at.isoformat(),
         }
         readiness = compute_workspace_readiness(

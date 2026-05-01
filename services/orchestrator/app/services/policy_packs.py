@@ -13,6 +13,7 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
             "pytest",
             "python -m pytest",
             "python -m ruff",
+            "python -m pip install",
         ),
         "allowed_command_patterns": (r"^uv run pytest( .*)?$", r"^pytest( .*)?$"),
         "verification_required_commands": ("pytest",),
@@ -36,6 +37,7 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "runner": "python-django",
         "required_binaries": ("python",),
         "allow_commands": (
+            "python -m pip install",
             "python manage.py test",
             "pytest",
             "python -m pytest",
@@ -65,7 +67,12 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "profile": "balanced",
         "runner": "python-flask",
         "required_binaries": ("python",),
-        "allow_commands": ("pytest", "python -m pytest", "python -m ruff"),
+        "allow_commands": (
+            "python -m pip install",
+            "pytest",
+            "python -m pytest",
+            "python -m ruff",
+        ),
         "allowed_command_patterns": (r"^pytest( .*)?$", r"^python -m pytest( .*)?$"),
         "verification_required_commands": ("pytest",),
         "allowed_actions": (
@@ -94,7 +101,10 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
             "npm run lint",
             "npm run build",
         ),
-        "allowed_command_patterns": (r"^npm (run )?(test|lint|build)( .*)?$",),
+        "allowed_command_patterns": (
+            r"^npm (run )?(test|lint|build)( .*)?$",
+            r'^node -e "console\.log\(.*\)"$',
+        ),
         "verification_required_commands": ("npm test", "npm run build"),
         "allowed_actions": (
             "read_file",
@@ -117,7 +127,10 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "runner": "node-express",
         "required_binaries": ("node", "npm"),
         "allow_commands": ("npm test", "npm run test", "npm run lint"),
-        "allowed_command_patterns": (r"^npm (run )?(test|lint)( .*)?$",),
+        "allowed_command_patterns": (
+            r"^npm (run )?(test|lint)( .*)?$",
+            r'^node -e "console\.log\(.*\)"$',
+        ),
         "verification_required_commands": ("npm test",),
         "allowed_actions": (
             "read_file",
@@ -139,7 +152,10 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "runner": "node-nest",
         "required_binaries": ("node", "npm"),
         "allow_commands": ("npm test", "npm run test", "npm run build", "npm run lint"),
-        "allowed_command_patterns": (r"^npm (run )?(test|build|lint)( .*)?$",),
+        "allowed_command_patterns": (
+            r"^npm (run )?(test|build|lint)( .*)?$",
+            r'^node -e "console\.log\(.*\)"$',
+        ),
         "verification_required_commands": ("npm test", "npm run build"),
         "allowed_actions": (
             "read_file",
@@ -162,7 +178,10 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "runner": "vite-react",
         "required_binaries": ("node", "npm"),
         "allow_commands": ("npm test", "npm run test", "npm run build", "npm run lint"),
-        "allowed_command_patterns": (r"^npm (run )?(test|build|lint)( .*)?$",),
+        "allowed_command_patterns": (
+            r"^npm (run )?(test|build|lint)( .*)?$",
+            r'^node -e "console\.log\(.*\)"$',
+        ),
         "verification_required_commands": ("npm run build",),
         "allowed_actions": (
             "read_file",
@@ -185,7 +204,10 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "runner": "monorepo-pnpm",
         "required_binaries": ("node", "pnpm"),
         "allow_commands": ("pnpm install", "pnpm test", "pnpm lint", "pnpm build"),
-        "allowed_command_patterns": (r"^pnpm (install|test|lint|build)( .*)?$",),
+        "allowed_command_patterns": (
+            r"^pnpm (install|test|lint|build)( .*)?$",
+            r'^node -e "console\.log\(.*\)"$',
+        ),
         "verification_required_commands": ("pnpm test",),
         "allowed_actions": (
             "read_file",
@@ -208,7 +230,7 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "profile": "full-dev",
         "runner": "go-service",
         "required_binaries": ("go",),
-        "allow_commands": ("go test", "go test ./...", "go build", "go vet"),
+        "allow_commands": ("go mod tidy", "go test", "go test ./...", "go build", "go vet"),
         "allowed_command_patterns": (r"^go (test|build|vet)( .*)?$",),
         "verification_required_commands": ("go test",),
         "allowed_actions": (
@@ -230,7 +252,7 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "profile": "full-dev",
         "runner": "rust-cli",
         "required_binaries": ("cargo",),
-        "allow_commands": ("cargo build", "cargo test", "cargo fmt", "cargo clippy"),
+        "allow_commands": ("cargo fetch", "cargo build", "cargo test", "cargo fmt", "cargo clippy"),
         "allowed_command_patterns": (r"^cargo (build|test|fmt|clippy)( .*)?$",),
         "verification_required_commands": ("cargo test",),
         "allowed_actions": (
@@ -253,7 +275,14 @@ POLICY_PACKS: dict[str, dict[str, Any]] = {
         "profile": "full-dev",
         "runner": "java-gradle",
         "required_binaries": ("java", "gradle"),
-        "allow_commands": ("./gradlew test", "gradle test", "./gradlew build", "gradle build"),
+        "allow_commands": (
+            "gradle dependencies",
+            "./gradlew test",
+            "gradle test",
+            "./gradlew build",
+            "gradle build",
+            "java -version",
+        ),
         "allowed_command_patterns": (r"^(\./gradlew|gradle) (test|build)( .*)?$",),
         "verification_required_commands": ("test",),
         "allowed_actions": (

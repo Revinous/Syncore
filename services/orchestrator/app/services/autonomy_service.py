@@ -801,7 +801,7 @@ class AutonomyService:
         ).strip().lower()
         if not candidate or candidate == "other":
             return None
-        return candidate
+        return self._failure_aware_provider_choice(task=task, preferred=candidate)
 
     def _resolve_model(
         self,
@@ -856,6 +856,38 @@ class AutonomyService:
         learning = dict(workspace.metadata.get("learning") or {})
         value = learning.get(key)
         return str(value).strip() if value is not None else ""
+
+    def _failure_aware_provider_choice(self, *, task: Task, preferred: str) -> str:
+        capabilities = self._run_execution_service.list_provider_capabilities()
+        available = [item.provider for item in capabilities]
+        if preferred not in available:
+            return available[0] if available else preferred
+        recent_failures = self._recent_provider_failures(task.id)
+        if recent_failures.get(preferred, 0) < 2:
+            return preferred
+        for provider in available:
+            if provider == preferred:
+                continue
+            if recent_failures.get(provider, 0) == 0:
+                return provider
+        return preferred
+
+    def _recent_provider_failures(self, task_id: UUID) -> dict[str, int]:
+        failures: dict[str, int] = {}
+        events = self._store.list_project_events(task_id=task_id, limit=100)
+        for event in reversed(events[-30:]):
+            if event.event_type not in {
+                "run.failed",
+                "workspace.execution.preflight.failed",
+                "workspace.execution.verification.failed",
+            }:
+                continue
+            category = str(event.event_data.get("failure_category") or "")
+            if event.event_type == "run.failed" or category == "provider_failure":
+                provider = str(event.event_data.get("provider") or "").strip().lower()
+                if provider:
+                    failures[provider] = failures.get(provider, 0) + 1
+        return failures
 
     def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
         provider_norm = (provider or "").strip().lower()

@@ -276,6 +276,13 @@ If no explicit `autonomy_mode` preference is set on a task, Syncore will default
 
 If `autonomy_mode=unattended` is requested explicitly but the workspace readiness score is too low, Syncore will downgrade execution to a safer mode and record an `autonomy.mode.adjusted` event.
 
+Workspace execution now also supports:
+
+- bounded auto-repair for missing dependency artifacts using runner setup commands
+- runner-specific probe commands
+- behavioral output markers for verification
+- failure-aware provider fallback when recent provider failures suggest switching
+
 Initial repo classes supported by policy packs and runners include:
 
 - `python-fastapi`

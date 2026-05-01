@@ -3,13 +3,17 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
 from app.main import create_app
+from app.runs.providers import ProviderCapabilities
 from app.services.autonomy_service import (
+    AutonomyService,
     _extract_sdlc_checklist_status,
     _missing_sdlc_topics,
 )
@@ -285,6 +289,81 @@ def test_autonomy_downgrades_unattended_when_workspace_readiness_is_low(
         ]
         assert adjusted
         assert adjusted[-1]["event_data"]["mode"] != "unattended"
+
+
+def test_failure_aware_provider_choice_prefers_alternate_provider_after_repeated_failures() -> None:
+    task_id = uuid4()
+    workspace_id = uuid4()
+
+    class FakeStore:
+        def list_project_events(self, task_id: UUID, limit=100):
+            del limit
+            return [
+                SimpleNamespace(
+                    event_type="run.failed",
+                    event_data={"provider": "openai"},
+                    task_id=task_id,
+                ),
+                SimpleNamespace(
+                    event_type="run.failed",
+                    event_data={"provider": "openai"},
+                    task_id=task_id,
+                ),
+            ]
+
+        def get_workspace(self, workspace_id_arg):
+            assert workspace_id_arg == workspace_id
+            return SimpleNamespace(metadata={})
+
+    class FakeRunExecutionService:
+        def list_provider_capabilities(self):
+            return [
+                ProviderCapabilities(
+                    provider="openai",
+                    supports_streaming=True,
+                    supports_system_prompt=True,
+                    supports_temperature=True,
+                    supports_max_tokens=True,
+                    model_hint="gpt-5.4",
+                ),
+                ProviderCapabilities(
+                    provider="anthropic",
+                    supports_streaming=True,
+                    supports_system_prompt=True,
+                    supports_temperature=True,
+                    supports_max_tokens=True,
+                    model_hint="claude",
+                ),
+            ]
+
+    service = AutonomyService(
+        store=FakeStore(),  # type: ignore[arg-type]
+        run_execution_service=FakeRunExecutionService(),  # type: ignore[arg-type]
+        routing_service=SimpleNamespace(),
+        digest_service=SimpleNamespace(),
+        default_provider="openai",
+        default_model="gpt-5.4",
+        default_max_retries=1,
+        retry_base_seconds=0.1,
+        max_cycles=2,
+        max_total_steps=10,
+        review_pass_keyword="PASS",
+        plan_min_chars=20,
+        execute_min_chars=40,
+        review_min_chars=20,
+        workspace_execution_enabled=True,
+        workspace_execution_profile="balanced",
+        workspace_auto_approve_low_risk=True,
+        workspace_max_steps=3,
+    )
+    task = SimpleNamespace(id=task_id, workspace_id=workspace_id)
+
+    chosen = service._resolve_provider(  # type: ignore[attr-defined]
+        stage="execute",
+        task=task,
+        prefs={"preferred_provider": "openai"},
+    )
+    assert chosen == "anthropic"
 
 
 def test_autonomy_parent_waits_for_spawned_children(monkeypatch, tmp_path) -> None:
