@@ -7,6 +7,8 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.services.task_service import (
     ChildTaskStatusBoard,
+    TaskModelPolicy,
+    TaskModelPolicyUpdate,
     TaskModelSwitchRecord,
     TaskModelSwitchResult,
     TaskService,
@@ -132,3 +134,28 @@ def list_task_model_switches(
         return service.list_model_switches(task_id=task_id, limit=limit)
     except LookupError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/{task_id}/model-policy", response_model=TaskModelPolicy)
+def get_task_model_policy(
+    task_id: UUID,
+    service: TaskService = Depends(get_task_service),
+) -> TaskModelPolicy:
+    try:
+        return service.get_model_policy(task_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put("/{task_id}/model-policy", response_model=TaskModelPolicy)
+def update_task_model_policy(
+    task_id: UUID,
+    payload: TaskModelPolicyUpdate,
+    service: TaskService = Depends(get_task_service),
+) -> TaskModelPolicy:
+    try:
+        return service.update_model_policy(task_id, payload)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error

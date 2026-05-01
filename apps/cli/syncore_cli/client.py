@@ -82,6 +82,12 @@ class SyncoreApiClient:
     def list_task_model_switches(self, task_id: str, limit: int = 100) -> Any:
         return self._request("GET", f"/tasks/{task_id}/model-switches?limit={limit}")
 
+    def get_task_model_policy(self, task_id: str) -> Any:
+        return self._request("GET", f"/tasks/{task_id}/model-policy")
+
+    def update_task_model_policy(self, task_id: str, payload: dict[str, Any]) -> Any:
+        return self._request("PUT", f"/tasks/{task_id}/model-policy", payload)
+
     def list_agent_runs(self) -> Any:
         return self._request("GET", "/agent-runs")
 
