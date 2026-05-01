@@ -58,6 +58,46 @@ class TaskModelSwitchRecord(BaseModel):
     context_bundle_id: str | None = None
 
 
+class TaskModelPolicyStage(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+
+
+class TaskModelPolicy(BaseModel):
+    default_provider: str
+    default_model: str
+    plan: TaskModelPolicyStage = Field(default_factory=TaskModelPolicyStage)
+    execute: TaskModelPolicyStage = Field(default_factory=TaskModelPolicyStage)
+    review: TaskModelPolicyStage = Field(default_factory=TaskModelPolicyStage)
+    fallback_order: list[str] = Field(default_factory=list)
+    prefer_reviewer_provider: bool = True
+    optimization_goal: str = "balanced"
+    allow_cross_provider_switching: bool = True
+    maintain_context_continuity: bool = True
+    minimum_context_window: int = 0
+    max_latency_tier: str | None = None
+    max_cost_tier: str | None = None
+
+
+class TaskModelPolicyUpdate(BaseModel):
+    default_provider: str | None = None
+    default_model: str | None = None
+    plan_provider: str | None = None
+    plan_model: str | None = None
+    execute_provider: str | None = None
+    execute_model: str | None = None
+    review_provider: str | None = None
+    review_model: str | None = None
+    fallback_order: list[str] | None = None
+    prefer_reviewer_provider: bool | None = None
+    optimization_goal: str | None = None
+    allow_cross_provider_switching: bool | None = None
+    maintain_context_continuity: bool | None = None
+    minimum_context_window: int | None = None
+    max_latency_tier: str | None = None
+    max_cost_tier: str | None = None
+
+
 class TaskService:
     def __init__(
         self,
@@ -221,18 +261,155 @@ class TaskService:
             )
         return records
 
-    def resolve_task_model_preference(self, task_id: UUID) -> tuple[str, str]:
+    def resolve_task_model_preference(
+        self,
+        task_id: UUID,
+        *,
+        stage: str = "execute",
+    ) -> tuple[str, str]:
         task = self._store.get_task(task_id)
         if task is None:
             raise LookupError("Task not found")
         events = self._store.list_project_events(task_id=task_id, limit=500)
         provider, model, _ = self._latest_preferences(events)
-        resolved_provider = provider or "local_echo"
+        current_prefs = self._latest_preferences(events)[2]
+        stage_name = stage.strip().lower()
+        stage_provider = (current_prefs.get(f"preferred_provider_{stage_name}") or "").strip()
+        stage_model = (current_prefs.get(f"preferred_model_{stage_name}") or "").strip()
+        resolved_provider = stage_provider or provider or "local_echo"
         resolved_model = model or self._provider_model_hints.get(resolved_provider, "local_echo")
+        if stage_model:
+            resolved_model = stage_model
         if resolved_provider not in self._configured_providers:
             resolved_provider = "local_echo"
             resolved_model = "local_echo"
         return resolved_provider, resolved_model
+
+    def get_model_policy(self, task_id: UUID) -> TaskModelPolicy:
+        task = self._store.get_task(task_id)
+        if task is None:
+            raise LookupError("Task not found")
+        events = self._store.list_project_events(task_id=task_id, limit=500)
+        provider, model, prefs = self._latest_preferences(events)
+        default_provider = provider or "local_echo"
+        default_model = model or self._provider_model_hints.get(default_provider, "local_echo")
+        fallback_order_raw = (prefs.get("provider_fallback_order") or "").strip()
+        fallback_order = [item.strip() for item in fallback_order_raw.split(",") if item.strip()]
+        return TaskModelPolicy(
+            default_provider=default_provider,
+            default_model=default_model,
+            plan=TaskModelPolicyStage(
+                provider=(prefs.get("preferred_provider_plan") or "").strip() or None,
+                model=(prefs.get("preferred_model_plan") or "").strip() or None,
+            ),
+            execute=TaskModelPolicyStage(
+                provider=(prefs.get("preferred_provider_execute") or "").strip() or None,
+                model=(prefs.get("preferred_model_execute") or "").strip() or None,
+            ),
+            review=TaskModelPolicyStage(
+                provider=(prefs.get("preferred_provider_review") or "").strip() or None,
+                model=(prefs.get("preferred_model_review") or "").strip() or None,
+            ),
+            fallback_order=fallback_order,
+            prefer_reviewer_provider=(prefs.get("prefer_reviewer_provider") or "true").lower()
+            != "false",
+            optimization_goal=(prefs.get("model_optimization_goal") or "balanced").strip()
+            or "balanced",
+            allow_cross_provider_switching=(
+                prefs.get("allow_cross_provider_switching") or "true"
+            ).lower()
+            != "false",
+            maintain_context_continuity=(
+                prefs.get("maintain_context_continuity") or "true"
+            ).lower()
+            != "false",
+            minimum_context_window=_parse_int(prefs.get("minimum_context_window"), default=0),
+            max_latency_tier=(prefs.get("max_latency_tier") or "").strip() or None,
+            max_cost_tier=(prefs.get("max_cost_tier") or "").strip() or None,
+        )
+
+    def update_model_policy(
+        self,
+        task_id: UUID,
+        payload: TaskModelPolicyUpdate,
+    ) -> TaskModelPolicy:
+        task = self._store.get_task(task_id)
+        if task is None:
+            raise LookupError("Task not found")
+        events = self._store.list_project_events(task_id=task_id, limit=500)
+        _, _, prefs = self._latest_preferences(events)
+        next_prefs = dict(prefs)
+        updates = payload.model_dump(exclude_none=True)
+        mapping = {
+            "default_provider": "preferred_provider",
+            "default_model": "preferred_model",
+            "plan_provider": "preferred_provider_plan",
+            "plan_model": "preferred_model_plan",
+            "execute_provider": "preferred_provider_execute",
+            "execute_model": "preferred_model_execute",
+            "review_provider": "preferred_provider_review",
+            "review_model": "preferred_model_review",
+        }
+        for field_name, pref_key in mapping.items():
+            if field_name in updates:
+                value = str(updates[field_name]).strip()
+                if value and field_name.endswith("provider"):
+                    if value not in self._configured_providers:
+                        providers = ", ".join(sorted(self._configured_providers))
+                        raise ValueError(
+                            f"Provider '{value}' is not configured. Available: {providers}"
+                        )
+                next_prefs[pref_key] = value
+        if "fallback_order" in updates:
+            values = [str(item).strip() for item in updates["fallback_order"] if str(item).strip()]
+            bad = [item for item in values if item not in self._configured_providers]
+            if bad:
+                providers = ", ".join(sorted(self._configured_providers))
+                raise ValueError(
+                    f"Providers {', '.join(bad)} are not configured. Available: {providers}"
+                )
+            next_prefs["provider_fallback_order"] = ",".join(values)
+        if "prefer_reviewer_provider" in updates:
+            next_prefs["prefer_reviewer_provider"] = (
+                "true" if bool(updates["prefer_reviewer_provider"]) else "false"
+            )
+        if "optimization_goal" in updates:
+            value = str(updates["optimization_goal"]).strip().lower()
+            if value not in {"balanced", "quality", "speed", "cost", "context"}:
+                raise ValueError(
+                    "optimization_goal must be one of: balanced, quality, speed, cost, context"
+                )
+            next_prefs["model_optimization_goal"] = value
+        if "allow_cross_provider_switching" in updates:
+            next_prefs["allow_cross_provider_switching"] = (
+                "true" if bool(updates["allow_cross_provider_switching"]) else "false"
+            )
+        if "maintain_context_continuity" in updates:
+            next_prefs["maintain_context_continuity"] = (
+                "true" if bool(updates["maintain_context_continuity"]) else "false"
+            )
+        if "minimum_context_window" in updates:
+            next_prefs["minimum_context_window"] = str(
+                max(int(updates["minimum_context_window"]), 0)
+            )
+        if "max_latency_tier" in updates:
+            value = str(updates["max_latency_tier"]).strip().lower()
+            if value and value not in {"fast", "medium", "slow"}:
+                raise ValueError("max_latency_tier must be one of: fast, medium, slow")
+            next_prefs["max_latency_tier"] = value
+        if "max_cost_tier" in updates:
+            value = str(updates["max_cost_tier"]).strip().lower()
+            if value and value not in {"low", "medium", "high"}:
+                raise ValueError("max_cost_tier must be one of: low, medium, high")
+            next_prefs["max_cost_tier"] = value
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="task.preferences",
+                event_data=next_prefs,
+            )
+        )
+        return self.get_model_policy(task_id)
 
     def get_child_status_board(self, parent_task_id: UUID) -> ChildTaskStatusBoard | None:
         parent = self._store.get_task(parent_task_id)
@@ -346,3 +523,12 @@ class TaskService:
         notes.append(f"Intra-provider model switch: {previous_model or '-'} -> {next_model}.")
         notes.append("Context bundle reassembled for the new model.")
         return "model_switched", notes
+
+
+def _parse_int(raw: object, *, default: int) -> int:
+    if raw is None:
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        return default

@@ -178,6 +178,41 @@ export type RoutingDecision = {
   reasoning: string;
 };
 
+export type ProviderCapability = {
+  provider: string;
+  supports_streaming: boolean;
+  supports_system_prompt: boolean;
+  supports_temperature: boolean;
+  supports_max_tokens: boolean;
+  model_hint: string;
+  max_context_tokens: number;
+  quality_tier: number;
+  speed_tier: number;
+  cost_tier: number;
+  strengths: string[];
+};
+
+export type TaskModelPolicyStage = {
+  provider: string | null;
+  model: string | null;
+};
+
+export type TaskModelPolicy = {
+  default_provider: string;
+  default_model: string;
+  plan: TaskModelPolicyStage;
+  execute: TaskModelPolicyStage;
+  review: TaskModelPolicyStage;
+  fallback_order: string[];
+  prefer_reviewer_provider: boolean;
+  optimization_goal: string;
+  allow_cross_provider_switching: boolean;
+  maintain_context_continuity: boolean;
+  minimum_context_window: number;
+  max_latency_tier: string | null;
+  max_cost_tier: string | null;
+};
+
 export type AnalystDigest = {
   task_id: string;
   generated_at: string;

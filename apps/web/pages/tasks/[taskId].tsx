@@ -4,22 +4,27 @@ import { useEffect, useState } from "react";
 import {
   createAgentRun,
   generateDigest,
+  getTaskModelPolicy,
   getTask,
   getTaskChildren,
   getTaskDigest,
   getTaskRouting,
+  listProviderCapabilities,
   listTaskBatonPackets,
   listTaskEvents,
   routeNextAction,
+  updateTaskModelPolicy,
 } from "../../src/lib/api";
 import {
   AgentRun,
   AnalystDigest,
   BatonPacket,
+  ProviderCapability,
   ProjectEvent,
   RoutingDecision,
   TaskChildrenBoard,
   TaskDetail,
+  TaskModelPolicy,
 } from "../../src/lib/types";
 import { EmptyState } from "../../src/components/EmptyState";
 import { ErrorState } from "../../src/components/ErrorState";
@@ -37,6 +42,9 @@ export default function TaskDetailPage() {
   const [routing, setRouting] = useState<RoutingDecision | null>(null);
   const [digest, setDigest] = useState<AnalystDigest | null>(null);
   const [childrenBoard, setChildrenBoard] = useState<TaskChildrenBoard | null>(null);
+  const [modelPolicy, setModelPolicy] = useState<TaskModelPolicy | null>(null);
+  const [providerCapabilities, setProviderCapabilities] = useState<ProviderCapability[]>([]);
+  const [savingPolicy, setSavingPolicy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +75,16 @@ export default function TaskDetailPage() {
         setChildrenBoard(await getTaskChildren(taskId));
       } catch {
         setChildrenBoard(null);
+      }
+      try {
+        setModelPolicy(await getTaskModelPolicy(taskId));
+      } catch {
+        setModelPolicy(null);
+      }
+      try {
+        setProviderCapabilities(await listProviderCapabilities());
+      } catch {
+        setProviderCapabilities([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load task detail");
@@ -101,6 +119,41 @@ export default function TaskDetailPage() {
     setDigest(nextDigest);
   }
 
+  async function saveModelPolicy(formData: FormData) {
+    if (!taskId) return;
+    setSavingPolicy(true);
+    setError(null);
+    try {
+      const payload = {
+        default_provider: String(formData.get("default_provider") || ""),
+        default_model: String(formData.get("default_model") || ""),
+        plan_provider: String(formData.get("plan_provider") || ""),
+        plan_model: String(formData.get("plan_model") || ""),
+        execute_provider: String(formData.get("execute_provider") || ""),
+        execute_model: String(formData.get("execute_model") || ""),
+        review_provider: String(formData.get("review_provider") || ""),
+        review_model: String(formData.get("review_model") || ""),
+        fallback_order: String(formData.get("fallback_order") || "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        optimization_goal: String(formData.get("optimization_goal") || "balanced"),
+        allow_cross_provider_switching: formData.get("allow_cross_provider_switching") === "on",
+        maintain_context_continuity: formData.get("maintain_context_continuity") === "on",
+        minimum_context_window: Number(formData.get("minimum_context_window") || 0),
+        max_latency_tier: String(formData.get("max_latency_tier") || "") || null,
+        max_cost_tier: String(formData.get("max_cost_tier") || "") || null,
+        prefer_reviewer_provider: formData.get("prefer_reviewer_provider") === "on",
+      };
+      const next = await updateTaskModelPolicy(taskId, payload);
+      setModelPolicy(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save model strategy");
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
   function eli5Text(value: AnalystDigest): string {
     const text = (value.eli5_summary || "").trim();
     if (text) return text;
@@ -120,6 +173,12 @@ export default function TaskDetailPage() {
 
   function formatEli5ForDisplay(text: string): string {
     return text.replace(/\. /g, ".\n");
+  }
+
+  function providerSummary(provider: string) {
+    const item = providerCapabilities.find((row) => row.provider === provider);
+    if (!item) return null;
+    return `ctx ${item.max_context_tokens.toLocaleString()} | quality ${item.quality_tier}/5 | speed ${item.speed_tier}/5 | cost ${item.cost_tier}/5`;
   }
 
   return (
@@ -152,6 +211,137 @@ export default function TaskDetailPage() {
                   </li>
                 ))}
               </ul>
+            )}
+          </section>
+
+          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
+            <h2>Model Strategy</h2>
+            {!modelPolicy ? (
+              <EmptyState message="No model strategy loaded." />
+            ) : (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveModelPolicy(new FormData(event.currentTarget));
+                }}
+              >
+                <p>
+                  Default provider and model are the baseline. Stage fields can override plan, execute, and review independently. Arbitration then applies your cost, speed, context, and continuity rules.
+                </p>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                  <label>
+                    Default provider
+                    <input name="default_provider" defaultValue={modelPolicy.default_provider} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Default model
+                    <input name="default_model" defaultValue={modelPolicy.default_model} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Plan provider
+                    <input name="plan_provider" defaultValue={modelPolicy.plan.provider ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Plan model
+                    <input name="plan_model" defaultValue={modelPolicy.plan.model ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Execute provider
+                    <input name="execute_provider" defaultValue={modelPolicy.execute.provider ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Execute model
+                    <input name="execute_model" defaultValue={modelPolicy.execute.model ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Review provider
+                    <input name="review_provider" defaultValue={modelPolicy.review.provider ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Review model
+                    <input name="review_model" defaultValue={modelPolicy.review.model ?? ""} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Optimization goal
+                    <select name="optimization_goal" defaultValue={modelPolicy.optimization_goal} style={{ display: "block", width: "100%" }}>
+                      <option value="balanced">balanced</option>
+                      <option value="quality">quality</option>
+                      <option value="speed">speed</option>
+                      <option value="cost">cost</option>
+                      <option value="context">context</option>
+                    </select>
+                  </label>
+                  <label>
+                    Minimum context window
+                    <input name="minimum_context_window" type="number" min={0} defaultValue={modelPolicy.minimum_context_window} style={{ display: "block", width: "100%" }} />
+                  </label>
+                  <label>
+                    Max latency tier
+                    <select name="max_latency_tier" defaultValue={modelPolicy.max_latency_tier ?? ""} style={{ display: "block", width: "100%" }}>
+                      <option value="">any</option>
+                      <option value="fast">fast</option>
+                      <option value="medium">medium</option>
+                      <option value="slow">slow</option>
+                    </select>
+                  </label>
+                  <label>
+                    Max cost tier
+                    <select name="max_cost_tier" defaultValue={modelPolicy.max_cost_tier ?? ""} style={{ display: "block", width: "100%" }}>
+                      <option value="">any</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
+                  <label style={{ gridColumn: "1 / -1" }}>
+                    Fallback order
+                    <input name="fallback_order" defaultValue={modelPolicy.fallback_order.join(", ")} style={{ display: "block", width: "100%" }} />
+                  </label>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <label style={{ marginRight: 12 }}>
+                    <input
+                      name="allow_cross_provider_switching"
+                      type="checkbox"
+                      defaultChecked={modelPolicy.allow_cross_provider_switching}
+                    />{" "}
+                    allow cross-provider switching
+                  </label>
+                  <label style={{ marginRight: 12 }}>
+                    <input
+                      name="maintain_context_continuity"
+                      type="checkbox"
+                      defaultChecked={modelPolicy.maintain_context_continuity}
+                    />{" "}
+                    maintain context continuity
+                  </label>
+                  <label>
+                    <input
+                      name="prefer_reviewer_provider"
+                      type="checkbox"
+                      defaultChecked={modelPolicy.prefer_reviewer_provider}
+                    />{" "}
+                    prefer reviewer provider
+                  </label>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <button type="submit" disabled={savingPolicy}>
+                    {savingPolicy ? "Saving..." : "Save strategy"}
+                  </button>
+                </div>
+                {providerCapabilities.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <strong>Configured providers</strong>
+                    <ul>
+                      {providerCapabilities.map((item) => (
+                        <li key={item.provider}>
+                          {item.provider}: {providerSummary(item.provider)}; strengths {item.strengths.join(", ")}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </form>
             )}
           </section>
 

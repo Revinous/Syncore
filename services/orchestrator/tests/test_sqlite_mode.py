@@ -157,11 +157,28 @@ def test_sqlite_mode_supports_core_workflow(monkeypatch, tmp_path) -> None:
     switch_history = client.get(f"/tasks/{task_id}/model-switches")
     assert switch_history.status_code == 200
     assert len(switch_history.json()) >= 1
+    policy = client.put(
+        f"/tasks/{task_id}/model-policy",
+        json={
+            "execute_provider": "local_echo",
+            "execute_model": "local_echo",
+            "review_provider": "local_echo",
+            "review_model": "local_echo",
+            "fallback_order": ["local_echo"],
+            "optimization_goal": "quality",
+            "maintain_context_continuity": True,
+            "minimum_context_window": 8192,
+        },
+    )
+    assert policy.status_code == 200
+    assert policy.json()["execute"]["provider"] == "local_echo"
+    assert policy.json()["optimization_goal"] == "quality"
 
     auto_run = client.post(
         "/runs/execute-auto",
         json={
             "task_id": task_id,
+            "stage": "execute",
             "prompt": "Use preferred model/provider for this task.",
             "target_agent": "coder",
             "token_budget": 1200,

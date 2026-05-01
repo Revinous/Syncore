@@ -82,6 +82,27 @@ class FakeClient:
             "included_refs": [],
         }
 
+    def get_task_model_policy(self, task_id: str):
+        return {
+            "default_provider": "openai",
+            "default_model": "gpt-5.4",
+            "plan": {"provider": "openai", "model": "gpt-5.4"},
+            "execute": {"provider": "openai", "model": "gpt-5.4"},
+            "review": {"provider": "anthropic", "model": "claude-3-7-sonnet-latest"},
+            "fallback_order": ["openai", "anthropic", "gemini"],
+            "prefer_reviewer_provider": True,
+            "optimization_goal": "balanced",
+            "allow_cross_provider_switching": True,
+            "maintain_context_continuity": True,
+            "minimum_context_window": 0,
+            "max_latency_tier": None,
+            "max_cost_tier": None,
+        }
+
+    def update_task_model_policy(self, task_id: str, payload):
+        self.updated_model_policy_payload = {"task_id": task_id, **payload}
+        return self.get_task_model_policy(task_id) | payload
+
     def list_agent_runs(self):
         return [
             {
@@ -456,6 +477,54 @@ def test_providers_json(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload[0]["provider"] == "local_echo"
+
+
+def test_task_model_policy_json(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["task", "model-policy", "t1", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["review"]["provider"] == "anthropic"
+
+
+def test_task_set_model_policy_json(monkeypatch) -> None:
+    runner = CliRunner()
+    fake = FakeClient()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: fake)
+    result = runner.invoke(
+        app,
+        [
+            "task",
+            "set-model-policy",
+            "t1",
+            "--plan-provider",
+            "openai",
+            "--plan-model",
+            "gpt-5.4",
+            "--review-provider",
+            "anthropic",
+            "--review-model",
+            "claude-3-7-sonnet-latest",
+            "--fallback-order",
+            "openai,anthropic,gemini",
+            "--optimization-goal",
+            "quality",
+            "--minimum-context-window",
+            "8192",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["plan_provider"] == "openai"
+    assert payload["optimization_goal"] == "quality"
+    assert fake.updated_model_policy_payload["fallback_order"] == [
+        "openai",
+        "anthropic",
+        "gemini",
+    ]
+    assert fake.updated_model_policy_payload["minimum_context_window"] == 8192
 
 
 def test_run_cancel_json(monkeypatch) -> None:

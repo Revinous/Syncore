@@ -373,6 +373,11 @@ def test_failure_aware_provider_choice_prefers_alternate_provider_after_repeated
                     supports_temperature=True,
                     supports_max_tokens=True,
                     model_hint="gpt-5.4",
+                    max_context_tokens=128_000,
+                    quality_tier=5,
+                    speed_tier=4,
+                    cost_tier=4,
+                    strengths=("implementation",),
                 ),
                 ProviderCapabilities(
                     provider="anthropic",
@@ -381,6 +386,11 @@ def test_failure_aware_provider_choice_prefers_alternate_provider_after_repeated
                     supports_temperature=True,
                     supports_max_tokens=True,
                     model_hint="claude",
+                    max_context_tokens=200_000,
+                    quality_tier=5,
+                    speed_tier=3,
+                    cost_tier=4,
+                    strengths=("review",),
                 ),
             ]
 

@@ -22,6 +22,11 @@ class ProviderCapabilityResponse(BaseModel):
     supports_temperature: bool
     supports_max_tokens: bool
     model_hint: str
+    max_context_tokens: int
+    quality_tier: int
+    speed_tier: int
+    cost_tier: int
+    strengths: list[str]
 
 
 class QueueEnqueueRequest(BaseModel):
@@ -60,6 +65,7 @@ class WorkspaceRunRequest(BaseModel):
 
 class AutoRunExecutionRequest(BaseModel):
     task_id: UUID
+    stage: str = Field(default="execute", min_length=1)
     prompt: str = Field(min_length=1)
     target_agent: str = Field(min_length=1)
     token_budget: int = Field(default=8_000, ge=256, le=200_000)
@@ -128,7 +134,8 @@ def execute_run_auto(
 ) -> RunExecutionResponse:
     try:
         preferred_provider, preferred_model = task_service.resolve_task_model_preference(
-            payload.task_id
+            payload.task_id,
+            stage=payload.stage,
         )
         provider = (payload.provider or "").strip() or preferred_provider
         model = (payload.target_model or "").strip() or preferred_model

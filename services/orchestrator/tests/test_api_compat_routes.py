@@ -96,6 +96,24 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
         },
     )
     assert denied.status_code == 400
+    policy = client.get(f"/tasks/{task_id}/model-policy")
+    assert policy.status_code == 200
+    updated_policy = client.put(
+        f"/tasks/{task_id}/model-policy",
+        json={
+            "plan_provider": "local_echo",
+            "plan_model": "local_echo",
+            "review_provider": "local_echo",
+            "review_model": "local_echo",
+            "fallback_order": ["local_echo"],
+            "optimization_goal": "speed",
+            "allow_cross_provider_switching": False,
+            "maintain_context_continuity": True,
+            "minimum_context_window": 4096,
+        },
+    )
+    assert updated_policy.status_code == 200
+    assert updated_policy.json()["optimization_goal"] == "speed"
     assert client.get("/agent-runs").status_code == 200
     assert client.get(f"/agent-runs/{run_id}").status_code == 200
     assert client.get(f"/agent-runs/{run_id}/result").status_code == 200

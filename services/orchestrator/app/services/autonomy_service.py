@@ -263,7 +263,13 @@ class AutonomyService:
             cycle=cycle,
             execute_role=execute_role,
         )
-        provider = self._resolve_provider(stage=next_stage, task=task, prefs=prefs)
+        previous_provider, previous_model = self._latest_run_provider_model(task.id)
+        provider = self._resolve_provider(
+            stage=next_stage,
+            task=task,
+            prefs=prefs,
+            previous_provider=previous_provider,
+        )
         model = self._resolve_model(stage=next_stage, task=task, provider=provider, prefs=prefs)
         max_retries = self._resolve_max_retries(prefs)
         prompt = self._prompt_for_stage(
@@ -297,7 +303,28 @@ class AutonomyService:
             state="started",
             strategy=strategy,
             quality_score=0,
-            details={"role": stage_role, "provider": provider or "", "model": model},
+            details={
+                "role": stage_role,
+                "provider": provider or "",
+                "model": model,
+                "previous_provider": previous_provider or "",
+                "previous_model": previous_model or "",
+            },
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="model.routing.selected",
+                event_data={
+                    "stage": next_stage,
+                    "provider": provider or "",
+                    "target_model": model,
+                    "previous_provider": previous_provider or "",
+                    "previous_model": previous_model or "",
+                    "continuity_mode": prefs.get("maintain_context_continuity") or "true",
+                    "optimization_goal": prefs.get("model_optimization_goal") or "balanced",
+                },
+            )
         )
 
         request = RunExecutionRequest(
@@ -357,6 +384,17 @@ class AutonomyService:
                 )
             else:
                 run = self._run_execution_service.execute(request)
+            self._record_model_switch_if_needed(
+                task_id=task_id,
+                previous_provider=previous_provider,
+                previous_model=previous_model,
+                next_provider=run.provider,
+                next_model=run.target_model,
+                stage_role=stage_role,
+                continuity_enabled=(prefs.get("maintain_context_continuity") or "true").lower()
+                != "false",
+                context_bundle_id=str(getattr(run, "optimized_bundle_id", "") or ""),
+            )
             quality = self._stage_quality_gate(
                 stage=next_stage,
                 output_text=run.output_text,
@@ -791,31 +829,66 @@ class AutonomyService:
         stage: str,
         task: Task,
         prefs: dict[str, str],
+        previous_provider: str | None = None,
     ) -> str | None:
-        candidate = (
-            prefs.get(f"preferred_provider_{stage}")
-            or prefs.get("preferred_provider")
-            or self._workspace_learning_value(task=task, key="last_successful_provider")
-            or self._default_provider
-        ).strip().lower()
-        available = [
-            item.provider
-            for item in self._run_execution_service.list_provider_capabilities()
-        ]
-        if candidate and candidate != "other":
+        capability_rows = self._run_execution_service.list_provider_capabilities()
+        if not capability_rows:
+            return None
+        available = [item.provider for item in capability_rows]
+        policy = self._model_policy(prefs)
+        explicit_stage = str(prefs.get(f"preferred_provider_{stage}") or "").strip().lower()
+        explicit_default = str(prefs.get("preferred_provider") or "").strip().lower()
+        if not policy["allow_cross_provider_switching"] and previous_provider in available:
+            return previous_provider
+        if explicit_stage and explicit_stage in available:
             return self._failure_aware_provider_choice(
                 task=task,
-                preferred=candidate,
+                preferred=explicit_stage,
                 available=available,
             )
-        fallback_order = self._stage_provider_order(stage=stage, available=available)
-        if not fallback_order:
-            return None
-        return self._failure_aware_provider_choice(
-            task=task,
-            preferred=fallback_order[0],
-            available=fallback_order,
+        if explicit_default and explicit_default in available:
+            return self._failure_aware_provider_choice(
+                task=task,
+                preferred=explicit_default,
+                available=available,
+            )
+        if (
+            self._default_provider
+            and self._default_provider not in available
+            and not explicit_stage
+            and not explicit_default
+        ):
+            return self._default_provider
+        if self._default_provider == "local_echo" and "local_echo" in available:
+            return "local_echo"
+
+        ordered = self._stage_provider_order(
+            stage=stage,
+            available=available,
+            prefs=prefs,
         )
+        recent_failures = self._recent_provider_failures(task.id)
+        scored: list[tuple[float, str]] = []
+        for item in capability_rows:
+            if item.provider not in ordered:
+                continue
+            score = self._provider_score(
+                stage=stage,
+                task=task,
+                provider=item.provider,
+                capability=item,
+                policy=policy,
+                prefs=prefs,
+                previous_provider=previous_provider,
+                explicit_stage=explicit_stage,
+                explicit_default=explicit_default,
+                recent_failures=recent_failures,
+            )
+            scored.append((score, item.provider))
+        scored.sort(key=lambda entry: entry[0], reverse=True)
+        if not scored:
+            return ordered[0] if ordered else None
+        return scored[0][1]
 
     def _resolve_model(
         self,
@@ -847,6 +920,36 @@ class AutonomyService:
         if stage == "execute" and task.complexity == "high" and hinted:
             return hinted
         return hinted or self._default_model
+
+    def _model_policy(self, prefs: dict[str, str]) -> dict[str, object]:
+        return {
+            "optimization_goal": str(prefs.get("model_optimization_goal") or "balanced")
+            .strip()
+            .lower(),
+            "allow_cross_provider_switching": str(
+                prefs.get("allow_cross_provider_switching") or "true"
+            )
+            .strip()
+            .lower()
+            != "false",
+            "maintain_context_continuity": str(
+                prefs.get("maintain_context_continuity") or "true"
+            )
+            .strip()
+            .lower()
+            != "false",
+            "minimum_context_window": _parse_positive_int(
+                prefs.get("minimum_context_window"),
+                default=0,
+                maximum=2_000_000,
+            ),
+            "max_latency_tier": str(prefs.get("max_latency_tier") or "").strip().lower(),
+            "max_cost_tier": str(prefs.get("max_cost_tier") or "").strip().lower(),
+            "prefer_reviewer_provider": str(prefs.get("prefer_reviewer_provider") or "true")
+            .strip()
+            .lower()
+            != "false",
+        }
 
     def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> tuple[str, str]:
         preferred = str(prefs.get("autonomy_mode") or "").strip().lower()
@@ -921,13 +1024,108 @@ class AutonomyService:
                     failures[provider] = failures.get(provider, 0) + 1
         return failures
 
-    def _stage_provider_order(self, *, stage: str, available: list[str]) -> list[str]:
+    def _provider_score(
+        self,
+        *,
+        stage: str,
+        task: Task,
+        provider: str,
+        capability,
+        policy: dict[str, object],
+        prefs: dict[str, str],
+        previous_provider: str | None,
+        explicit_stage: str,
+        explicit_default: str,
+        recent_failures: dict[str, int],
+    ) -> float:
+        score = 0.0
+        optimization_goal = str(policy["optimization_goal"] or "balanced")
+        minimum_context_window = int(policy["minimum_context_window"] or 0)
+        max_latency_tier = str(policy["max_latency_tier"] or "")
+        max_cost_tier = str(policy["max_cost_tier"] or "")
+        if capability.max_context_tokens < minimum_context_window:
+            return -10_000.0
+        if max_latency_tier and capability.speed_tier < _latency_floor(max_latency_tier):
+            return -5_000.0
+        if max_cost_tier and capability.cost_tier > _cost_ceiling(max_cost_tier):
+            return -5_000.0
+
+        if explicit_stage and provider == explicit_stage:
+            score += 200
+        elif explicit_default and provider == explicit_default:
+            score += 120
+
+        if previous_provider and provider == previous_provider and bool(
+            policy["maintain_context_continuity"]
+        ):
+            score += 40
+        if previous_provider and provider != previous_provider and not bool(
+            policy["allow_cross_provider_switching"]
+        ):
+            score -= 200
+        if provider == self._workspace_learning_value(task=task, key="last_successful_provider"):
+            score += 24
+        complexity = str(getattr(task, "complexity", "") or "").strip().lower()
+        task_type = str(getattr(task, "task_type", "") or "").strip().lower()
+        if complexity == "high":
+            score += capability.quality_tier * 6
+        elif complexity == "low":
+            score += capability.speed_tier * 4
+        if task_type in {"research", "analysis"}:
+            score += capability.max_context_tokens / 100_000
+        if (
+            stage == "review"
+            and bool(policy["prefer_reviewer_provider"])
+            and provider == "anthropic"
+        ):
+            score += 35
+
+        if optimization_goal == "quality":
+            score += capability.quality_tier * 14
+        elif optimization_goal == "speed":
+            score += capability.speed_tier * 14
+        elif optimization_goal == "cost":
+            score += (6 - capability.cost_tier) * 14
+        elif optimization_goal == "context":
+            score += capability.max_context_tokens / 10_000
+        else:
+            score += capability.quality_tier * 6
+            score += capability.speed_tier * 4
+            score += (6 - capability.cost_tier) * 3
+            score += min(capability.max_context_tokens, 256_000) / 64_000
+
+        stage_affinity = {
+            "plan": {"openai": 12, "gemini": 8, "anthropic": 6},
+            "execute": {"openai": 14, "anthropic": 8, "gemini": 6},
+            "review": {"anthropic": 16, "openai": 8, "gemini": 6},
+        }
+        score += stage_affinity.get(stage, {}).get(provider, 0)
+        score -= recent_failures.get(provider, 0) * 40
+        return score
+
+    def _stage_provider_order(
+        self,
+        *,
+        stage: str,
+        available: list[str],
+        prefs: dict[str, str] | None = None,
+    ) -> list[str]:
         default_provider = (self._default_provider or "").strip().lower()
+        prefs = prefs or {}
         preferred = {
             "plan": ["openai", "anthropic", "gemini", "local_echo"],
             "execute": ["openai", "anthropic", "gemini", "local_echo"],
             "review": ["anthropic", "openai", "gemini", "local_echo"],
         }.get(stage, ["openai", "anthropic", "gemini", "local_echo"])
+        fallback_override = [
+            item.strip().lower()
+            for item in str(prefs.get("provider_fallback_order") or "").split(",")
+            if item.strip()
+        ]
+        if fallback_override:
+            preferred = fallback_override + [
+                provider for provider in preferred if provider not in fallback_override
+            ]
         if default_provider and default_provider in available:
             preferred = [default_provider] + [
                 provider for provider in preferred if provider != default_provider
@@ -937,6 +1135,56 @@ class AutonomyService:
             if provider not in ordered:
                 ordered.append(provider)
         return ordered
+
+    def _latest_run_provider_model(self, task_id: UUID) -> tuple[str | None, str | None]:
+        events = self._store.list_project_events(task_id=task_id, limit=100)
+        for event in reversed(events):
+            if event.event_type not in {"run.completed", "model.switch.completed"}:
+                continue
+            provider = str(
+                event.event_data.get("provider") or event.event_data.get("to_provider") or ""
+            ).strip().lower()
+            model = str(
+                event.event_data.get("target_model") or event.event_data.get("to_model") or ""
+            ).strip()
+            if provider and model:
+                return provider, model
+        return None, None
+
+    def _record_model_switch_if_needed(
+        self,
+        *,
+        task_id: UUID,
+        previous_provider: str | None,
+        previous_model: str | None,
+        next_provider: str,
+        next_model: str,
+        stage_role: str,
+        continuity_enabled: bool,
+        context_bundle_id: str,
+    ) -> None:
+        if previous_provider == next_provider and previous_model == next_model:
+            return
+        continuity_status = "preserved" if continuity_enabled else "best_effort"
+        if previous_provider and previous_provider != next_provider:
+            continuity_status = (
+                "cross_provider_preserved" if continuity_enabled else "cross_provider_best_effort"
+            )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="model.switch.completed",
+                event_data={
+                    "from_provider": previous_provider or "",
+                    "from_model": previous_model or "",
+                    "to_provider": next_provider,
+                    "to_model": next_model,
+                    "target_agent": stage_role,
+                    "context_bundle_id": context_bundle_id,
+                    "continuity_status": continuity_status,
+                },
+            )
+        )
 
     def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
         provider_norm = (provider or "").strip().lower()
@@ -1492,6 +1740,24 @@ def _parse_positive_int(value: str | None, *, default: int, maximum: int) -> int
     if parsed < 1:
         return default
     return min(parsed, maximum)
+
+
+def _latency_floor(value: str) -> int:
+    mapping = {
+        "fast": 4,
+        "medium": 3,
+        "slow": 1,
+    }
+    return mapping.get(value.strip().lower(), 1)
+
+
+def _cost_ceiling(value: str) -> int:
+    mapping = {
+        "low": 2,
+        "medium": 3,
+        "high": 5,
+    }
+    return mapping.get(value.strip().lower(), 5)
 
 
 def _missing_sdlc_topics(text: str) -> list[str]:

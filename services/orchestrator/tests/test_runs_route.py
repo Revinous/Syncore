@@ -55,6 +55,11 @@ class FakeRunExecutionService:
                 supports_temperature=True,
                 supports_max_tokens=True,
                 model_hint="local_echo",
+                max_context_tokens=32_000,
+                quality_tier=1,
+                speed_tier=5,
+                cost_tier=1,
+                strengths=("deterministic",),
             )
         ]
 

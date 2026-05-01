@@ -15,6 +15,11 @@ class ProviderCapabilities:
     supports_temperature: bool
     supports_max_tokens: bool
     model_hint: str
+    max_context_tokens: int
+    quality_tier: int
+    speed_tier: int
+    cost_tier: int
+    strengths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -60,6 +65,11 @@ class LocalEchoProvider:
             supports_temperature=True,
             supports_max_tokens=True,
             model_hint="local_echo",
+            max_context_tokens=32_000,
+            quality_tier=1,
+            speed_tier=5,
+            cost_tier=1,
+            strengths=("deterministic", "local-dev", "cheap"),
         )
 
     def complete(
@@ -119,6 +129,11 @@ class OpenAIChatCompletionsProvider:
             supports_temperature=True,
             supports_max_tokens=True,
             model_hint="gpt-5.4",
+            max_context_tokens=128_000,
+            quality_tier=5,
+            speed_tier=4,
+            cost_tier=4,
+            strengths=("planning", "implementation", "tool-use"),
         )
 
     def complete(
@@ -274,6 +289,11 @@ class AnthropicMessagesProvider:
             supports_temperature=True,
             supports_max_tokens=True,
             model_hint="claude-3-7-sonnet-latest",
+            max_context_tokens=200_000,
+            quality_tier=5,
+            speed_tier=3,
+            cost_tier=4,
+            strengths=("review", "long-context", "writing"),
         )
 
     def complete(
@@ -349,6 +369,11 @@ class GeminiGenerateContentProvider:
             supports_temperature=True,
             supports_max_tokens=True,
             model_hint="gemini-2.5-pro",
+            max_context_tokens=1_000_000,
+            quality_tier=4,
+            speed_tier=4,
+            cost_tier=3,
+            strengths=("large-context", "analysis", "multimodal-ready"),
         )
 
     def complete(

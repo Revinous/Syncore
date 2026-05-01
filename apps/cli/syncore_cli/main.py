@@ -574,6 +574,10 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
             model_switches = client.list_task_model_switches(task_id, limit=25)
         except SyncoreApiError:
             model_switches = []
+        try:
+            model_policy = client.get_task_model_policy(task_id)
+        except SyncoreApiError:
+            model_policy = None
     except SyncoreApiError as error:
         print_error(str(error))
         raise typer.Exit(code=1)
@@ -585,11 +589,92 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
         "digest": digest,
         "latest_model_switch": _latest_model_switch(events),
         "model_switches": model_switches,
+        "model_policy": model_policy,
     }
     if json_output:
         print_json(payload)
         return
     print_kv_panel("Task Detail", payload)
+
+
+@task_app.command("model-policy")
+def task_model_policy(
+    task_id: str,
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    client = _client()
+    try:
+        policy = client.get_task_model_policy(task_id)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(policy)
+        return
+    print_kv_panel("Task Model Policy", policy)
+
+
+@task_app.command("set-model-policy")
+def task_set_model_policy(
+    task_id: str,
+    default_provider: str | None = typer.Option(None, "--default-provider"),
+    default_model: str | None = typer.Option(None, "--default-model"),
+    plan_provider: str | None = typer.Option(None, "--plan-provider"),
+    plan_model: str | None = typer.Option(None, "--plan-model"),
+    execute_provider: str | None = typer.Option(None, "--execute-provider"),
+    execute_model: str | None = typer.Option(None, "--execute-model"),
+    review_provider: str | None = typer.Option(None, "--review-provider"),
+    review_model: str | None = typer.Option(None, "--review-model"),
+    fallback_order: str | None = typer.Option(None, "--fallback-order"),
+    prefer_reviewer_provider: bool | None = typer.Option(None, "--prefer-reviewer-provider/--no-prefer-reviewer-provider"),
+    optimization_goal: str | None = typer.Option(None, "--optimization-goal"),
+    allow_cross_provider_switching: bool | None = typer.Option(None, "--allow-cross-provider-switching/--no-allow-cross-provider-switching"),
+    maintain_context_continuity: bool | None = typer.Option(None, "--maintain-context-continuity/--no-maintain-context-continuity"),
+    minimum_context_window: int | None = typer.Option(None, "--minimum-context-window"),
+    max_latency_tier: str | None = typer.Option(None, "--max-latency-tier"),
+    max_cost_tier: str | None = typer.Option(None, "--max-cost-tier"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    client = _client()
+    payload: dict[str, object] = {}
+    mapping = {
+        "default_provider": default_provider,
+        "default_model": default_model,
+        "plan_provider": plan_provider,
+        "plan_model": plan_model,
+        "execute_provider": execute_provider,
+        "execute_model": execute_model,
+        "review_provider": review_provider,
+        "review_model": review_model,
+    }
+    for key, value in mapping.items():
+        if value is not None:
+            payload[key] = value
+    if fallback_order is not None:
+        payload["fallback_order"] = [item.strip() for item in fallback_order.split(",") if item.strip()]
+    if prefer_reviewer_provider is not None:
+        payload["prefer_reviewer_provider"] = prefer_reviewer_provider
+    if optimization_goal is not None:
+        payload["optimization_goal"] = optimization_goal
+    if allow_cross_provider_switching is not None:
+        payload["allow_cross_provider_switching"] = allow_cross_provider_switching
+    if maintain_context_continuity is not None:
+        payload["maintain_context_continuity"] = maintain_context_continuity
+    if minimum_context_window is not None:
+        payload["minimum_context_window"] = minimum_context_window
+    if max_latency_tier is not None:
+        payload["max_latency_tier"] = max_latency_tier
+    if max_cost_tier is not None:
+        payload["max_cost_tier"] = max_cost_tier
+    try:
+        policy = client.update_task_model_policy(task_id, payload)
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    if json_output:
+        print_json(policy)
+        return
+    print_kv_panel("Updated Task Model Policy", policy)
 
 
 @task_app.command("switch-model")

@@ -13,11 +13,13 @@ import {
   RoutingDecision,
   NotificationItem,
   NotificationListResponse,
+  ProviderCapability,
   ServicesHealthResponse,
   Task,
   TaskChildrenBoard,
   TaskCreatePayload,
   TaskDetail,
+  TaskModelPolicy,
   TaskUpdatePayload,
   Workspace,
   WorkspaceCreatePayload,
@@ -133,6 +135,20 @@ export function getTaskChildren(id: string) {
   return request<TaskChildrenBoard>(`/tasks/${id}/children`);
 }
 
+export function getTaskModelPolicy(id: string) {
+  return request<TaskModelPolicy>(`/tasks/${id}/model-policy`);
+}
+
+export function updateTaskModelPolicy(
+  id: string,
+  payload: Partial<TaskModelPolicy> & Record<string, unknown>
+) {
+  return request<TaskModelPolicy>(`/tasks/${id}/model-policy`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function updateTask(id: string, payload: TaskUpdatePayload) {
   return request<Task>(`/tasks/${id}`, {
     method: "PATCH",
@@ -217,6 +233,10 @@ export function getDiagnosticsConfig() {
 
 export function getDiagnosticsRoutes() {
   return request<DiagnosticsRoutes>("/diagnostics/routes");
+}
+
+export function listProviderCapabilities() {
+  return request<ProviderCapability[]>("/runs/providers");
 }
 
 export function listNotifications(acknowledged?: boolean, limit = 100) {
