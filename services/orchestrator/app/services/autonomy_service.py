@@ -797,11 +797,25 @@ class AutonomyService:
             or prefs.get("preferred_provider")
             or self._workspace_learning_value(task=task, key="last_successful_provider")
             or self._default_provider
-            or ""
         ).strip().lower()
-        if not candidate or candidate == "other":
+        available = [
+            item.provider
+            for item in self._run_execution_service.list_provider_capabilities()
+        ]
+        if candidate and candidate != "other":
+            return self._failure_aware_provider_choice(
+                task=task,
+                preferred=candidate,
+                available=available,
+            )
+        fallback_order = self._stage_provider_order(stage=stage, available=available)
+        if not fallback_order:
             return None
-        return self._failure_aware_provider_choice(task=task, preferred=candidate)
+        return self._failure_aware_provider_choice(
+            task=task,
+            preferred=fallback_order[0],
+            available=fallback_order,
+        )
 
     def _resolve_model(
         self,
@@ -821,7 +835,18 @@ class AutonomyService:
             return preferred_model
         if provider == "local_echo" or self._default_provider == "local_echo":
             return "local_echo"
-        return self._default_model
+        capability_map = {
+            item.provider: item.model_hint
+            for item in self._run_execution_service.list_provider_capabilities()
+        }
+        hinted = str(capability_map.get(provider or "") or "").strip()
+        if stage == "review" and provider == "anthropic" and hinted:
+            return hinted
+        if stage == "plan" and hinted:
+            return hinted
+        if stage == "execute" and task.complexity == "high" and hinted:
+            return hinted
+        return hinted or self._default_model
 
     def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> tuple[str, str]:
         preferred = str(prefs.get("autonomy_mode") or "").strip().lower()
@@ -857,9 +882,16 @@ class AutonomyService:
         value = learning.get(key)
         return str(value).strip() if value is not None else ""
 
-    def _failure_aware_provider_choice(self, *, task: Task, preferred: str) -> str:
-        capabilities = self._run_execution_service.list_provider_capabilities()
-        available = [item.provider for item in capabilities]
+    def _failure_aware_provider_choice(
+        self,
+        *,
+        task: Task,
+        preferred: str,
+        available: list[str] | None = None,
+    ) -> str:
+        if available is None:
+            capabilities = self._run_execution_service.list_provider_capabilities()
+            available = [item.provider for item in capabilities]
         if preferred not in available:
             return available[0] if available else preferred
         recent_failures = self._recent_provider_failures(task.id)
@@ -888,6 +920,23 @@ class AutonomyService:
                 if provider:
                     failures[provider] = failures.get(provider, 0) + 1
         return failures
+
+    def _stage_provider_order(self, *, stage: str, available: list[str]) -> list[str]:
+        default_provider = (self._default_provider or "").strip().lower()
+        preferred = {
+            "plan": ["openai", "anthropic", "gemini", "local_echo"],
+            "execute": ["openai", "anthropic", "gemini", "local_echo"],
+            "review": ["anthropic", "openai", "gemini", "local_echo"],
+        }.get(stage, ["openai", "anthropic", "gemini", "local_echo"])
+        if default_provider and default_provider in available:
+            preferred = [default_provider] + [
+                provider for provider in preferred if provider != default_provider
+            ]
+        ordered = [provider for provider in preferred if provider in available]
+        for provider in available:
+            if provider not in ordered:
+                ordered.append(provider)
+        return ordered
 
     def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
         provider_norm = (provider or "").strip().lower()

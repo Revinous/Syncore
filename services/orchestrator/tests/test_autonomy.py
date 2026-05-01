@@ -291,6 +291,54 @@ def test_autonomy_downgrades_unattended_when_workspace_readiness_is_low(
         assert adjusted[-1]["event_data"]["mode"] != "unattended"
 
 
+def test_autonomy_recovers_after_app_restart(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Restart recovery task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        first = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert first.status_code == 200
+        snapshots = client.get(f"/autonomy/tasks/{task_id}/snapshots")
+        assert snapshots.status_code == 200
+        assert len(snapshots.json()) >= 1
+
+    get_settings.cache_clear()
+
+    with TestClient(create_app()) as restarted:
+        for _ in range(5):
+            resumed = restarted.post(f"/autonomy/tasks/{task_id}/run")
+            assert resumed.status_code == 200
+            detail = restarted.get(f"/tasks/{task_id}")
+            assert detail.status_code == 200
+            if detail.json()["task"]["status"] == "completed":
+                break
+
+        final = restarted.get(f"/tasks/{task_id}")
+        assert final.status_code == 200
+        assert final.json()["task"]["status"] == "completed"
+        snapshots = restarted.get(f"/autonomy/tasks/{task_id}/snapshots")
+        assert snapshots.status_code == 200
+        assert len(snapshots.json()) >= 3
+
+
 def test_failure_aware_provider_choice_prefers_alternate_provider_after_repeated_failures() -> None:
     task_id = uuid4()
     workspace_id = uuid4()
