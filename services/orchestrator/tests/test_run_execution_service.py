@@ -431,6 +431,8 @@ def test_workspace_preflight_fails_for_missing_binary(tmp_path) -> None:
     )
     assert result["status"] == "failed"
     assert "missing from PATH" in result["reason"]
+    assert result["missing_binaries"] == ["definitely_missing_binary_123"]
+    assert result["suggestions"]
 
 
 def test_workspace_verifier_rejects_empty_execution() -> None:
@@ -517,6 +519,58 @@ def test_workspace_verifier_rejects_missing_artifact_and_secret_leak(tmp_path) -
         "Required artifacts were not created.",
         "Potential secret material detected in changed files.",
     }
+
+
+def test_workspace_verifier_runs_behavioral_probe_and_checks_output(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = root / "cli.py"
+    target.write_text("print('ready')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["cli.py"],
+        command_results=[],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "probe_commands": ["printf 'calculator ready'"],
+                "must_observe_output": ["calculator ready"],
+            }
+        },
+        runbook={},
+        runner={},
+        policy={"allow_commands": ("printf",)},
+    )
+    assert result["status"] == "ok"
+
+
+def test_workspace_verifier_fails_when_behavioral_output_missing(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "cli.py").write_text("print('ready')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["cli.py"],
+        command_results=[],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "probe_commands": ["printf 'calculator ready'"],
+                "must_observe_output": ["scientific mode"],
+            }
+        },
+        runbook={},
+        runner={},
+        policy={"allow_commands": ("printf",)},
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "Expected behavioral output markers were not observed."
 
 
 def test_workspace_verifier_accepts_when_contract_criteria_met(tmp_path) -> None:

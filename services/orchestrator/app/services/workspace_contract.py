@@ -79,6 +79,8 @@ def normalize_workspace_contract(contract: dict[str, Any]) -> dict[str, Any]:
             "must_not_modify_paths": _string_list(acceptance.get("must_not_modify_paths")),
             "must_include_behavior": _string_list(acceptance.get("must_include_behavior")),
             "must_create_paths": _string_list(acceptance.get("must_create_paths")),
+            "must_observe_output": _string_list(acceptance.get("must_observe_output")),
+            "probe_commands": _string_list(acceptance.get("probe_commands")),
         },
         "risk_rules": {
             "max_changed_files": _optional_int(risk_rules.get("max_changed_files")),

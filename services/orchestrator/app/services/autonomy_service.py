@@ -136,7 +136,15 @@ class AutonomyService:
 
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
-        autonomy_mode = self._resolve_autonomy_mode(task=task, prefs=prefs)
+        autonomy_mode, autonomy_note = self._resolve_autonomy_mode(task=task, prefs=prefs)
+        if autonomy_note:
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task_id,
+                    event_type="autonomy.mode.adjusted",
+                    event_data={"mode": autonomy_mode, "reason": autonomy_note[:250]},
+                )
+            )
         requires_approval = _as_bool(prefs.get("requires_approval"))
         if (
             self._workspace_auto_approve_low_risk
@@ -815,18 +823,29 @@ class AutonomyService:
             return "local_echo"
         return self._default_model
 
-    def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> str:
+    def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> tuple[str, str]:
         preferred = str(prefs.get("autonomy_mode") or "").strip().lower()
-        if preferred:
-            return preferred
+        requested = preferred or ""
         if task.workspace_id is None:
-            return "supervised"
+            return (requested or "supervised"), ""
         workspace = self._store.get_workspace(task.workspace_id)
         if workspace is None:
-            return "supervised"
+            return (requested or "supervised"), ""
         readiness = dict(workspace.metadata.get("workspace_readiness") or {})
         recommended = str(readiness.get("recommended_autonomy_mode") or "").strip().lower()
-        return recommended or "supervised"
+        score = int(readiness.get("score") or 0)
+        if not requested:
+            return (recommended or "supervised"), ""
+        if requested == "unattended" and score < 85:
+            fallback = recommended or "supervised"
+            return (
+                fallback,
+                (
+                    "Requested unattended mode was downgraded because workspace readiness "
+                    f"score is {score}."
+                ),
+            )
+        return requested, ""
 
     def _workspace_learning_value(self, *, task: Task, key: str) -> str:
         if task.workspace_id is None:

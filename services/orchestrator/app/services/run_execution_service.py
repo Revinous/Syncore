@@ -690,6 +690,7 @@ class RunExecutionService:
             contract=contract,
             runbook=runbook,
             runner=runner,
+            policy=policy,
         )
         if (
             verification["status"] != "ok"
@@ -1436,6 +1437,45 @@ class RunExecutionService:
         patterns = tuple(policy.get("allowed_command_patterns", ()))
         return any(re.fullmatch(str(pattern), command) for pattern in patterns)
 
+    def _preflight_failure(
+        self,
+        *,
+        reason: str,
+        suggestions: list[str],
+        missing_env: list[str] | None = None,
+        missing_binaries: list[str] | None = None,
+        missing_files: list[str] | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "status": "failed",
+            "reason": reason,
+            "suggestions": suggestions[:8],
+        }
+        if missing_env:
+            payload["missing_env"] = missing_env[:20]
+        if missing_binaries:
+            payload["missing_binaries"] = missing_binaries[:20]
+        if missing_files:
+            payload["missing_files"] = missing_files[:20]
+        return payload
+
+    def _binary_install_suggestions(self, binary: str) -> list[str]:
+        common = {
+            "python": ["Install Python 3.10+ and ensure `python` or `python3` is on PATH."],
+            "node": ["Install Node.js 20+ and ensure `node` is on PATH."],
+            "npm": ["Install Node.js/npm and verify `npm --version` succeeds."],
+            "pnpm": ["Install pnpm globally, for example `npm install -g pnpm`."],
+            "uv": ["Install uv, for example `curl -LsSf https://astral.sh/uv/install.sh | sh`."],
+            "cargo": ["Install Rust toolchain via rustup so `cargo` is available on PATH."],
+            "go": ["Install Go and verify `go version` succeeds."],
+            "gradle": ["Install Gradle or use the project wrapper if available."],
+            "java": ["Install a JDK and verify `java -version` succeeds."],
+        }
+        return common.get(
+            binary,
+            [f"Install '{binary}' and ensure it is available on PATH before retrying."],
+        )
+
     def _safe_run_workspace_command(
         self,
         root: Path,
@@ -1595,56 +1635,87 @@ class RunExecutionService:
         required_files: list[str] | None = None,
         supported_os: list[str] | None = None,
         runner: dict[str, object] | None = None,
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         if not root.exists() or not root.is_dir():
-            return {"status": "failed", "reason": "workspace root missing"}
+            return self._preflight_failure(
+                reason="workspace root missing",
+                suggestions=["Ensure the workspace path exists before running Syncore."],
+            )
         if not os.access(root, os.R_OK | os.W_OK):
-            return {"status": "failed", "reason": "workspace root not writable/readable"}
+            return self._preflight_failure(
+                reason="workspace root not writable/readable",
+                suggestions=[
+                    "Check filesystem permissions for the workspace directory.",
+                    "Ensure the current user can read and write under the workspace root.",
+                ],
+            )
         provider_name = (provider_hint or self._default_provider or "local_echo").strip().lower()
         if provider_name and provider_name not in self._providers:
-            return {"status": "failed", "reason": f"provider '{provider_name}' is not configured"}
+            return self._preflight_failure(
+                reason=f"provider '{provider_name}' is not configured",
+                suggestions=[
+                    f"Configure credentials for provider '{provider_name}' in .env.",
+                    "Use a configured provider or fall back to local_echo for dry runs.",
+                ],
+            )
         for env_name in required_env or []:
             if env_name and not os.getenv(env_name):
-                return {
-                    "status": "failed",
-                    "reason": f"required env var '{env_name}' is missing",
-                }
+                return self._preflight_failure(
+                    reason=f"required env var '{env_name}' is missing",
+                    suggestions=[
+                        f"Export {env_name}=... in the shell before starting Syncore.",
+                        f"Add {env_name} to the workspace .env contract documentation.",
+                    ],
+                    missing_env=[env_name],
+                )
         current_os = platform.system().lower()
         supported = [item.lower() for item in (supported_os or []) if item]
         if supported and current_os not in supported:
-            return {
-                "status": "failed",
-                "reason": f"workspace contract does not support current os '{current_os}'",
-            }
+            return self._preflight_failure(
+                reason=f"workspace contract does not support current os '{current_os}'",
+                suggestions=[
+                    "Run the workspace on a supported OS or update syncore.yaml environment.os.",
+                ],
+            )
         for binary in required_binaries or []:
             if binary and shutil.which(binary) is None:
-                return {
-                    "status": "failed",
-                    "reason": f"required binary '{binary}' is missing from PATH",
-                }
+                return self._preflight_failure(
+                    reason=f"required binary '{binary}' is missing from PATH",
+                    suggestions=self._binary_install_suggestions(binary),
+                    missing_binaries=[binary],
+                )
         if runner:
             runner_expected = self._string_list(runner.get("expected_files"))
             if runner_expected and not any((root / rel).exists() for rel in runner_expected):
-                return {
-                    "status": "failed",
-                    "reason": "workspace does not match the expected runner file layout",
-                }
+                return self._preflight_failure(
+                    reason="workspace does not match the expected runner file layout",
+                    suggestions=[
+                        "Rescan the workspace and confirm the selected policy pack/runner.",
+                        "Add an explicit runner to syncore.yaml if auto-detection is wrong.",
+                    ],
+                    missing_files=runner_expected,
+                )
             commands = dict(runner.get("commands") or {})
             setup_commands = self._string_list(commands.get("setup"))
             for command in setup_commands[:1]:
                 binary = command.split()[0] if command.split() else ""
                 if binary and shutil.which(binary) is None:
-                    return {
-                        "status": "failed",
-                        "reason": f"runner setup binary '{binary}' is missing from PATH",
-                    }
+                    return self._preflight_failure(
+                        reason=f"runner setup binary '{binary}' is missing from PATH",
+                        suggestions=self._binary_install_suggestions(binary),
+                        missing_binaries=[binary],
+                    )
         for rel in required_files or []:
             if rel and not (root / rel).exists():
-                return {
-                    "status": "failed",
-                    "reason": f"required file '{rel}' is missing",
-                }
-        return {"status": "ok", "reason": ""}
+                return self._preflight_failure(
+                    reason=f"required file '{rel}' is missing",
+                    suggestions=[
+                        f"Create or restore '{rel}' before autonomous execution.",
+                        "Update syncore.yaml if the contract no longer reflects the repo layout.",
+                    ],
+                    missing_files=[rel],
+                )
+        return {"status": "ok", "reason": "", "suggestions": []}
 
     def _verify_workspace_execution(
         self,
@@ -1656,16 +1727,26 @@ class RunExecutionService:
         contract: dict[str, object],
         runbook: dict[str, object],
         runner: dict[str, object] | None = None,
+        policy: dict[str, object] | None = None,
     ) -> dict[str, object]:
         acceptance = self._merged_acceptance_criteria(
             task_preferences=task_preferences,
             contract=contract,
             runbook=runbook,
         )
+        enriched_command_results = list(command_results)
+        behavioral = self._run_behavioral_probes(
+            root=root,
+            acceptance=acceptance,
+            policy=policy or {},
+            command_results=enriched_command_results,
+        )
+        if behavioral["status"] != "ok":
+            return behavioral
         forbidden_paths = self._string_list(runbook.get("forbidden_paths"))
         risk_rules = dict(runbook.get("risk_rules") or contract.get("risk_rules") or {})
         mechanical = self._verify_mechanical_gates(
-            command_results=command_results,
+            command_results=enriched_command_results,
             acceptance=acceptance,
             runner=runner or {},
         )
@@ -1689,7 +1770,9 @@ class RunExecutionService:
         if secret_check["status"] != "ok":
             return secret_check
         failed_cmds = [
-            item for item in command_results if str(item.get("status")) in {"failed", "blocked"}
+            item
+            for item in enriched_command_results
+            if str(item.get("status")) in {"failed", "blocked"}
         ]
         if failed_cmds:
             return {
@@ -1697,7 +1780,7 @@ class RunExecutionService:
                 "reason": "One or more workspace commands failed/blocked.",
                 "failed_commands": [str(item.get("command")) for item in failed_cmds[:10]],
             }
-        if not changed_files and not command_results:
+        if not changed_files and not enriched_command_results:
             return {
                 "status": "failed",
                 "reason": "No changes or verification commands were produced.",
@@ -1802,6 +1885,8 @@ class RunExecutionService:
             "must_not_modify_paths": self._string_list(source_dict.get("must_not_modify_paths")),
             "must_include_behavior": self._string_list(source_dict.get("must_include_behavior")),
             "must_create_paths": self._string_list(source_dict.get("must_create_paths")),
+            "must_observe_output": self._string_list(source_dict.get("must_observe_output")),
+            "probe_commands": self._string_list(source_dict.get("probe_commands")),
         }
         for key in tuple(merged.keys()):
             pref_value = task_preferences.get(key)
@@ -1953,6 +2038,42 @@ class RunExecutionService:
                     "status": "failed",
                     "reason": "Required artifacts were not created.",
                     "missing_paths": missing_create,
+                }
+        return {"status": "ok", "reason": ""}
+
+    def _run_behavioral_probes(
+        self,
+        *,
+        root: Path,
+        acceptance: dict[str, list[str]],
+        policy: dict[str, object],
+        command_results: list[dict[str, object]],
+    ) -> dict[str, object]:
+        probe_commands = acceptance.get("probe_commands", [])
+        for command in probe_commands:
+            result = self._safe_run_workspace_command(root, command, policy=policy or {})
+            command_results.append(result)
+            if str(result.get("status")) != "ok":
+                return {
+                    "status": "failed",
+                    "reason": "Behavioral probe command failed.",
+                    "failed_command": command,
+                }
+        expected_output = acceptance.get("must_observe_output", [])
+        if expected_output:
+            observed_output = "\n".join(
+                str(item.get("output") or "")
+                for item in command_results
+                if str(item.get("status")) == "ok"
+            ).lower()
+            missing_output = [
+                marker for marker in expected_output if marker.lower() not in observed_output
+            ]
+            if missing_output:
+                return {
+                    "status": "failed",
+                    "reason": "Expected behavioral output markers were not observed.",
+                    "missing_output_markers": missing_output,
                 }
         return {"status": "ok", "reason": ""}
 

@@ -218,6 +218,75 @@ def test_autonomy_requires_approval_and_resumes_after_approve(monkeypatch, tmp_p
         assert final_detail.json()["task"]["status"] == "completed"
 
 
+def test_autonomy_downgrades_unattended_when_workspace_readiness_is_low(
+    monkeypatch, tmp_path
+) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Demo\n", encoding="utf-8")
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        workspace = client.post(
+            "/workspaces",
+            json={
+                "name": "Low Ready Workspace",
+                "root_path": str(workspace_root),
+                "runtime_mode": "native",
+                "metadata": {},
+            },
+        )
+        assert workspace.status_code == 201
+        workspace_id = workspace.json()["id"]
+
+        scan = client.post(f"/workspaces/{workspace_id}/scan")
+        assert scan.status_code == 200
+
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Unattended requested on low-readiness workspace",
+                "task_type": "implementation",
+                "complexity": "low",
+                "workspace_id": workspace_id,
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        pref = client.post(
+            "/project-events",
+            json={
+                "task_id": task_id,
+                "event_type": "task.preferences",
+                "event_data": {"autonomy_mode": "unattended"},
+            },
+        )
+        assert pref.status_code == 201
+
+        run = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert run.status_code == 200
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        adjusted = [
+            event
+            for event in events.json()
+            if event["event_type"] == "autonomy.mode.adjusted"
+        ]
+        assert adjusted
+        assert adjusted[-1]["event_data"]["mode"] != "unattended"
+
+
 def test_autonomy_parent_waits_for_spawned_children(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"
     _init_sqlite(db_path)

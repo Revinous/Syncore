@@ -71,6 +71,19 @@ from app.services.workspace_runners import select_workspace_runner
         ),
         (
             {
+                "pnpm-workspace.yaml": "packages:\n  - apps/*\n",
+                "nx.json": "{}",
+                "package.json": (
+                    '{"dependencies":{"react":"19.0.0"},'
+                    '"scripts":{"test":"vitest"}}'
+                ),
+            },
+            "monorepo-pnpm",
+            "monorepo-pnpm",
+            "pnpm test",
+        ),
+        (
+            {
                 "go.mod": "module demo\n",
                 "main.go": "package main\nfunc main() {}\n",
             },
@@ -86,6 +99,15 @@ from app.services.workspace_runners import select_workspace_runner
             "rust-cli",
             "rust-cli",
             "cargo test",
+        ),
+        (
+            {
+                "build.gradle": "plugins { id 'java' }\n",
+                "src/main/java/App.java": "class App {}\n",
+            },
+            "java-gradle",
+            "java-gradle",
+            "gradle test",
         ),
     ],
 )

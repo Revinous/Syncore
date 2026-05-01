@@ -249,6 +249,10 @@ acceptance:
     - src/
   must_include_behavior:
     - loading state
+  probe_commands:
+    - npm test
+  must_observe_output:
+    - passing
 risk_rules:
   max_changed_files: 20
 ```
@@ -269,6 +273,8 @@ When a workspace is scanned, Syncore persists:
 - `unattended`
 
 If no explicit `autonomy_mode` preference is set on a task, Syncore will default to the workspace readiness recommendation.
+
+If `autonomy_mode=unattended` is requested explicitly but the workspace readiness score is too low, Syncore will downgrade execution to a safer mode and record an `autonomy.mode.adjusted` event.
 
 Initial repo classes supported by policy packs and runners include:
 
