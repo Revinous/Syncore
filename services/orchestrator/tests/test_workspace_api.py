@@ -38,6 +38,32 @@ def test_workspace_crud_scan_and_files(monkeypatch, tmp_path) -> None:
         json.dumps({"dependencies": {"next": "16.2.4"}, "scripts": {"test": "vitest"}}),
         encoding="utf-8",
     )
+    (workspace_root / "syncore.yaml").write_text(
+        "\n".join(
+            [
+                "policy_pack: node-next",
+                "runner: node-next",
+                "environment:",
+                "  required_binaries:",
+                "    - npm",
+                "test:",
+                "  - npm test",
+                "required_env:",
+                "  - DEMO_TOKEN",
+                "capabilities:",
+                "  forbidden_paths:",
+                "    - secrets/",
+                "  allowed_commands:",
+                "    - npm test",
+                "acceptance:",
+                "  must_pass_commands:",
+                "    - npm test",
+                "  must_include_behavior:",
+                "    - help text",
+            ]
+        ),
+        encoding="utf-8",
+    )
     (workspace_root / ".env").write_text("SECRET=1", encoding="utf-8")
 
     monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
@@ -82,6 +108,22 @@ def test_workspace_crud_scan_and_files(monkeypatch, tmp_path) -> None:
     scan = scan_response.json()["scan"]
     assert "nextjs" in scan["frameworks"]
     assert "requirements.txt" in scan["important_files"]
+    workspace_after_scan = client.get(f"/workspaces/{workspace_id}")
+    assert workspace_after_scan.status_code == 200
+    metadata = workspace_after_scan.json()["metadata"]
+    assert metadata["policy_pack"] == "node-next"
+    assert metadata["syncore_contract"]["policy_pack"] == "node-next"
+    assert metadata["workspace_runner"]["name"] == "node-next"
+    assert metadata["workspace_runbook"]["commands"] == ["npm test"]
+    assert metadata["workspace_runbook"]["required_env"] == ["DEMO_TOKEN"]
+    assert metadata["workspace_runbook"]["required_binaries"] == ["npm"]
+    assert metadata["workspace_runbook"]["allowed_commands"] == ["npm test"]
+    assert metadata["workspace_readiness"]["status"] in {"partial", "good", "high"}
+    assert metadata["workspace_readiness"]["recommended_autonomy_mode"] in {
+        "guided",
+        "supervised",
+        "unattended",
+    }
 
     files_response = client.get(f"/workspaces/{workspace_id}/files")
     assert files_response.status_code == 200

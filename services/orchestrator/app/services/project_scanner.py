@@ -114,6 +114,11 @@ def scan_project(root_path: Path) -> dict[str, list[str]]:
         if lowered == "pnpm-lock.yaml":
             package_managers.add("pnpm")
             important_files.add(rel)
+            frameworks.add("pnpm-workspace")
+        if lowered == "pnpm-workspace.yaml":
+            package_managers.add("pnpm")
+            frameworks.add("pnpm-workspace")
+            important_files.add(rel)
         if lowered == "requirements.txt":
             languages.add("python")
             package_managers.add("pip")
@@ -125,6 +130,8 @@ def scan_project(root_path: Path) -> dict[str, list[str]]:
             _detect_pyproject(file_path, frameworks, test_commands)
         if lowered == "poetry.lock":
             package_managers.add("poetry")
+        if lowered in {"manage.py"}:
+            frameworks.add("django")
         if lowered == "cargo.toml":
             package_managers.add("cargo")
             frameworks.add("rust")
@@ -132,6 +139,15 @@ def scan_project(root_path: Path) -> dict[str, list[str]]:
         if lowered == "go.mod":
             package_managers.add("go modules")
             test_commands.add("go test ./...")
+        if lowered in {"pom.xml", "build.gradle", "build.gradle.kts"}:
+            package_managers.add("gradle" if "gradle" in lowered else "maven")
+            frameworks.add("jvm")
+        if lowered == "turbo.json":
+            frameworks.add("turborepo")
+            important_files.add(rel)
+        if lowered == "nx.json":
+            frameworks.add("nx")
+            important_files.add(rel)
 
         if rel in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml"}:
             important_files.add(rel)
@@ -180,12 +196,18 @@ def _detect_node_ecosystem(
         frameworks.add("nextjs")
     if "react" in dependencies:
         frameworks.add("react")
+    if "vite" in dependencies:
+        frameworks.add("vite")
     if "vue" in dependencies:
         frameworks.add("vue")
     if "@nestjs/core" in dependencies:
         frameworks.add("nestjs")
     if "express" in dependencies:
         frameworks.add("express")
+    if "turbo" in dependencies:
+        frameworks.add("turborepo")
+    if "nx" in dependencies:
+        frameworks.add("nx")
 
     if "test" in scripts:
         test_commands.add("npm test")
@@ -231,6 +253,8 @@ def _detect_python_requirements(requirements_path: Path, frameworks: set[str]) -
         frameworks.add("django")
     if "flask" in content:
         frameworks.add("flask")
+    if "uvicorn" in content:
+        frameworks.add("asgi")
 
 
 def _detect_pyproject(pyproject_path: Path, frameworks: set[str], test_commands: set[str]) -> None:
@@ -245,5 +269,7 @@ def _detect_pyproject(pyproject_path: Path, frameworks: set[str], test_commands:
         frameworks.add("django")
     if "flask" in content:
         frameworks.add("flask")
+    if "uvicorn" in content:
+        frameworks.add("asgi")
     if "pytest" in content:
         test_commands.add("pytest")

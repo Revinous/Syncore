@@ -34,3 +34,28 @@ def test_scanner_detects_stack_and_docs(tmp_path) -> None:
     assert "requirements.txt" in result["important_files"]
     assert "runbook_commands" in result
     assert any("pytest" in item for item in result["runbook_commands"])
+
+
+def test_scanner_detects_monorepo_and_vite_stack(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    (workspace / "pnpm-workspace.yaml").write_text("packages:\n  - apps/*\n", encoding="utf-8")
+    (workspace / "turbo.json").write_text("{}", encoding="utf-8")
+    (workspace / "package.json").write_text(
+        json.dumps(
+            {
+                "dependencies": {"vite": "5.0.0", "react": "19.0.0"},
+                "scripts": {"build": "vite build", "test": "vitest"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = scan_project(workspace)
+
+    assert "pnpm" in result["package_managers"]
+    assert "pnpm-workspace" in result["frameworks"]
+    assert "turborepo" in result["frameworks"]
+    assert "vite" in result["frameworks"]
+    assert "react" in result["frameworks"]

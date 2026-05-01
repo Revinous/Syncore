@@ -136,12 +136,17 @@ class AutonomyService:
 
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
+        autonomy_mode = self._resolve_autonomy_mode(task=task, prefs=prefs)
         requires_approval = _as_bool(prefs.get("requires_approval"))
         if (
             self._workspace_auto_approve_low_risk
             and task.workspace_id is not None
             and task.complexity == "low"
         ):
+            requires_approval = False
+        if autonomy_mode == "guided":
+            requires_approval = True
+        if autonomy_mode == "unattended":
             requires_approval = False
 
         child_gate = self._child_gate_status(task=task, events=events)
@@ -250,8 +255,8 @@ class AutonomyService:
             cycle=cycle,
             execute_role=execute_role,
         )
-        provider = self._resolve_provider(prefs)
-        model = self._resolve_model(provider, prefs)
+        provider = self._resolve_provider(stage=next_stage, task=task, prefs=prefs)
+        model = self._resolve_model(stage=next_stage, task=task, provider=provider, prefs=prefs)
         max_retries = self._resolve_max_retries(prefs)
         prompt = self._prompt_for_stage(
             stage=next_stage,
@@ -319,6 +324,7 @@ class AutonomyService:
                                 prefs.get("workspace_policy_profile")
                                 or self._workspace_execution_profile
                             ),
+                            "autonomy_mode": autonomy_mode,
                         },
                     )
                 )
@@ -333,7 +339,7 @@ class AutonomyService:
                         prefs.get("workspace_policy_profile") or self._workspace_execution_profile
                     ),
                     require_approval=requires_approval,
-                    dry_run=False,
+                    dry_run=autonomy_mode == "observe",
                 )
                 run = SimpleNamespace(
                     run_id=None,
@@ -771,21 +777,66 @@ class AutonomyService:
                 count += 1
         return count
 
-    def _resolve_provider(self, prefs: dict[str, str]) -> str | None:
+    def _resolve_provider(
+        self,
+        *,
+        stage: str,
+        task: Task,
+        prefs: dict[str, str],
+    ) -> str | None:
         candidate = (
-            prefs.get("preferred_provider") or self._default_provider or ""
+            prefs.get(f"preferred_provider_{stage}")
+            or prefs.get("preferred_provider")
+            or self._workspace_learning_value(task=task, key="last_successful_provider")
+            or self._default_provider
+            or ""
         ).strip().lower()
         if not candidate or candidate == "other":
             return None
         return candidate
 
-    def _resolve_model(self, provider: str | None, prefs: dict[str, str]) -> str:
-        preferred_model = (prefs.get("preferred_model") or "").strip()
+    def _resolve_model(
+        self,
+        *,
+        stage: str,
+        task: Task,
+        provider: str | None,
+        prefs: dict[str, str],
+    ) -> str:
+        preferred_model = (
+            prefs.get(f"preferred_model_{stage}")
+            or prefs.get("preferred_model")
+            or self._workspace_learning_value(task=task, key="last_successful_model")
+            or ""
+        ).strip()
         if preferred_model:
             return preferred_model
         if provider == "local_echo" or self._default_provider == "local_echo":
             return "local_echo"
         return self._default_model
+
+    def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> str:
+        preferred = str(prefs.get("autonomy_mode") or "").strip().lower()
+        if preferred:
+            return preferred
+        if task.workspace_id is None:
+            return "supervised"
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            return "supervised"
+        readiness = dict(workspace.metadata.get("workspace_readiness") or {})
+        recommended = str(readiness.get("recommended_autonomy_mode") or "").strip().lower()
+        return recommended or "supervised"
+
+    def _workspace_learning_value(self, *, task: Task, key: str) -> str:
+        if task.workspace_id is None:
+            return ""
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            return ""
+        learning = dict(workspace.metadata.get("learning") or {})
+        value = learning.get(key)
+        return str(value).strip() if value is not None else ""
 
     def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
         provider_norm = (provider or "").strip().lower()

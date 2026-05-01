@@ -202,6 +202,88 @@ curl http://localhost:8000/health/services
 open http://localhost:3000  # or paste in browser
 ```
 
+## Repo Contracts And Readiness
+
+Syncore can now consume an optional `syncore.yaml` at workspace root to reduce repo-specific guesswork.
+
+Core sections:
+
+- `policy_pack`
+- `runner`
+- `environment`
+- `commands`
+- `capabilities`
+- `acceptance`
+- `risk_rules`
+
+Example:
+
+```yaml
+schema_version: 2
+policy_pack: node-next
+runner: node-next
+environment:
+  required_binaries:
+    - node
+    - npm
+  required_env:
+    - NEXT_PUBLIC_API_BASE_URL
+commands:
+  test:
+    - npm test
+  build:
+    - npm run build
+capabilities:
+  allowed_commands:
+    - npm test
+    - npm run build
+  forbidden_paths:
+    - secrets/
+  approval_required_paths:
+    - infra/
+acceptance:
+  must_pass_commands:
+    - npm test
+    - npm run build
+  must_modify_paths:
+    - src/
+  must_include_behavior:
+    - loading state
+risk_rules:
+  max_changed_files: 20
+```
+
+When a workspace is scanned, Syncore persists:
+
+- `syncore_contract`
+- inferred or declared `policy_pack`
+- selected `workspace_runner`
+- normalized `workspace_runbook`
+- `workspace_readiness`
+
+`workspace_readiness` is a confidence score that drives recommended autonomy mode:
+
+- `observe`
+- `guided`
+- `supervised`
+- `unattended`
+
+If no explicit `autonomy_mode` preference is set on a task, Syncore will default to the workspace readiness recommendation.
+
+Initial repo classes supported by policy packs and runners include:
+
+- `python-fastapi`
+- `python-django`
+- `python-flask`
+- `node-next`
+- `node-express`
+- `node-nest`
+- `vite-react`
+- `monorepo-pnpm`
+- `go-service`
+- `rust-cli`
+- `java-gradle`
+
 ## Local Ports
 
 - Web: `3000`

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -418,11 +419,149 @@ def test_workspace_preflight_fails_for_unconfigured_provider(tmp_path) -> None:
     assert "not configured" in result["reason"]
 
 
+def test_workspace_preflight_fails_for_missing_binary(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    result = service._workspace_preflight(  # type: ignore[attr-defined]
+        root=root,
+        provider_hint="fake",
+        required_binaries=["definitely_missing_binary_123"],
+    )
+    assert result["status"] == "failed"
+    assert "missing from PATH" in result["reason"]
+
+
 def test_workspace_verifier_rejects_empty_execution() -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)
     result = service._verify_workspace_execution(  # type: ignore[attr-defined]
         changed_files=[],
         command_results=[],
+        root=Path("."),
+        task_preferences={},
+        contract={},
+        runbook={},
+        runner={},
     )
     assert result["status"] == "failed"
+
+
+def test_workspace_policy_blocks_action_outside_allowed_root() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    result = service._check_action_allowed(  # type: ignore[attr-defined]
+        action_type="write_file",
+        policy={
+            "allowed_actions": ("write_file",),
+            "allowed_paths": ("src/",),
+        },
+        relative_path="docs/readme.md",
+    )
+    assert result["status"] == "blocked"
+    assert "outside allowed workspace roots" in result["reason"]
+
+
+def test_workspace_verifier_enforces_acceptance_criteria(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = root / "cli.py"
+    target.write_text("print('plain output')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["cli.py"],
+        command_results=[{"command": "pytest -q", "status": "ok"}],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "must_pass_commands": ["pytest"],
+                "must_modify_paths": ["cli.py"],
+                "must_include_behavior": ["help text"],
+            }
+        },
+        runbook={},
+        runner={},
+    )
+    assert result["status"] == "failed"
+    assert "missing_behaviors" in result
+
+
+def test_workspace_verifier_rejects_missing_artifact_and_secret_leak(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = root / "cli.py"
+    target.write_text("API_KEY = 'sk-proj-demo'\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["cli.py"],
+        command_results=[{"command": "pytest -q", "status": "ok"}],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "must_pass_commands": ["pytest"],
+                "must_create_paths": ["dist/report.txt"],
+            }
+        },
+        runbook={},
+        runner={},
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] in {
+        "Required artifacts were not created.",
+        "Potential secret material detected in changed files.",
+    }
+
+
+def test_workspace_verifier_accepts_when_contract_criteria_met(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    target = root / "cli.py"
+    target.write_text("print('help text available')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["cli.py"],
+        command_results=[{"command": "pytest -q", "status": "ok"}],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "must_pass_commands": ["pytest"],
+                "must_modify_paths": ["cli.py"],
+                "must_not_modify_paths": ["secrets/"],
+                "must_include_behavior": ["help text"],
+                "must_create_paths": ["cli.py"],
+            }
+        },
+        runbook={},
+        runner={},
+    )
+    assert result["status"] == "ok"
+
+
+def test_workspace_verifier_uses_runner_default_test_gate(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["main.py"],
+        command_results=[],
+        root=root,
+        task_preferences={},
+        contract={},
+        runbook={},
+        runner={"commands": {"test": ["pytest -q"]}},
+    )
+    assert result["status"] == "failed"
+    assert result["reason"] == "Required verification commands did not pass."
