@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -378,6 +379,57 @@ def test_workspace_policy_profile_blocks_disallowed_command(tmp_path) -> None:
     assert allowed["status"] in {"ok", "failed"}
 
 
+def test_workspace_command_normalizes_python_alias(monkeypatch, tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+
+    def fake_which(binary: str):
+        if binary == "python":
+            return None
+        if binary == "python3":
+            return "/usr/bin/python3"
+        return shutil.which(binary)
+
+    monkeypatch.setattr("app.services.run_execution_service.shutil.which", fake_which)
+    assert service._binary_available("python") is True  # type: ignore[attr-defined]
+    normalized = service._normalize_workspace_command("python -m pytest -q")  # type: ignore[attr-defined]
+    assert normalized.startswith("python3 -m pytest -q")
+
+
+def test_workspace_required_command_matching_accepts_python_alias(monkeypatch) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+
+    def fake_which(binary: str):
+        if binary == "python":
+            return None
+        if binary == "python3":
+            return "/usr/bin/python3"
+        return shutil.which(binary)
+
+    monkeypatch.setattr("app.services.run_execution_service.shutil.which", fake_which)
+    result = service._verify_mechanical_gates(  # type: ignore[attr-defined]
+        command_results=[{"command": "python3 -m pytest -q", "status": "ok", "output": ""}],
+        acceptance={"must_pass_commands": ["python -m pytest -q"]},
+        runner={},
+    )
+
+    assert result["status"] == "ok"
+
+
+def test_workspace_effective_policy_keeps_explicit_requested_profile() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+
+    policy = service._effective_workspace_policy(  # type: ignore[attr-defined]
+        requested_profile="full-dev",
+        workspace_metadata={"policy_pack": "python-fastapi"},
+        task_preferences={},
+    )
+
+    assert policy["profile"] == "full-dev"
+
+
 def test_workspace_path_traversal_is_blocked(tmp_path) -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)
@@ -433,6 +485,24 @@ def test_workspace_preflight_fails_for_missing_binary(tmp_path) -> None:
     assert "missing from PATH" in result["reason"]
     assert result["missing_binaries"] == ["definitely_missing_binary_123"]
     assert result["suggestions"]
+
+
+def test_workspace_preflight_runner_expected_files_are_not_all_hard_required(tmp_path) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+    result = service._workspace_preflight(  # type: ignore[attr-defined]
+        root=root,
+        provider_hint="fake",
+        runner={
+            "expected_files": ["pyproject.toml", "requirements.txt"],
+            "commands": {},
+        },
+        required_files=[],
+    )
+    assert result["status"] == "ok"
 
 
 def test_workspace_verifier_rejects_empty_execution() -> None:

@@ -155,3 +155,70 @@ def test_workspace_routes_return_404_for_missing_workspace(monkeypatch, tmp_path
 
     response = client.post(f"/workspaces/{missing_id}/scan")
     assert response.status_code == 404
+
+
+def test_workspace_scan_parses_inline_contract_lists(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    workspace_root = tmp_path / "inline-workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Inline", encoding="utf-8")
+    (workspace_root / "pyproject.toml").write_text(
+        "[project]\nname='inline'\nversion='0.1.0'\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "syncore.yaml").write_text(
+        "\n".join(
+            [
+                "policy_pack: python-fastapi",
+                "runner: python-fastapi",
+                "environment:",
+                '  required_binaries: ["python", "pytest"]',
+                "commands:",
+                '  test: ["python -m pytest -q"]',
+                "capabilities:",
+                '  allowed_commands: ["python -m pytest -q"]',
+                "acceptance:",
+                '  must_pass_commands: ["python -m pytest -q"]',
+                '  must_create_paths: ["calculator.py", "tests/test_calculator.py"]',
+                '  must_observe_output: ["8"]',
+                '  probe_commands: ["python calculator.py \\"2 + 2 * 3\\""]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+
+    client = TestClient(create_app())
+    create_response = client.post(
+        "/workspaces",
+        json={
+            "name": "Inline Workspace",
+            "root_path": str(workspace_root),
+            "runtime_mode": "native",
+            "metadata": {},
+        },
+    )
+    assert create_response.status_code == 201
+    workspace_id = create_response.json()["id"]
+
+    scan_response = client.post(f"/workspaces/{workspace_id}/scan")
+    assert scan_response.status_code == 200
+    metadata = client.get(f"/workspaces/{workspace_id}").json()["metadata"]
+    assert metadata["workspace_runbook"]["required_binaries"] == ["python", "pytest"]
+    assert metadata["workspace_runbook"]["allowed_commands"] == ["python -m pytest -q"]
+    assert metadata["workspace_runbook"]["acceptance"]["must_pass_commands"] == [
+        "python -m pytest -q"
+    ]
+    assert metadata["workspace_runbook"]["acceptance"]["must_create_paths"] == [
+        "calculator.py",
+        "tests/test_calculator.py",
+    ]
+    assert metadata["workspace_runbook"]["acceptance"]["probe_commands"] == [
+        'python calculator.py "2 + 2 * 3"'
+    ]

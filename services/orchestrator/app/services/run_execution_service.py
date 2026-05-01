@@ -4,8 +4,10 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
@@ -376,8 +378,7 @@ class RunExecutionService:
             required_env=self._string_list(runbook.get("required_env")),
             required_binaries=self._string_list(runbook.get("required_binaries"))
             or self._string_list(runner.get("required_binaries")),
-            required_files=self._string_list(runbook.get("required_files"))
-            or self._string_list(runner.get("expected_files")),
+            required_files=self._string_list(runbook.get("required_files")),
             supported_os=self._string_list(runner.get("supported_os")),
             runner=runner,
         )
@@ -396,8 +397,7 @@ class RunExecutionService:
                     required_env=self._string_list(runbook.get("required_env")),
                     required_binaries=self._string_list(runbook.get("required_binaries"))
                     or self._string_list(runner.get("required_binaries")),
-                    required_files=self._string_list(runbook.get("required_files"))
-                    or self._string_list(runner.get("expected_files")),
+                    required_files=self._string_list(runbook.get("required_files")),
                     supported_os=self._string_list(runner.get("supported_os")),
                     runner=runner,
                 )
@@ -703,10 +703,50 @@ class RunExecutionService:
                     step = max_steps
                     break
 
+            if changed_files or command_results:
+                self._ensure_required_verification_commands_run(
+                    root=root,
+                    command_results=command_results,
+                    acceptance=self._merged_acceptance_criteria(
+                        task_preferences=task_preferences,
+                        contract=contract,
+                        runbook=runbook,
+                    ),
+                    runner=runner,
+                    policy=policy,
+                )
+                step_verification = self._verify_workspace_execution(
+                    changed_files=changed_files,
+                    command_results=list(command_results),
+                    root=root,
+                    task_preferences=task_preferences,
+                    contract=contract,
+                    runbook=runbook,
+                    runner=runner,
+                    policy=policy,
+                )
+                if step_verification["status"] == "ok":
+                    if not finish_summary:
+                        finish_summary = (
+                            "Workspace execution loop completed after verification passed."
+                        )
+                    break
+
         self._record_event(
             task_id=payload.task_id,
             event_type="workspace.execution.state.changed",
             event_data={"state": "verifying", "profile": profile},
+        )
+        self._ensure_required_verification_commands_run(
+            root=root,
+            command_results=command_results,
+            acceptance=self._merged_acceptance_criteria(
+                task_preferences=task_preferences,
+                contract=contract,
+                runbook=runbook,
+            ),
+            runner=runner,
+            policy=policy,
         )
         verification = self._verify_workspace_execution(
             changed_files=changed_files,
@@ -1565,6 +1605,7 @@ class RunExecutionService:
     ) -> dict[str, object]:
         if not self._command_allowed(command, policy):
             return {"command": command, "status": "blocked", "output": "Command not allowed"}
+        command = self._normalize_workspace_command(command)
         timeout = int(policy.get("timeout_seconds", 120))
         max_output = int(policy.get("max_output_chars", 4000))
         completed = subprocess.run(
@@ -1758,7 +1799,7 @@ class RunExecutionService:
                 ],
             )
         for binary in required_binaries or []:
-            if binary and shutil.which(binary) is None:
+            if binary and not self._binary_available(binary):
                 return self._preflight_failure(
                     reason=f"required binary '{binary}' is missing from PATH",
                     suggestions=self._binary_install_suggestions(binary),
@@ -1779,7 +1820,7 @@ class RunExecutionService:
             setup_commands = self._string_list(commands.get("setup"))
             for command in setup_commands[:1]:
                 binary = command.split()[0] if command.split() else ""
-                if binary and shutil.which(binary) is None:
+                if binary and not self._binary_available(binary):
                     return self._preflight_failure(
                         reason=f"runner setup binary '{binary}' is missing from PATH",
                         suggestions=self._binary_install_suggestions(binary),
@@ -1796,6 +1837,41 @@ class RunExecutionService:
                     missing_files=[rel],
                 )
         return {"status": "ok", "reason": "", "suggestions": []}
+
+    def _binary_available(self, binary: str) -> bool:
+        return self._resolve_binary(binary) is not None
+
+    def _resolve_binary(self, binary: str) -> str | None:
+        direct = shutil.which(binary)
+        if direct:
+            return direct
+        aliases = {
+            "python": ["python3", Path(sys.executable).name, sys.executable],
+            "pip": ["pip3"],
+        }
+        for candidate in aliases.get(binary, []):
+            resolved = shutil.which(candidate) if os.path.sep not in candidate else candidate
+            if resolved and (os.path.sep not in candidate or Path(candidate).exists()):
+                return resolved
+        return None
+
+    def _normalize_workspace_command(self, command: str) -> str:
+        try:
+            tokens = shlex.split(command, posix=True)
+        except ValueError:
+            return command
+        if not tokens:
+            return command
+        resolved = self._resolve_binary(tokens[0])
+        if not resolved:
+            return command
+        if tokens[0] == "python" and resolved.endswith("python3"):
+            tokens[0] = "python3"
+            return shlex.join(tokens)
+        if tokens[0] == "pip" and resolved.endswith("pip3"):
+            tokens[0] = "pip3"
+            return shlex.join(tokens)
+        return command
 
     def _verify_workspace_execution(
         self,
@@ -1874,11 +1950,9 @@ class RunExecutionService:
         workspace_metadata: dict[str, object],
         task_preferences: dict[str, str],
     ) -> dict[str, object]:
-        profile = (
-            requested_profile
-            if requested_profile in self.WORKSPACE_POLICY_PROFILES
-            else "balanced"
-        )
+        requested_profile = str(requested_profile or "").strip().lower()
+        explicit_requested = requested_profile in self.WORKSPACE_POLICY_PROFILES
+        profile = requested_profile if explicit_requested else "balanced"
         base = dict(self.WORKSPACE_POLICY_PROFILES[profile])
         pack_name = str(
             task_preferences.get("policy_pack")
@@ -1888,7 +1962,7 @@ class RunExecutionService:
         pack = get_policy_pack(pack_name)
         if pack:
             override_profile = str(pack.get("profile") or "").strip()
-            if override_profile in self.WORKSPACE_POLICY_PROFILES:
+            if not explicit_requested and override_profile in self.WORKSPACE_POLICY_PROFILES:
                 base = dict(self.WORKSPACE_POLICY_PROFILES[override_profile])
                 profile = override_profile
             pack_commands = tuple(pack.get("allow_commands") or ())
@@ -2012,7 +2086,10 @@ class RunExecutionService:
             }
             missing = [
                 command for command in required
-                if not any(command in observed for observed in observed_ok)
+                if not any(
+                    self._workspace_commands_match(command, observed)
+                    for observed in observed_ok
+                )
             ]
             if missing:
                 return {
@@ -2021,6 +2098,43 @@ class RunExecutionService:
                     "missing_commands": missing,
                 }
         return {"status": "ok", "reason": ""}
+
+    def _ensure_required_verification_commands_run(
+        self,
+        *,
+        root: Path,
+        command_results: list[dict[str, object]],
+        acceptance: dict[str, list[str]],
+        runner: dict[str, object],
+        policy: dict[str, object],
+    ) -> None:
+        required = acceptance.get("must_pass_commands", [])
+        if not required:
+            runner_commands = dict(runner.get("commands") or {})
+            required = self._string_list(runner_commands.get("test"))[:1]
+        if not required:
+            return
+        observed = {
+            str(item.get("command") or "")
+            for item in command_results
+        }
+        for command in required:
+            if any(self._workspace_commands_match(command, existing) for existing in observed):
+                continue
+            result = self._safe_run_workspace_command(root, command, policy=policy)
+            command_results.append(result)
+            observed.add(str(result.get("command") or command))
+
+    def _workspace_commands_match(self, expected: str, observed: str) -> bool:
+        normalized_expected = self._normalize_workspace_command(expected).strip()
+        normalized_observed = self._normalize_workspace_command(observed).strip()
+        if not normalized_expected or not normalized_observed:
+            return False
+        return (
+            normalized_expected == normalized_observed
+            or normalized_expected in normalized_observed
+            or normalized_observed in normalized_expected
+        )
 
     def _verify_diff_risk(
         self,

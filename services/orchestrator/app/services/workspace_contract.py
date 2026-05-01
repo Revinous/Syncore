@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +181,18 @@ def _coerce_scalar(value: str) -> Any:
         return lowered == "true"
     if lowered in {"null", "none"}:
         return None
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        row = next(csv.reader([inner], skipinitialspace=True))
+        return [_coerce_scalar(item.strip()) for item in row if item.strip()]
     if lowered.startswith('"') and lowered.endswith('"'):
         return value[1:-1]
     if lowered.startswith("'") and lowered.endswith("'"):
