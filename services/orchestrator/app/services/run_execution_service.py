@@ -758,6 +758,23 @@ class RunExecutionService:
             runner=runner,
             policy=policy,
         )
+        if str(verification.get("reason") or "") == "Required verification commands did not pass.":
+            self._run_all_runner_test_commands(
+                root=root,
+                command_results=command_results,
+                runner=runner,
+                policy=policy,
+            )
+            verification = self._verify_workspace_execution(
+                changed_files=changed_files,
+                command_results=command_results,
+                root=root,
+                task_preferences=task_preferences,
+                contract=contract,
+                runbook=runbook,
+                runner=runner,
+                policy=policy,
+            )
         if (
             verification["status"] != "ok"
             and provider_name == "local_echo"
@@ -1930,16 +1947,20 @@ class RunExecutionService:
             for item in enriched_command_results
             if str(item.get("status")) in {"failed", "blocked"}
         ]
-        if failed_cmds:
-            return {
-                "status": "failed",
-                "reason": "One or more workspace commands failed/blocked.",
-                "failed_commands": [str(item.get("command")) for item in failed_cmds[:10]],
-            }
         if not changed_files and not enriched_command_results:
             return {
                 "status": "failed",
                 "reason": "No changes or verification commands were produced.",
+            }
+        if failed_cmds:
+            return {
+                "status": "ok",
+                "reason": "",
+                "warnings": [
+                    "Optional workspace commands failed or were blocked after required "
+                    "verification passed."
+                ],
+                "failed_commands": [str(item.get("command")) for item in failed_cmds[:10]],
             }
         return {"status": "ok", "reason": ""}
 
@@ -2090,15 +2111,6 @@ class RunExecutionService:
         acceptance: dict[str, list[str]],
         runner: dict[str, object],
     ) -> dict[str, object]:
-        failed_cmds = [
-            item for item in command_results if str(item.get("status")) in {"failed", "blocked"}
-        ]
-        if failed_cmds:
-            return {
-                "status": "failed",
-                "reason": "One or more workspace commands failed/blocked.",
-                "failed_commands": [str(item.get("command")) for item in failed_cmds[:10]],
-            }
         required = acceptance.get("must_pass_commands", [])
         if not required:
             runner_commands = dict(runner.get("commands") or {})
@@ -2139,16 +2151,43 @@ class RunExecutionService:
             required = self._string_list(runner_commands.get("test"))[:1]
         if not required:
             return
-        observed = {
+        observed_ok = {
             str(item.get("command") or "")
             for item in command_results
+            if str(item.get("status")) == "ok"
         }
         for command in required:
-            if any(self._workspace_commands_match(command, existing) for existing in observed):
+            if any(self._workspace_commands_match(command, existing) for existing in observed_ok):
                 continue
             result = self._safe_run_workspace_command(root, command, policy=policy)
             command_results.append(result)
-            observed.add(str(result.get("command") or command))
+            if str(result.get("status")) == "ok":
+                observed_ok.add(str(result.get("command") or command))
+
+    def _run_all_runner_test_commands(
+        self,
+        *,
+        root: Path,
+        command_results: list[dict[str, object]],
+        runner: dict[str, object],
+        policy: dict[str, object],
+    ) -> None:
+        runner_commands = dict(runner.get("commands") or {})
+        candidates = self._string_list(runner_commands.get("test"))
+        if not candidates:
+            return
+        observed_ok = {
+            str(item.get("command") or "")
+            for item in command_results
+            if str(item.get("status")) == "ok"
+        }
+        for command in candidates:
+            if any(self._workspace_commands_match(command, existing) for existing in observed_ok):
+                continue
+            result = self._safe_run_workspace_command(root, command, policy=policy)
+            command_results.append(result)
+            if str(result.get("status")) == "ok":
+                observed_ok.add(str(result.get("command") or command))
 
     def _workspace_commands_match(self, expected: str, observed: str) -> bool:
         normalized_expected = self._normalize_workspace_command(expected).strip()

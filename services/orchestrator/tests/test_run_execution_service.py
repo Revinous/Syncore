@@ -776,3 +776,62 @@ def test_workspace_verifier_uses_runner_default_test_gate(tmp_path) -> None:
     )
     assert result["status"] == "failed"
     assert result["reason"] == "Required verification commands did not pass."
+
+
+def test_workspace_verifier_tolerates_optional_failed_commands_when_required_test_passes(
+    tmp_path,
+) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    result = service._verify_workspace_execution(  # type: ignore[attr-defined]
+        changed_files=["main.py"],
+        command_results=[
+            {"command": "uv run pytest -q", "status": "ok", "output": "297 passed"},
+            {"command": "python -m ruff check .", "status": "failed", "output": "ruff missing"},
+        ],
+        root=root,
+        task_preferences={},
+        contract={
+            "acceptance": {
+                "must_pass_commands": ["uv run pytest -q"],
+            }
+        },
+        runbook={},
+        runner={},
+    )
+
+    assert result["status"] == "ok"
+    assert "warnings" in result
+
+
+def test_workspace_runs_all_runner_test_commands_when_required_verification_fails(
+    monkeypatch, tmp_path
+) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    root = tmp_path / "ws"
+    root.mkdir()
+    results: list[str] = []
+
+    def fake_run(root_arg, command, *, policy):
+        del root_arg, policy
+        results.append(command)
+        if command == "pytest -q":
+            return {"command": command, "status": "failed", "output": "missing deps"}
+        return {"command": command, "status": "ok", "output": "297 passed"}
+
+    monkeypatch.setattr(service, "_safe_run_workspace_command", fake_run)
+    command_results = [{"command": "pytest -q", "status": "failed", "output": "missing deps"}]
+    service._run_all_runner_test_commands(  # type: ignore[attr-defined]
+        root=root,
+        command_results=command_results,
+        runner={"commands": {"test": ["pytest -q", "uv run pytest -q"]}},
+        policy={"allow_commands": ("pytest", "uv run pytest")},
+    )
+
+    assert "uv run pytest -q" in results
+    assert any(item["command"] == "uv run pytest -q" for item in command_results)
