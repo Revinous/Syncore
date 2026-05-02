@@ -17,6 +17,7 @@ from app.services.autonomy_service import (
     _extract_sdlc_checklist_status,
     _missing_sdlc_topics,
 )
+from app.services.run_execution_service import RunExecutionService
 
 
 def _init_sqlite(db_path: Path) -> None:
@@ -586,7 +587,13 @@ def test_autonomy_spawns_subtasks_when_enabled(monkeypatch, tmp_path) -> None:
             json={
                 "task_id": task_id,
                 "event_type": "task.preferences",
-                "event_data": {"auto_spawn": "true", "auto_spawn_count": "3"},
+                "event_data": {
+                    "auto_spawn": "true",
+                    "auto_spawn_count": "3",
+                    "autonomy_mode": "supervised",
+                    "workspace_execution_enabled": "true",
+                    "workspace_policy_profile": "full-dev",
+                },
             },
         )
         assert pref.status_code == 201
@@ -599,6 +606,25 @@ def test_autonomy_spawns_subtasks_when_enabled(monkeypatch, tmp_path) -> None:
         assert tasks.status_code == 200
         related = [t for t in tasks.json() if t["title"].startswith("Planner fanout task :: ")]
         assert len(related) >= 3
+
+        child_pref_map = {}
+        for task_row in related:
+            child_events = client.get(f"/tasks/{task_row['id']}/events")
+            assert child_events.status_code == 200
+            child_pref = next(
+                event for event in child_events.json() if event["event_type"] == "task.preferences"
+            )
+            child_pref_map[task_row["title"]] = child_pref["event_data"]
+
+        analysis_title = "Planner fanout task :: Requirements and design pass"
+        implementation_title = "Planner fanout task :: Implementation pass"
+        review_title = "Planner fanout task :: Verification and release pass"
+
+        assert child_pref_map[analysis_title]["autonomy_mode"] == "supervised"
+        assert child_pref_map[analysis_title]["workspace_execution_enabled"] == "false"
+        assert child_pref_map[implementation_title]["workspace_execution_enabled"] == "true"
+        assert child_pref_map[implementation_title]["workspace_policy_profile"] == "full-dev"
+        assert child_pref_map[review_title]["workspace_execution_enabled"] == "false"
 
 def test_autonomy_review_gate_completes_with_keyword_instruction(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"
@@ -745,6 +771,247 @@ def test_autonomy_persists_state_snapshots(monkeypatch, tmp_path) -> None:
         ).fetchone()
         assert row is not None
         assert int(row[0]) >= 1
+
+
+def test_autonomy_skips_when_stage_already_inflight(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task with inflight stage",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        for event_type in ["autonomy.started", "autonomy.cycle.started", "autonomy.stage.started"]:
+            event_data = {}
+            if event_type == "autonomy.started":
+                event_data = {"execute_role": "coder"}
+            elif event_type == "autonomy.cycle.started":
+                event_data = {"cycle": 1, "mode": "initial"}
+            else:
+                event_data = {"stage": "plan", "cycle": 1, "strategy": "default"}
+            response = client.post(
+                "/project-events",
+                json={
+                    "task_id": task_id,
+                    "event_type": event_type,
+                    "event_data": event_data,
+                },
+            )
+            assert response.status_code == 201
+
+        run = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert run.status_code == 200
+        assert run.json()["status"] == "in_progress"
+        assert "already running" in run.json()["note"]
+
+
+def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "openai")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "gpt-5.4")
+
+    captured_prompts: list[str] = []
+
+    class FakeRunExecutionService:
+        def execute(self, payload):
+            captured_prompts.append(payload.prompt)
+            if "Requirements and design pass" in payload.prompt:
+                    return SimpleNamespace(
+                        run_id=uuid4(),
+                        provider="openai",
+                        target_model=payload.target_model,
+                        output_text=(
+                            "Candidate improvement: Add a repo-specific syncore.yaml contract.\n"
+                            "Required implementation: "
+                            "Create syncore.yaml with uv-based test and lint commands.\n"
+                            "Target files: syncore.yaml\n"
+                            "Risks:\n- Keep the change additive.\n"
+                            "Verification command: uv run pytest -q\n"
+                            "$ uv run pytest -q\n"
+                        ),
+                )
+            return SimpleNamespace(
+                run_id=uuid4(),
+                provider="openai",
+                target_model=payload.target_model,
+                output_text=(
+                    "Implemented syncore.yaml contract.\n"
+                    "$ uv run pytest -q\n"
+                ),
+            )
+
+        def list_provider_capabilities(self):
+            return [
+                ProviderCapabilities(
+                    provider="openai",
+                    supports_streaming=True,
+                    supports_system_prompt=True,
+                    supports_temperature=True,
+                    supports_max_tokens=True,
+                    model_hint="gpt-5.4",
+                    max_context_tokens=128_000,
+                    quality_tier=5,
+                    speed_tier=4,
+                    cost_tier=4,
+                    strengths=("implementation", "analysis"),
+                )
+            ]
+
+    monkeypatch.setattr(
+        RunExecutionService,
+        "from_settings",
+        classmethod(lambda cls, settings: FakeRunExecutionService()),
+    )
+
+    with TestClient(create_app()) as client:
+        parent = client.post(
+            "/tasks",
+            json={
+                "title": "Parent repo improvement task",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert parent.status_code == 201
+        parent_id = parent.json()["id"]
+
+        analysis = client.post(
+            "/tasks",
+            json={
+                "title": "Parent repo improvement task :: Requirements and design pass",
+                "task_type": "analysis",
+                "complexity": "medium",
+            },
+        )
+        assert analysis.status_code == 201
+        analysis_id = analysis.json()["id"]
+
+        implementation = client.post(
+            "/tasks",
+            json={
+                "title": "Parent repo improvement task :: Implementation pass",
+                "task_type": "implementation",
+                "complexity": "medium",
+            },
+        )
+        assert implementation.status_code == 201
+        implementation_id = implementation.json()["id"]
+
+        spawned = client.post(
+            "/project-events",
+            json={
+                "task_id": parent_id,
+                "event_type": "autonomy.subtasks.spawned",
+                "event_data": {
+                    "count": 2,
+                    "child_task_ids": f"{analysis_id},{implementation_id}",
+                },
+            },
+        )
+        assert spawned.status_code == 201
+
+        for child_id, workspace_enabled in [
+            (analysis_id, "false"),
+            (implementation_id, "false"),
+        ]:
+            pref = client.post(
+                "/project-events",
+                json={
+                    "task_id": child_id,
+                    "event_type": "task.preferences",
+                    "event_data": {
+                        "parent_task_id": parent_id,
+                        "preferred_provider": "openai",
+                        "preferred_model": "gpt-5.4",
+                        "workspace_execution_enabled": workspace_enabled,
+                    },
+                },
+            )
+            assert pref.status_code == 201
+            for event_type, event_data in [
+                ("autonomy.started", {"execute_role": "coder"}),
+                ("autonomy.cycle.started", {"cycle": 1, "mode": "initial"}),
+                ("autonomy.stage.completed", {"stage": "plan", "cycle": 1}),
+            ]:
+                seeded = client.post(
+                    "/project-events",
+                    json={
+                        "task_id": child_id,
+                        "event_type": event_type,
+                        "event_data": event_data,
+                    },
+                )
+                assert seeded.status_code == 201
+
+        waiting = client.post(f"/autonomy/tasks/{implementation_id}/run")
+        assert waiting.status_code == 200
+        assert waiting.json()["status"] == "in_progress"
+        assert "Waiting for analysis child" in waiting.json()["note"]
+
+        analysis_run = client.post(f"/autonomy/tasks/{analysis_id}/run")
+        assert analysis_run.status_code == 200
+        assert analysis_run.json()["status"] == "in_progress"
+
+        analysis_events = client.get(f"/tasks/{analysis_id}/events")
+        assert analysis_events.status_code == 200
+        recommendation_events = [
+            event
+            for event in analysis_events.json()
+            if event["event_type"] == "autonomy.recommended_improvement"
+        ]
+        assert recommendation_events
+        assert (
+            recommendation_events[-1]["event_data"]["verification_command"]
+            == "uv run pytest -q"
+        )
+
+        service = AutonomyService.from_settings(get_settings())
+        implementation_task = service._store.get_task(UUID(implementation_id))
+        assert implementation_task is not None
+        prompt = service._prompt_for_stage(
+            stage="execute",
+            task=implementation_task,
+            prefs={
+                "parent_task_id": parent_id,
+                "preferred_provider": "openai",
+                "preferred_model": "gpt-5.4",
+            },
+            cycle=1,
+            strategy="default",
+            enforce_sdlc=False,
+        )
+        assert "Recommended improvement baton from analysis child" in prompt
+        assert "Create syncore.yaml with uv-based test and lint commands." in prompt
+        assert "uv run pytest -q" in prompt
+
+        impl_run = client.post(f"/autonomy/tasks/{implementation_id}/run")
+        assert impl_run.status_code == 200
+        assert impl_run.json()["status"] in {"in_progress", "replanning"}
+        assert any(
+            "Recommended improvement baton from analysis child" in item
+            for item in captured_prompts
+        )
 
 
 def test_autonomy_uses_feedback_for_replan_strategy(monkeypatch, tmp_path) -> None:

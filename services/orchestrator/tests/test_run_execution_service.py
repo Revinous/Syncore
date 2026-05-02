@@ -446,6 +446,31 @@ def test_workspace_effective_policy_allows_runbook_probe_commands() -> None:
     assert "python -c \"print('python-ready')\"" in policy["allow_commands"]
 
 
+def test_workspace_effective_policy_allows_runner_verification_commands() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+
+    policy = service._effective_workspace_policy(  # type: ignore[attr-defined]
+        requested_profile="full-dev",
+        workspace_metadata={
+            "workspace_runbook": {
+                "runner": {
+                    "commands": {
+                        "lint": ["python -m ruff check ."],
+                        "format": ["python -m ruff format ."],
+                        "test": ["uv run pytest -q"],
+                    }
+                }
+            }
+        },
+        task_preferences={},
+    )
+
+    assert "python -m ruff check ." in policy["allow_commands"]
+    assert "python -m ruff format ." in policy["allow_commands"]
+    assert "uv run pytest -q" in policy["allow_commands"]
+
+
 def test_workspace_path_traversal_is_blocked(tmp_path) -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)

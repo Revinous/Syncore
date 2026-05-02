@@ -1982,13 +1982,33 @@ class RunExecutionService:
             )
             base["network_policy"] = str(pack.get("network_policy") or "offline")
         runbook = dict(workspace_metadata.get("workspace_runbook") or {})
-        runbook_allowed = tuple(self._string_list(runbook.get("allowed_commands")))
+        runner_commands = dict(runbook.get("runner", {}).get("commands") or {})
+        runbook_allowed = tuple(
+            self._string_list(runbook.get("allowed_commands"))
+            + self._string_list(runbook.get("runbook_commands"))
+            + self._string_list(runbook.get("setup_commands"))
+            + self._string_list(runbook.get("build_commands"))
+            + self._string_list(runbook.get("test_commands"))
+            + self._string_list(runbook.get("lint_commands"))
+            + self._string_list(runbook.get("format_commands"))
+            + self._string_list(runner_commands.get("setup"))
+            + self._string_list(runner_commands.get("build"))
+            + self._string_list(runner_commands.get("test"))
+            + self._string_list(runner_commands.get("lint"))
+            + self._string_list(runner_commands.get("format"))
+        )
         if runbook_allowed:
-            base["allow_commands"] = runbook_allowed
+            base["allow_commands"] = tuple(
+                dict.fromkeys(tuple(base.get("allow_commands") or ()) + runbook_allowed)
+            )
         runbook_probe_commands = tuple(self._string_list(runbook.get("probe_commands")))
         if runbook_probe_commands:
             base["allow_commands"] = (
-                tuple(base.get("allow_commands") or ()) + runbook_probe_commands
+                tuple(
+                    dict.fromkeys(
+                        tuple(base.get("allow_commands") or ()) + runbook_probe_commands
+                    )
+                )
             )
         runbook_patterns = tuple(self._string_list(runbook.get("allowed_command_patterns")))
         if runbook_patterns:

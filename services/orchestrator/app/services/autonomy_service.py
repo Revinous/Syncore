@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from textwrap import shorten
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -257,6 +259,21 @@ class AutonomyService:
                 note=f"Waiting {seconds_left}s before retrying stage '{next_stage}'.",
             )
 
+        sibling_recommendation_gate = self._implementation_recommendation_gate(
+            task=task,
+            prefs=prefs,
+            stage=next_stage,
+        )
+        if sibling_recommendation_gate is not None:
+            return sibling_recommendation_gate
+
+        if self._stage_inflight(events=events, stage=next_stage, cycle=cycle):
+            return AutonomyResult(
+                task_id=task_id,
+                status="in_progress",
+                note=f"Stage '{next_stage}' is already running.",
+            )
+
         strategy = self._select_replan_strategy(
             events=events,
             stage=next_stage,
@@ -284,6 +301,17 @@ class AutonomyService:
             stage=next_stage,
             execute_role=execute_role,
             strategy=strategy,
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task_id,
+                event_type="autonomy.stage.started",
+                event_data={
+                    "stage": next_stage,
+                    "cycle": cycle,
+                    "strategy": strategy,
+                },
+            )
         )
         self._store.save_project_event(
             ProjectEventCreate(
@@ -576,6 +604,12 @@ class AutonomyService:
                 strategy=strategy,
                 outcome="success",
             )
+            self._persist_stage_handoff_artifacts(
+                task=task,
+                prefs=prefs,
+                stage=next_stage,
+                output_text=run.output_text,
+            )
             if next_stage == "plan":
                 self._spawn_subtasks_once(task=task, prefs=prefs)
                 post_spawn_events = self._store.list_project_events(task_id=task.id, limit=500)
@@ -810,6 +844,22 @@ class AutonomyService:
                 except ValueError:
                     return None
         return None
+
+    def _stage_inflight(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> bool:
+        started_at: datetime | None = None
+        terminal_at: datetime | None = None
+        for event in events:
+            event_cycle = _event_int(event.event_data.get("cycle")) or 1
+            if event_cycle != cycle:
+                continue
+            event_stage = str(event.event_data.get("stage") or "").strip().lower()
+            if event_stage != stage:
+                continue
+            if event.event_type == "autonomy.stage.started":
+                started_at = event.created_at
+            elif event.event_type in {"autonomy.stage.completed", "autonomy.stage.failed"}:
+                terminal_at = event.created_at
+        return started_at is not None and (terminal_at is None or terminal_at < started_at)
 
     def _failed_attempts(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> int:
         count = 0
@@ -1281,8 +1331,42 @@ class AutonomyService:
             )
         if stage == "execute":
             preferred = prefs.get("execution_prompt", "").strip()
+            recommendation_context = self._recommended_improvement_prompt_context(
+                task=task,
+                prefs=prefs,
+            )
+            analysis_context = self._workspace_analysis_prompt_context(task)
             if preferred:
-                return f"{preferred}\n\nStrategy: {strategy}. Guidance: {guidance}"
+                suffix_parts = []
+                if analysis_context:
+                    suffix_parts.append(analysis_context)
+                if recommendation_context:
+                    suffix_parts.append(recommendation_context)
+                suffix_parts.append(f"Strategy: {strategy}. Guidance: {guidance}")
+                return f"{preferred}\n\n" + "\n\n".join(suffix_parts)
+            if recommendation_context:
+                return (
+                    "You are the Syncore implementation worker.\n"
+                    f"Task title: {task.title}\n"
+                    f"Task type: {task.task_type}\n"
+                    f"Complexity: {task.complexity}\n"
+                    f"{recommendation_context}\n\n"
+                    f"Strategy: {strategy}. Guidance: {guidance}\n"
+                    "Apply the recommended improvement directly. Make the smallest safe change, "
+                    "then verify it with the recommended command or the repo runbook."
+                )
+            if analysis_context:
+                return (
+                    "You are the Syncore repository analyst.\n"
+                    f"Task title: {task.title}\n"
+                    f"Task type: {task.task_type}\n"
+                    f"Complexity: {task.complexity}\n"
+                    f"{analysis_context}\n\n"
+                    f"Strategy: {strategy}. Guidance: {guidance}\n"
+                    "Choose exactly one safe, high-confidence improvement. "
+                    "Return: candidate improvement, required implementation, target files, "
+                    "risks, and verification command."
+                )
             return _default_prompt(task, strategy=strategy, guidance=guidance)
         return (
             "You are Syncore reviewer.\n"
@@ -1402,14 +1486,46 @@ class AutonomyService:
 
         count = _parse_positive_int(prefs.get("auto_spawn_count"), default=3, maximum=8)
         templates = [
-            ("Requirements and design pass", "analysis"),
-            ("Implementation pass", "implementation"),
-            ("Verification and release pass", "review"),
-            ("Documentation and polish pass", "integration"),
+            (
+                "Requirements and design pass",
+                "analysis",
+                "false",
+                (
+                    "Inspect the repository and identify one safe, high-confidence improvement. "
+                    "Do not modify files. Summarize the candidate change, target files, risks, and "
+                    "the verification command the implementation pass should run."
+                ),
+            ),
+            (
+                "Implementation pass",
+                "implementation",
+                prefs.get("workspace_execution_enabled", "true"),
+                prefs.get("execution_prompt", ""),
+            ),
+            (
+                "Verification and release pass",
+                "review",
+                "false",
+                (
+                    "Review the selected improvement and its verification evidence. "
+                    "Do not modify files. State whether the change is safe to ship, "
+                    "what risks remain, and what final check "
+                    "or note should be recorded."
+                ),
+            ),
+            (
+                "Documentation and polish pass",
+                "integration",
+                "false",
+                (
+                    "Review whether any docs or operator notes should be updated for the chosen "
+                    "improvement. Do not modify files unless explicitly required by the task."
+                ),
+            ),
         ]
         selected = templates[:count]
         spawned_ids: list[str] = []
-        for title_suffix, task_type in selected:
+        for title_suffix, task_type, workspace_enabled, child_execution_prompt in selected:
             child = self._store.create_task(
                 TaskCreate(
                     title=f"{task.title} :: {title_suffix}",
@@ -1418,16 +1534,20 @@ class AutonomyService:
                     workspace_id=task.workspace_id,
                 )
             )
-            child_event_data: dict[str, str] = {
-                "parent_task_id": str(task.id),
-                "preferred_agent_role": prefs.get("preferred_agent_role", "coder"),
-                "preferred_provider": prefs.get("preferred_provider", self._default_provider),
-                "preferred_model": prefs.get("preferred_model", self._default_model),
-                "execution_prompt": prefs.get("execution_prompt", ""),
-                "requires_approval": prefs.get("requires_approval", "false"),
-                "sdlc_enforce": prefs.get("sdlc_enforce", "false"),
-                "auto_spawn": "false",
-            }
+            child_event_data: dict[str, str] = dict(prefs)
+            child_event_data.update(
+                {
+                    "parent_task_id": str(task.id),
+                    "preferred_agent_role": prefs.get("preferred_agent_role", "coder"),
+                    "preferred_provider": prefs.get("preferred_provider", self._default_provider),
+                    "preferred_model": prefs.get("preferred_model", self._default_model),
+                    "execution_prompt": child_execution_prompt,
+                    "requires_approval": prefs.get("requires_approval", "false"),
+                    "sdlc_enforce": prefs.get("sdlc_enforce", "false"),
+                    "workspace_execution_enabled": workspace_enabled,
+                    "auto_spawn": "false",
+                }
+            )
             self._store.save_project_event(
                 ProjectEventCreate(
                     task_id=child.id,
@@ -1570,6 +1690,427 @@ class AutonomyService:
                 ),
             )
         )
+
+    def _persist_stage_handoff_artifacts(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        stage: str,
+        output_text: str,
+    ) -> None:
+        if stage != "execute":
+            return
+        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+        if parent_id is None:
+            return
+        if task.task_type != "analysis":
+            return
+        recommendation = self._extract_recommended_improvement(output_text)
+        if self._recommendation_needs_workspace_fallback(recommendation):
+            recommendation = self._fallback_recommended_improvement(task, recommendation)
+        if not recommendation["summary"] and not recommendation["action"]:
+            return
+        existing = self._latest_event(
+            self._store.list_project_events(task_id=task.id, limit=200),
+            "autonomy.recommended_improvement",
+        )
+        if existing is not None:
+            return
+        summary = recommendation["summary"] or f"Recommended improvement for {task.title}"
+        action = recommendation["action"] or "Implement the recommended improvement."
+        target_files = recommendation["target_files"]
+        risks = recommendation["risks"]
+        verification = recommendation["verification"]
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.recommended_improvement",
+                event_data={
+                    "parent_task_id": str(parent_id),
+                    "summary": summary[:250],
+                    "action": action[:250],
+                    "target_files": ", ".join(target_files[:10])[:250],
+                    "verification_command": verification[:250],
+                    "risks": "; ".join(risks[:6])[:250],
+                },
+            )
+        )
+        self._store.save_baton_packet(
+            BatonPacketCreate(
+                task_id=task.id,
+                from_agent="analyst",
+                to_agent="coder",
+                summary=summary[:250],
+                payload=BatonPayload(
+                    objective=f"Implement recommended improvement for parent task {parent_id}",
+                    completed_work=[summary[:250], *(f"Touch {path}" for path in target_files[:8])],
+                    constraints=risks[:8],
+                    open_questions=[],
+                    next_best_action=action[:250],
+                    relevant_artifacts=target_files[:12],
+                ),
+            )
+        )
+
+    def _implementation_recommendation_gate(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        stage: str,
+    ) -> AutonomyResult | None:
+        if stage != "execute" or task.task_type != "implementation":
+            return None
+        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+        if parent_id is None:
+            return None
+        sibling_state = self._recommended_improvement_state(parent_id)
+        if sibling_state["status"] == "blocked":
+            self._store.update_task(task.id, TaskUpdate(status="blocked"))
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task.id,
+                    event_type="autonomy.failed",
+                    event_data={"error": str(sibling_state["note"])[:250]},
+                )
+            )
+            return AutonomyResult(
+                task_id=task.id,
+                status="failed",
+                note=str(sibling_state["note"]),
+            )
+        if sibling_state["status"] == "waiting":
+            return AutonomyResult(
+                task_id=task.id,
+                status="in_progress",
+                note=str(sibling_state["note"]),
+            )
+        return None
+
+    def _recommended_improvement_prompt_context(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+    ) -> str:
+        if task.task_type != "implementation":
+            return ""
+        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+        if parent_id is None:
+            return ""
+        sibling_state = self._recommended_improvement_state(parent_id)
+        if sibling_state["status"] != "ready":
+            return ""
+        event = sibling_state["event"]
+        summary = str(event.event_data.get("summary") or "").strip()
+        action = str(event.event_data.get("action") or "").strip()
+        target_files = str(event.event_data.get("target_files") or "").strip()
+        verification = str(event.event_data.get("verification_command") or "").strip()
+        risks = str(event.event_data.get("risks") or "").strip()
+        context_lines = ["Recommended improvement baton from analysis child:"]
+        if summary:
+            context_lines.append(f"- Candidate improvement: {summary}")
+        if action:
+            context_lines.append(f"- Required implementation: {action}")
+        if target_files:
+            context_lines.append(f"- Suggested files: {target_files}")
+        if verification:
+            context_lines.append(f"- Verification command: {verification}")
+        if risks:
+            context_lines.append(f"- Risks/constraints: {risks}")
+        context_lines.append(
+            "- Do not re-scope the task. "
+            "Act on this recommendation unless the repo state proves it invalid."
+        )
+        return "\n".join(context_lines)
+
+    def _recommended_improvement_state(self, parent_id: UUID) -> dict[str, object]:
+        child_ids = self._spawned_child_ids(parent_id)
+        analysis_children: list[Task] = []
+        for child_id in child_ids:
+            child = self._store.get_task(child_id)
+            if child is None or child.task_type != "analysis":
+                continue
+            analysis_children.append(child)
+            child_events = self._store.list_project_events(task_id=child.id, limit=200)
+            recommendation = self._latest_event(child_events, "autonomy.recommended_improvement")
+            if recommendation is not None:
+                return {"status": "ready", "event": recommendation, "task": child}
+        if not analysis_children:
+            return {"status": "ready", "note": "No analysis sibling present."}
+        blocked = [child for child in analysis_children if child.status == "blocked"]
+        if blocked:
+            return {
+                "status": "blocked",
+                "note": "Analysis child blocked before producing a recommended improvement baton.",
+            }
+        pending = [child for child in analysis_children if child.status != "completed"]
+        if pending:
+            return {
+                "status": "waiting",
+                "note": "Waiting for analysis child to produce a recommended improvement baton.",
+            }
+        for child in analysis_children:
+            baton = self._store.get_latest_baton_packet(child.id)
+            if baton is not None:
+                summary = baton.summary.strip()
+                action = baton.payload.next_best_action.strip()
+                target_files = ", ".join(baton.payload.relevant_artifacts[:10])
+                event = ProjectEvent(
+                    id=UUID(int=0),
+                    task_id=child.id,
+                    event_type="autonomy.recommended_improvement",
+                    event_data={
+                        "summary": summary[:250],
+                        "action": action[:250],
+                        "target_files": target_files[:250],
+                        "verification_command": "",
+                        "risks": "; ".join(baton.payload.constraints[:6])[:250],
+                    },
+                    created_at=datetime.now(timezone.utc),
+                )
+                return {"status": "ready", "event": event, "task": child}
+        return {
+            "status": "blocked",
+            "note": "Analysis child completed without a concrete recommended improvement baton.",
+        }
+
+    def _spawned_child_ids(self, parent_id: UUID) -> list[UUID]:
+        events = self._store.list_project_events(task_id=parent_id, limit=500)
+        spawned = self._latest_event(events, "autonomy.subtasks.spawned")
+        if spawned is None:
+            return []
+        raw_ids = str(spawned.event_data.get("child_task_ids") or "").strip()
+        ids: list[UUID] = []
+        for raw in (item.strip() for item in raw_ids.split(",") if item.strip()):
+            parsed = self._parse_uuid(raw)
+            if parsed is not None:
+                ids.append(parsed)
+        return ids
+
+    def _extract_recommended_improvement(self, output_text: str) -> dict[str, object]:
+        text = (output_text or "").strip()
+        summary = self._extract_first_match(
+            text,
+            [
+                r"(?im)^(?:candidate improvement|recommended improvement|improvement)\s*:\s*(.+)$",
+                r"(?im)^(?:summary|change summary)\s*:\s*(.+)$",
+            ],
+        )
+        action = self._extract_first_match(
+            text,
+            [
+                r"(?im)^(?:next best action|required implementation|implementation)\s*:\s*(.+)$",
+                r"(?im)^(?:action|do this)\s*:\s*(.+)$",
+            ],
+        )
+        verification = self._extract_first_match(
+            text,
+            [
+                r"(?im)^(?:verification command|verify(?: with)?|test command)\s*:\s*(.+)$",
+            ],
+        )
+        target_files = self._extract_paths(text)
+        risks = self._extract_list_items(
+            text,
+            headers=("risk", "risks", "constraints"),
+        )
+        if not summary:
+            summary = shorten(" ".join(text.split()), width=220, placeholder=" ...")
+        if not action:
+            action = summary
+        return {
+            "summary": summary.strip(),
+            "action": action.strip(),
+            "verification": verification.strip(),
+            "target_files": target_files,
+            "risks": risks,
+        }
+
+    def _recommendation_needs_workspace_fallback(
+        self, recommendation: dict[str, object]
+    ) -> bool:
+        text = " ".join(
+            [
+                str(recommendation.get("summary") or ""),
+                str(recommendation.get("action") or ""),
+            ]
+        ).lower()
+        generic_markers = (
+            "don't yet have repository contents",
+            "do not have repository contents",
+            "please provide",
+            "need more context",
+            "artifact/context reference",
+        )
+        return any(marker in text for marker in generic_markers)
+
+    def _fallback_recommended_improvement(
+        self,
+        task: Task,
+        recommendation: dict[str, object],
+    ) -> dict[str, object]:
+        if task.workspace_id is None:
+            return recommendation
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            return recommendation
+        metadata = dict(workspace.metadata or {})
+        runbook = dict(metadata.get("workspace_runbook") or {})
+        root = Path(workspace.root_path).resolve()
+        verification = (
+            self._string_list(runbook.get("test_commands"))[:1]
+            or self._string_list(runbook.get("runbook_commands"))[:1]
+        )
+        verify_cmd = verification[0] if verification else ""
+        syncore_contract = root / "syncore.yaml"
+        if not syncore_contract.exists():
+            return {
+                "summary": "Add a repo-specific syncore.yaml contract for this repository.",
+                "action": (
+                    "Create syncore.yaml with the detected test, build, and lint commands so "
+                    "future Syncore runs can inspect and verify this repo deterministically."
+                ),
+                "verification": verify_cmd,
+                "target_files": ["syncore.yaml"],
+                "risks": ["Keep the contract additive and match real repo commands exactly."],
+            }
+        return {
+            "summary": (
+                "Tighten the existing syncore.yaml contract using the current workspace scan."
+            ),
+            "action": (
+                "Update syncore.yaml so the recorded commands and important files match the repo's "
+                "actual test and verification flow."
+            ),
+            "verification": verify_cmd,
+            "target_files": ["syncore.yaml"],
+            "risks": ["Keep edits limited to syncore.yaml and preserve working repo commands."],
+        }
+
+    def _workspace_analysis_prompt_context(self, task: Task) -> str:
+        if task.task_type != "analysis" or task.workspace_id is None:
+            return ""
+        workspace = self._store.get_workspace(task.workspace_id)
+        if workspace is None:
+            return ""
+        metadata = dict(workspace.metadata or {})
+        runbook = dict(metadata.get("workspace_runbook") or {})
+        root = Path(workspace.root_path).resolve()
+        summary_lines = ["Workspace scan summary:"]
+        for label, key in [
+            ("Languages", "languages"),
+            ("Frameworks", "frameworks"),
+            ("Package managers", "package_managers"),
+            ("Important files", "important_files"),
+            ("Docs", "docs"),
+        ]:
+            values = self._string_list(metadata.get(key))
+            if values:
+                summary_lines.append(f"- {label}: {', '.join(values[:8])}")
+        test_commands = self._string_list(runbook.get("test_commands"))
+        if test_commands:
+            summary_lines.append(f"- Test commands: {', '.join(test_commands[:4])}")
+        root_files = self._workspace_root_files(root)
+        if root_files:
+            summary_lines.append(f"- Root files: {', '.join(root_files[:12])}")
+        previews = self._workspace_file_previews(root, root_files)
+        if previews:
+            summary_lines.append("Key file previews:")
+            summary_lines.extend(previews)
+        if not (root / "syncore.yaml").exists():
+            summary_lines.append("- syncore.yaml is currently missing from the repo root.")
+        return "\n".join(summary_lines)
+
+    def _workspace_root_files(self, root: Path) -> list[str]:
+        try:
+            items = sorted(path.name for path in root.iterdir() if path.is_file())
+        except OSError:
+            return []
+        return items[:20]
+
+    def _workspace_file_previews(self, root: Path, root_files: list[str]) -> list[str]:
+        preview_targets = [
+            "README.md",
+            "pyproject.toml",
+            "package.json",
+            "requirements.txt",
+            "setup.cfg",
+            "Cargo.toml",
+            "go.mod",
+        ]
+        previews: list[str] = []
+        for name in preview_targets:
+            if name not in root_files:
+                continue
+            path = root / name
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            compact = shorten(" ".join(text.split()), width=220, placeholder=" ...")
+            previews.append(f"- {name}: {compact}")
+        return previews[:6]
+
+    def _string_list(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, tuple):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return []
+
+    def _extract_first_match(self, text: str, patterns: list[str]) -> str:
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return str(match.group(1)).strip()
+        return ""
+
+    def _extract_paths(self, text: str) -> list[str]:
+        candidates = re.findall(
+            r"\b(?:[\w.-]+/)*[\w.-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|yaml|yml|ini|cfg|txt|rs|go|java|kt|sh)\b",
+            text,
+        )
+        seen: set[str] = set()
+        paths: list[str] = []
+        for item in candidates:
+            if item not in seen:
+                seen.add(item)
+                paths.append(item)
+        return paths[:12]
+
+    def _extract_list_items(self, text: str, *, headers: tuple[str, ...]) -> list[str]:
+        lines = [line.strip() for line in text.splitlines()]
+        items: list[str] = []
+        capture = False
+        for line in lines:
+            normalized = line.lower().rstrip(":")
+            if normalized in headers:
+                capture = True
+                continue
+            if capture:
+                if not line:
+                    break
+                if line.startswith(("-", "*")):
+                    items.append(line.lstrip("-* ").strip())
+                    continue
+                if re.match(r"^\d+\.\s+", line):
+                    items.append(re.sub(r"^\d+\.\s+", "", line).strip())
+                    continue
+                break
+        return [item for item in items if item][:8]
+
+    def _parse_uuid(self, raw: str | None) -> UUID | None:
+        value = (raw or "").strip()
+        if not value:
+            return None
+        try:
+            return UUID(value)
+        except ValueError:
+            return None
 
     def _finalize_task(self, task_id: UUID) -> None:
         task = self._store.get_task(task_id)
