@@ -811,6 +811,30 @@ class RunExecutionService:
             )
             raise RuntimeError(str(verification.get("reason") or "Workspace verification failed"))
 
+        candidate_validation = self._validate_meaningful_candidate_change(
+            task_id=payload.task_id,
+            task_preferences=task_preferences,
+            changed_files=changed_files,
+        )
+        if candidate_validation["status"] != "ok":
+            classification = self._classify_workspace_issue(
+                stage="verification",
+                reason=str(candidate_validation.get("reason") or "candidate validation failed"),
+            )
+            self._record_event(
+                task_id=payload.task_id,
+                event_type="workspace.execution.meaningful_change.failed",
+                event_data={
+                    "reason": str(candidate_validation.get("reason") or ""),
+                    "failure_category": classification["category"],
+                    "recommended_strategy": classification["strategy"],
+                    "candidate_id": str(candidate_validation.get("candidate_id") or ""),
+                },
+            )
+            raise RuntimeError(
+                str(candidate_validation.get("reason") or "Meaningful change gate failed")
+            )
+
         self._record_event(
             task_id=payload.task_id,
             event_type="workspace.execution.completed",
@@ -821,6 +845,7 @@ class RunExecutionService:
                 "diff_refs": len(diff_refs),
                 "read_refs": len([item for item in read_refs if item]),
                 "profile": profile,
+                "meaningful_change": "true",
             },
         )
 
@@ -1675,11 +1700,83 @@ class RunExecutionService:
             return {"category": "policy_block", "strategy": "relax_policy_or_request_approval"}
         if "forbidden" in lowered or "approval" in lowered:
             return {"category": "risk_guardrail", "strategy": "reduce_scope_or_request_approval"}
+        if "candidate" in lowered or "meaningful" in lowered:
+            return {"category": "candidate_mismatch", "strategy": "tighten_implementation_scope"}
         if "artifact" in lowered or "behavior" in lowered:
             return {"category": "acceptance_failure", "strategy": "tighten_implementation_scope"}
         if "verification" in lowered or "required" in lowered:
             return {"category": "verification_failure", "strategy": "raise_verification"}
         return {"category": f"{stage}_failure", "strategy": "replan"}
+
+    def _validate_meaningful_candidate_change(
+        self,
+        *,
+        task_id: UUID,
+        task_preferences: dict[str, str],
+        changed_files: list[str],
+    ) -> dict[str, object]:
+        parent_id = _parse_uuid(task_preferences.get("parent_task_id"))
+        if parent_id is None:
+            if changed_files:
+                return {"status": "ok", "reason": ""}
+            return {
+                "status": "failed",
+                "reason": "Meaningful change gate requires a concrete repo artifact.",
+            }
+        candidate = self._selected_candidate_for_parent(parent_id)
+        if candidate is None:
+            return {"status": "ok", "reason": ""}
+        raw_targets = candidate.get("target_files")
+        target_files = self._candidate_target_files(raw_targets)
+        candidate_id = str(candidate.get("candidate_id") or "")
+        if not changed_files:
+            return {
+                "status": "failed",
+                "reason": "Selected candidate completed without a persisted repo diff.",
+                "candidate_id": candidate_id,
+            }
+        if target_files and not any(
+            changed == target or changed.endswith(target) or target.endswith(changed)
+            for changed in changed_files
+            for target in target_files
+        ):
+            return {
+                "status": "failed",
+                "reason": "Changed files do not match the selected candidate target files.",
+                "candidate_id": candidate_id,
+            }
+        return {"status": "ok", "reason": "", "candidate_id": candidate_id}
+
+    def _candidate_target_files(self, value: object) -> list[str]:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return self._string_list(value)
+
+    def _selected_candidate_for_parent(self, parent_id: UUID) -> dict[str, object] | None:
+        parent_events = self._store.list_project_events(task_id=parent_id, limit=500)
+        child_ids: list[UUID] = []
+        for event in reversed(parent_events):
+            if event.event_type != "autonomy.subtasks.spawned":
+                continue
+            raw_ids = str(event.event_data.get("child_task_ids") or "").strip()
+            for raw in (item.strip() for item in raw_ids.split(",") if item.strip()):
+                parsed = _parse_uuid(raw)
+                if parsed is not None:
+                    child_ids.append(parsed)
+            break
+        for child_id in child_ids:
+            child = self._store.get_task(child_id)
+            if child is None or child.task_type != "analysis":
+                continue
+            child_events = self._store.list_project_events(task_id=child_id, limit=250)
+            for event in reversed(child_events):
+                if event.event_type == "autonomy.candidate.selected":
+                    return {
+                        "candidate_id": event.event_data.get("candidate_id"),
+                        "target_files": event.event_data.get("target_files"),
+                        "verification_command": event.event_data.get("verification_command"),
+                    }
+        return None
 
     def _update_workspace_learning(
         self,
@@ -2470,3 +2567,13 @@ def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:
     if not file_key:
         return None
     return file_key
+
+
+def _parse_uuid(raw: str | None) -> UUID | None:
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None

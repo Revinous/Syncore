@@ -24,6 +24,7 @@ def get_metrics_slo(settings: Settings = Depends(get_settings)) -> dict[str, obj
         min_run_success_rate=settings.slo_min_run_success_rate,
     )
     context = _context_efficiency_payload(settings=settings, limit=200)
+    autonomy = _autonomy_efficiency_payload(settings=settings, limit=1000)
     totals = context.get("totals", {})
     savings_pct = float(totals.get("savings_pct") or 0.0)
     layering = context.get("layering_modes", {})
@@ -66,6 +67,7 @@ def get_metrics_slo(settings: Settings = Depends(get_settings)) -> dict[str, obj
                 "bundle_count": context.get("bundle_count", 0),
             },
         },
+        "autonomy_efficiency": autonomy,
     }
 
 
@@ -75,6 +77,14 @@ def get_context_efficiency_metrics(
     settings: Settings = Depends(get_settings),
 ) -> dict[str, object]:
     return _context_efficiency_payload(settings=settings, limit=limit)
+
+
+@router.get("/metrics/autonomy-efficiency")
+def get_autonomy_efficiency_metrics(
+    limit: int = 1000,
+    settings: Settings = Depends(get_settings),
+) -> dict[str, object]:
+    return _autonomy_efficiency_payload(settings=settings, limit=limit)
 
 
 def _context_efficiency_payload(*, settings: Settings, limit: int) -> dict[str, object]:
@@ -221,3 +231,69 @@ def _context_efficiency_payload(*, settings: Settings, limit: int) -> dict[str, 
             "savings_pct": dual_pct,
         }
     return payload
+
+
+def _autonomy_efficiency_payload(*, settings: Settings, limit: int) -> dict[str, object]:
+    store = build_memory_store(settings)
+    try:
+        events = store.list_project_events(task_id=None, limit=limit)
+        tasks = store.list_tasks(limit=limit)
+    except Exception:
+        events = []
+        tasks = []
+
+    counts = {
+        "retry_scheduled": 0,
+        "replan_started": 0,
+        "provider_switches": 0,
+        "low_information_stops": 0,
+        "execute_plans_created": 0,
+        "execute_plans_reused": 0,
+    }
+    completed_tasks = 0
+    tasks_with_execute_success: set[str] = set()
+    first_pass_tasks: set[str] = set()
+    retry_tasks: set[str] = set()
+    for task in tasks:
+        if task.status == "completed":
+            completed_tasks += 1
+    for event in events:
+        if event.event_type == "autonomy.retry.scheduled":
+            counts["retry_scheduled"] += 1
+            retry_tasks.add(str(event.task_id))
+        elif event.event_type == "autonomy.cycle.started" and str(
+            event.event_data.get("mode") or ""
+        ) == "replan":
+            counts["replan_started"] += 1
+        elif event.event_type == "model.switch.completed":
+            from_provider = str(event.event_data.get("from_provider") or "").strip().lower()
+            to_provider = str(event.event_data.get("to_provider") or "").strip().lower()
+            if from_provider and to_provider and from_provider != to_provider:
+                counts["provider_switches"] += 1
+        elif event.event_type == "autonomy.stopped.low_information_gain":
+            counts["low_information_stops"] += 1
+        elif event.event_type == "autonomy.execute_plan.created":
+            counts["execute_plans_created"] += 1
+        elif event.event_type == "autonomy.execute_plan.reused":
+            counts["execute_plans_reused"] += 1
+        elif event.event_type == "workspace.execution.completed":
+            tasks_with_execute_success.add(str(event.task_id))
+    for task_id in tasks_with_execute_success:
+        if task_id not in retry_tasks:
+            first_pass_tasks.add(task_id)
+
+    completed_with_execute = len(tasks_with_execute_success)
+    return {
+        "status": "ok",
+        "counts": counts,
+        "completed_tasks": completed_tasks,
+        "completed_with_execute": completed_with_execute,
+        "first_pass_execute_rate": round(
+            (len(first_pass_tasks) / completed_with_execute), 4
+        )
+        if completed_with_execute
+        else 0.0,
+        "retry_per_completed_task": round((counts["retry_scheduled"] / completed_tasks), 4)
+        if completed_tasks
+        else 0.0,
+    }

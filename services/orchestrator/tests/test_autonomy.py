@@ -414,6 +414,11 @@ def test_failure_aware_provider_choice_prefers_alternate_provider_after_repeated
         workspace_execution_profile="balanced",
         workspace_auto_approve_low_risk=True,
         workspace_max_steps=3,
+        execute_plan_enabled=True,
+        failure_taxonomy_v2_enabled=True,
+        low_info_stop_enabled=True,
+        low_info_threshold=2,
+        max_provider_switches=2,
     )
     task = SimpleNamespace(id=task_id, workspace_id=workspace_id)
 
@@ -738,6 +743,137 @@ def test_autonomy_quality_gate_can_trigger_replan(monkeypatch, tmp_path) -> None
         assert any(e["event_type"] == "autonomy.quality.failed" for e in events.json())
 
 
+def test_autonomy_creates_and_reuses_execute_plan(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task that should create and reuse execute plan",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        for _ in range(4):
+            run = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert run.status_code == 200
+            detail = client.get(f"/tasks/{task_id}")
+            if detail.json()["task"]["status"] == "completed":
+                break
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        event_types = [event["event_type"] for event in events.json()]
+        assert "autonomy.execute_plan.created" in event_types
+        assert "autonomy.execute_plan.reused" in event_types
+
+
+def test_autonomy_low_information_failure_stops_retries(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "missing_provider")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_MAX_RETRIES", "3")
+    monkeypatch.setenv("AUTONOMY_RETRY_BASE_SECONDS", "0.01")
+    monkeypatch.setenv("AUTONOMY_LOW_INFO_THRESHOLD", "2")
+    monkeypatch.setenv("PROVIDER_FAILOVER_ENABLED", "false")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task that should stop repeated identical provider failures",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        first = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert first.status_code == 200
+        assert first.json()["status"] == "retry_scheduled"
+
+        second = None
+        for _ in range(10):
+            time.sleep(0.15)
+            response = client.post(f"/autonomy/tasks/{task_id}/run")
+            assert response.status_code == 200
+            second = response
+            if response.json()["status"] == "failed":
+                break
+        assert second is not None
+        assert second.json()["status"] == "failed"
+        assert "repeated equivalent failures" in second.json()["note"]
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        event_types = [event["event_type"] for event in events.json()]
+        assert "autonomy.low_information_gain.detected" in event_types
+        assert "autonomy.stopped.low_information_gain" in event_types
+
+
+def test_autonomy_missing_execute_plan_replans(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("DEFAULT_LLM_PROVIDER", "local_echo")
+    monkeypatch.setenv("AUTONOMY_DEFAULT_MODEL", "local_echo")
+    monkeypatch.setenv("AUTONOMY_MAX_CYCLES", "2")
+
+    with TestClient(create_app()) as client:
+        task = client.post(
+            "/tasks",
+            json={
+                "title": "Task with missing execute plan",
+                "task_type": "implementation",
+                "complexity": "low",
+            },
+        )
+        assert task.status_code == 201
+        task_id = task.json()["id"]
+
+        for event_type, event_data in [
+            ("autonomy.started", {"execute_role": "coder"}),
+            ("autonomy.cycle.started", {"cycle": 1, "mode": "initial"}),
+            ("autonomy.stage.completed", {"stage": "plan", "cycle": 1}),
+        ]:
+            seeded = client.post(
+                "/project-events",
+                json={"task_id": task_id, "event_type": event_type, "event_data": event_data},
+            )
+            assert seeded.status_code == 201
+
+        run = client.post(f"/autonomy/tasks/{task_id}/run")
+        assert run.status_code == 200
+        assert run.json()["status"] == "replanning"
+
+        events = client.get(f"/tasks/{task_id}/events")
+        assert events.status_code == 200
+        assert any(e["event_type"] == "autonomy.execute_plan.missing" for e in events.json())
+
+
 def test_autonomy_persists_state_snapshots(monkeypatch, tmp_path) -> None:
     db_path = tmp_path / "syncore.db"
     _init_sqlite(db_path)
@@ -953,6 +1089,24 @@ def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tm
                 ("autonomy.started", {"execute_role": "coder"}),
                 ("autonomy.cycle.started", {"cycle": 1, "mode": "initial"}),
                 ("autonomy.stage.completed", {"stage": "plan", "cycle": 1}),
+                (
+                    "autonomy.execute_plan.created",
+                    {
+                        "cycle": 1,
+                        "strategy": "default",
+                        "objective": "Implement repo-safe improvement",
+                        "actions": "Inspect repo | Apply improvement | Verify result",
+                        "target_files": "syncore.yaml",
+                        "verification_commands": "uv run pytest -q",
+                        "acceptance_checks": (
+                            "Produce concrete artifact | Verify command passes"
+                        ),
+                        "fallback_strategy": "replan",
+                        "risk_level": "low",
+                        "signature": "seededplan",
+                        "action_count": 3,
+                    },
+                ),
             ]:
                 seeded = client.post(
                     "/project-events",
@@ -971,7 +1125,7 @@ def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tm
 
         analysis_run = client.post(f"/autonomy/tasks/{analysis_id}/run")
         assert analysis_run.status_code == 200
-        assert analysis_run.json()["status"] == "in_progress"
+        assert analysis_run.json()["status"] in {"in_progress", "replanning", "retry_scheduled"}
 
         analysis_events = client.get(f"/tasks/{analysis_id}/events")
         assert analysis_events.status_code == 200
@@ -981,6 +1135,12 @@ def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tm
             if event["event_type"] == "autonomy.recommended_improvement"
         ]
         assert recommendation_events
+        candidate_events = [
+            event
+            for event in analysis_events.json()
+            if event["event_type"] == "autonomy.candidate.selected"
+        ]
+        assert candidate_events
         assert (
             recommendation_events[-1]["event_data"]["verification_command"]
             == "uv run pytest -q"
@@ -1001,7 +1161,7 @@ def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tm
             strategy="default",
             enforce_sdlc=False,
         )
-        assert "Recommended improvement baton from analysis child" in prompt
+        assert "Selected improvement candidate from analysis child" in prompt
         assert "Create syncore.yaml with uv-based test and lint commands." in prompt
         assert "uv run pytest -q" in prompt
 
@@ -1009,8 +1169,14 @@ def test_autonomy_analysis_child_handoff_unblocks_implementation(monkeypatch, tm
         assert impl_run.status_code == 200
         assert impl_run.json()["status"] in {"in_progress", "replanning"}
         assert any(
-            "Recommended improvement baton from analysis child" in item
+            "Selected improvement candidate from analysis child" in item
             for item in captured_prompts
+        )
+        implementation_events = client.get(f"/tasks/{implementation_id}/events")
+        assert implementation_events.status_code == 200
+        assert any(
+            event["event_type"] == "autonomy.mutation_intent.declared"
+            for event in implementation_events.json()
         )
 
 

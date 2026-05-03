@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import shorten
 from types import SimpleNamespace
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from packages.contracts.python.models import (
     BatonPacketCreate,
@@ -75,6 +77,11 @@ class AutonomyService:
         workspace_execution_profile: str,
         workspace_auto_approve_low_risk: bool,
         workspace_max_steps: int,
+        execute_plan_enabled: bool,
+        failure_taxonomy_v2_enabled: bool,
+        low_info_stop_enabled: bool,
+        low_info_threshold: int,
+        max_provider_switches: int,
     ) -> None:
         self._store = store
         self._run_execution_service = run_execution_service
@@ -94,6 +101,11 @@ class AutonomyService:
         self._workspace_execution_profile = workspace_execution_profile
         self._workspace_auto_approve_low_risk = workspace_auto_approve_low_risk
         self._workspace_max_steps = max(workspace_max_steps, 1)
+        self._execute_plan_enabled = execute_plan_enabled
+        self._failure_taxonomy_v2_enabled = failure_taxonomy_v2_enabled
+        self._low_info_stop_enabled = low_info_stop_enabled
+        self._low_info_threshold = max(low_info_threshold, 2)
+        self._max_provider_switches = max(max_provider_switches, 0)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
@@ -117,6 +129,11 @@ class AutonomyService:
             workspace_execution_profile=settings.autonomy_workspace_execution_profile,
             workspace_auto_approve_low_risk=settings.autonomy_workspace_auto_approve_low_risk,
             workspace_max_steps=settings.autonomy_workspace_max_steps,
+            execute_plan_enabled=settings.autonomy_execute_plan_enabled,
+            failure_taxonomy_v2_enabled=settings.autonomy_failure_taxonomy_v2,
+            low_info_stop_enabled=settings.autonomy_low_info_stop_enabled,
+            low_info_threshold=settings.autonomy_low_info_threshold,
+            max_provider_switches=settings.autonomy_max_provider_switches,
         )
 
     def process_pending_tasks_once(self, limit: int = 50) -> list[AutonomyResult]:
@@ -267,6 +284,16 @@ class AutonomyService:
         if sibling_recommendation_gate is not None:
             return sibling_recommendation_gate
 
+        execute_plan_gate = self._execute_plan_gate(
+            task=task,
+            prefs=prefs,
+            stage=next_stage,
+            cycle=cycle,
+            max_cycles=self._max_cycles,
+        )
+        if execute_plan_gate is not None:
+            return execute_plan_gate
+
         if self._stage_inflight(events=events, stage=next_stage, cycle=cycle):
             return AutonomyResult(
                 task_id=task_id,
@@ -280,19 +307,27 @@ class AutonomyService:
             cycle=cycle,
             execute_role=execute_role,
         )
+        effective_prefs = dict(prefs)
+        if self._provider_switch_count(events) >= self._resolve_provider_switch_budget(prefs):
+            effective_prefs["allow_cross_provider_switching"] = "false"
         previous_provider, previous_model = self._latest_run_provider_model(task.id)
         provider = self._resolve_provider(
             stage=next_stage,
             task=task,
-            prefs=prefs,
+            prefs=effective_prefs,
             previous_provider=previous_provider,
         )
-        model = self._resolve_model(stage=next_stage, task=task, provider=provider, prefs=prefs)
+        model = self._resolve_model(
+            stage=next_stage,
+            task=task,
+            provider=provider,
+            prefs=effective_prefs,
+        )
         max_retries = self._resolve_max_retries(prefs)
         prompt = self._prompt_for_stage(
             stage=next_stage,
             task=task,
-            prefs=prefs,
+            prefs=effective_prefs,
             cycle=cycle,
             strategy=strategy,
             enforce_sdlc=enforce_sdlc,
@@ -354,6 +389,8 @@ class AutonomyService:
                 },
             )
         )
+        if next_stage == "execute":
+            self._record_mutation_intent(task=task, prefs=prefs)
 
         request = RunExecutionRequest(
             task_id=task_id,
@@ -475,6 +512,49 @@ class AutonomyService:
             )
             if not bool(quality["passed"]):
                 quality_reason = "; ".join(quality["reasons"])
+                quality_signature = self._quality_failure_signature(
+                    task_id=task_id,
+                    stage=next_stage,
+                    reason=quality_reason,
+                )
+                if self._low_info_stop_enabled and self._is_low_information_quality_failure(
+                    task_id=task_id,
+                    stage=next_stage,
+                    signature=quality_signature,
+                ):
+                    self._store.update_task(task_id, TaskUpdate(status="blocked"))
+                    self._store.save_project_event(
+                        ProjectEventCreate(
+                            task_id=task_id,
+                            event_type="autonomy.low_information_gain.detected",
+                            event_data={
+                                "stage": next_stage,
+                                "cycle": cycle,
+                                "failure_category": "quality_gate_failure",
+                                "signature": quality_signature,
+                            },
+                        )
+                    )
+                    self._store.save_project_event(
+                        ProjectEventCreate(
+                            task_id=task_id,
+                            event_type="autonomy.stopped.low_information_gain",
+                            event_data={
+                                "stage": next_stage,
+                                "cycle": cycle,
+                                "reason": quality_reason[:250],
+                            },
+                        )
+                    )
+                    return AutonomyResult(
+                        task_id=task_id,
+                        status="failed",
+                        run_id=run.run_id,
+                        note=(
+                            f"Stopped '{next_stage}' after repeated "
+                            "low-information quality failures."
+                        ),
+                    )
                 if cycle >= self._max_cycles:
                     self._store.update_task(task_id, TaskUpdate(status="blocked"))
                     self._store.save_project_event(
@@ -506,6 +586,7 @@ class AutonomyService:
                             "next_cycle": next_cycle,
                             "strategy": strategy,
                             "quality_score": int(quality["score"]),
+                            "signature": quality_signature,
                         },
                     )
                 )
@@ -590,6 +671,11 @@ class AutonomyService:
                     strategy=strategy,
                     outcome="success",
                 )
+                self._record_meaningful_change_assessment(
+                    task=task,
+                    prefs=prefs,
+                    review_output=run.output_text,
+                )
                 self._finalize_task(task_id)
                 return AutonomyResult(
                     task_id=task_id,
@@ -604,6 +690,14 @@ class AutonomyService:
                 strategy=strategy,
                 outcome="success",
             )
+            if next_stage == "plan":
+                self._persist_execute_plan(
+                    task=task,
+                    prefs=prefs,
+                    output_text=run.output_text,
+                    cycle=cycle,
+                    strategy=strategy,
+                )
             self._persist_stage_handoff_artifacts(
                 task=task,
                 prefs=prefs,
@@ -632,6 +726,46 @@ class AutonomyService:
             )
         except Exception as error:
             attempt = self._failed_attempts(events, stage=next_stage, cycle=cycle) + 1
+            failure = self._classify_autonomy_failure(
+                task_id=task_id,
+                stage=next_stage,
+                cycle=cycle,
+                error=error,
+            )
+            if self._low_info_stop_enabled and self._is_low_information_failure(
+                task_id=task_id,
+                stage=next_stage,
+                failure_signature=str(failure.get("signature") or ""),
+            ):
+                self._store.update_task(task_id, TaskUpdate(status="blocked"))
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.low_information_gain.detected",
+                        event_data={
+                            "stage": next_stage,
+                            "cycle": cycle,
+                            "failure_category": str(failure.get("category") or ""),
+                            "signature": str(failure.get("signature") or "")[:250],
+                        },
+                    )
+                )
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.stopped.low_information_gain",
+                        event_data={
+                            "stage": next_stage,
+                            "cycle": cycle,
+                            "reason": str(failure.get("reason") or str(error))[:250],
+                        },
+                    )
+                )
+                return AutonomyResult(
+                    task_id=task_id,
+                    status="failed",
+                    note=f"Stopped '{next_stage}' after repeated equivalent failures.",
+                )
             self._store.save_project_event(
                 ProjectEventCreate(
                     task_id=task_id,
@@ -642,6 +776,11 @@ class AutonomyService:
                         "attempt": attempt,
                         "error": str(error)[:250],
                         "strategy": strategy,
+                        "failure_category": str(failure.get("category") or ""),
+                        "retry_allowed": bool(failure.get("retry_allowed")),
+                        "should_replan": bool(failure.get("should_replan")),
+                        "recommended_strategy": str(failure.get("strategy") or "")[:120],
+                        "signature": str(failure.get("signature") or "")[:250],
                     },
                 )
             )
@@ -652,10 +791,16 @@ class AutonomyService:
                 state="failed",
                 strategy=strategy,
                 quality_score=0,
-                details={"attempt": attempt, "error": str(error)[:250]},
+                details={
+                    "attempt": attempt,
+                    "error": str(error)[:250],
+                    "failure_category": str(failure.get("category") or ""),
+                    "recommended_strategy": str(failure.get("strategy") or ""),
+                    "signature": str(failure.get("signature") or "")[:250],
+                },
             )
 
-            if attempt <= max_retries:
+            if bool(failure.get("retry_allowed")) and attempt <= max_retries:
                 delay_seconds = self._retry_base_seconds * (2 ** (attempt - 1))
                 retry_at = now_epoch + delay_seconds
                 self._store.save_project_event(
@@ -667,6 +812,7 @@ class AutonomyService:
                             "cycle": cycle,
                             "attempt": attempt,
                             "retry_at_epoch": retry_at,
+                            "failure_category": str(failure.get("category") or ""),
                         },
                     )
                 )
@@ -674,9 +820,33 @@ class AutonomyService:
                     task_id=task_id,
                     status="retry_scheduled",
                     note=(
-                        f"Stage '{next_stage}' failed (attempt {attempt}/{max_retries}); "
-                        f"retry scheduled in {round(delay_seconds, 2)}s."
-                    ),
+                            f"Stage '{next_stage}' failed (attempt {attempt}/{max_retries}); "
+                            f"retry scheduled in {round(delay_seconds, 2)}s."
+                        ),
+                )
+            if bool(failure.get("should_replan")) and cycle < self._max_cycles:
+                next_cycle = cycle + 1
+                self._record_feedback(
+                    task_id=task_id,
+                    stage=next_stage,
+                    strategy=strategy,
+                    outcome="replan_required",
+                )
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=task_id,
+                        event_type="autonomy.cycle.started",
+                        event_data={
+                            "cycle": next_cycle,
+                            "mode": "replan",
+                            "failure_category": str(failure.get("category") or ""),
+                        },
+                    )
+                )
+                return AutonomyResult(
+                    task_id=task_id,
+                    status="replanning",
+                    note=f"Stage '{next_stage}' failed; replan started for cycle {next_cycle}.",
                 )
             self._record_feedback(
                 task_id=task_id,
@@ -1251,6 +1421,16 @@ class AutonomyService:
             return self._default_max_retries
         return max(parsed, 0)
 
+    def _resolve_provider_switch_budget(self, prefs: dict[str, str]) -> int:
+        raw = prefs.get("autonomy_max_provider_switches")
+        if raw is None:
+            return self._max_provider_switches
+        try:
+            parsed = int(raw)
+        except ValueError:
+            return self._max_provider_switches
+        return max(parsed, 0)
+
     def _current_cycle(self, events: list[ProjectEvent]) -> int:
         for event in reversed(events):
             if event.event_type != "autonomy.cycle.started":
@@ -1263,6 +1443,17 @@ class AutonomyService:
     def _total_step_events(self, events: list[ProjectEvent]) -> int:
         tracked = {"autonomy.stage.completed", "autonomy.stage.failed"}
         return sum(1 for event in events if event.event_type in tracked)
+
+    def _provider_switch_count(self, events: list[ProjectEvent]) -> int:
+        count = 0
+        for event in events:
+            if event.event_type != "model.switch.completed":
+                continue
+            from_provider = str(event.event_data.get("from_provider") or "").strip().lower()
+            to_provider = str(event.event_data.get("to_provider") or "").strip().lower()
+            if from_provider and to_provider and from_provider != to_provider:
+                count += 1
+        return count
 
     def _approval_gate_state(
         self,
@@ -1326,20 +1517,23 @@ class AutonomyService:
                 f"Strategy: {strategy}.\n"
                 f"Guidance: {guidance}\n"
                 f"{sdlc_instruction}\n"
-                "Produce a short implementation plan with clear first action, "
-                "risks, and checkpoints."
+                "Produce a short implementation plan with clear first action, risks, checkpoints, "
+                "target files, verification commands, acceptance checks, and fallback strategy."
             )
         if stage == "execute":
             preferred = prefs.get("execution_prompt", "").strip()
-            recommendation_context = self._recommended_improvement_prompt_context(
+            recommendation_context = self._selected_candidate_prompt_context(
                 task=task,
                 prefs=prefs,
             )
+            execute_plan_context = self._execute_plan_prompt_context(task)
             analysis_context = self._workspace_analysis_prompt_context(task)
             if preferred:
                 suffix_parts = []
                 if analysis_context:
                     suffix_parts.append(analysis_context)
+                if execute_plan_context:
+                    suffix_parts.append(execute_plan_context)
                 if recommendation_context:
                     suffix_parts.append(recommendation_context)
                 suffix_parts.append(f"Strategy: {strategy}. Guidance: {guidance}")
@@ -1350,10 +1544,22 @@ class AutonomyService:
                     f"Task title: {task.title}\n"
                     f"Task type: {task.task_type}\n"
                     f"Complexity: {task.complexity}\n"
+                    f"{execute_plan_context}\n\n"
                     f"{recommendation_context}\n\n"
                     f"Strategy: {strategy}. Guidance: {guidance}\n"
                     "Apply the recommended improvement directly. Make the smallest safe change, "
                     "then verify it with the recommended command or the repo runbook."
+                )
+            if execute_plan_context:
+                return (
+                    "You are the Syncore implementation worker.\n"
+                    f"Task title: {task.title}\n"
+                    f"Task type: {task.task_type}\n"
+                    f"Complexity: {task.complexity}\n"
+                    f"{execute_plan_context}\n\n"
+                    f"Strategy: {strategy}. Guidance: {guidance}\n"
+                    "Execute only against this plan. Do not broaden scope. If the plan is invalid, "
+                    "return the precise blocker and stop."
                 )
             if analysis_context:
                 return (
@@ -1374,7 +1580,8 @@ class AutonomyService:
             f"Strategy used: {strategy}. Guidance: {guidance}\n"
             f"{sdlc_instruction}\n"
             f"If acceptable, include exact token: {self._review_pass_keyword}\n"
-            "Return pass/fail with key risks, coverage notes, and next verification step."
+            "Return pass/fail with key risks, coverage notes, next verification step, and "
+            "include exact marker `meaningful_change=true` or `meaningful_change=false`."
         )
 
     def _role_for_stage(self, *, stage: str, execute_role: str, strategy: str) -> str:
@@ -1445,6 +1652,9 @@ class AutonomyService:
                 score -= 20
             if "risk" not in lowered:
                 reasons.append("Review missing risk analysis.")
+                score -= 10
+            if "meaningful_change=true" not in lowered and "meaningful_change=false" not in lowered:
+                reasons.append("Review missing meaningful_change marker.")
                 score -= 10
             if self._review_pass_keyword and self._review_pass_keyword.upper() not in text.upper():
                 reasons.append(f"Missing review pass keyword '{self._review_pass_keyword}'.")
@@ -1652,6 +1862,298 @@ class AutonomyService:
             )
         )
 
+    def _persist_execute_plan(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        output_text: str,
+        cycle: int,
+        strategy: str,
+    ) -> None:
+        if not self._execute_plan_enabled:
+            return
+        events = self._store.list_project_events(task_id=task.id, limit=300)
+        existing = self._latest_event(events, "autonomy.execute_plan.created")
+        if existing is not None and (_event_int(existing.event_data.get("cycle")) or 1) == cycle:
+            return
+        plan = self._build_execute_plan(
+            task=task,
+            prefs=prefs,
+            output_text=output_text,
+            cycle=cycle,
+            strategy=strategy,
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.execute_plan.created",
+                event_data={
+                    "cycle": cycle,
+                    "strategy": strategy,
+                    "objective": plan["objective"][:250],
+                    "actions": " | ".join(plan["proposed_actions"][:6])[:250],
+                    "target_files": ", ".join(plan["target_files"][:12])[:250],
+                    "verification_commands": ", ".join(plan["verification_commands"][:8])[:250],
+                    "acceptance_checks": " | ".join(plan["acceptance_checks"][:8])[:250],
+                    "fallback_strategy": plan["fallback_strategy"][:250],
+                    "risk_level": plan["risk_level"],
+                    "signature": plan["signature"][:250],
+                    "action_count": len(plan["proposed_actions"]),
+                },
+            )
+        )
+
+    def _build_execute_plan(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        output_text: str,
+        cycle: int,
+        strategy: str,
+    ) -> dict[str, object]:
+        del cycle
+        recommendation_context = self._recommended_improvement_prompt_context(
+            task=task,
+            prefs=prefs,
+        )
+        target_files = self._extract_paths(output_text)
+        verification_commands = self._extract_command_candidates(output_text)
+        acceptance_checks = self._extract_acceptance_checks(output_text)
+        proposed_actions = self._parse_plan_lines(output_text)[:8]
+        if recommendation_context and not target_files:
+            recommendation_state = self._recommended_improvement_state(
+                self._parse_uuid(prefs.get("parent_task_id")) or task.id
+            )
+            event = recommendation_state.get("event")
+            if isinstance(event, ProjectEvent):
+                target_files = self._string_list(event.event_data.get("target_files"))
+                if not verification_commands:
+                    verification = str(event.event_data.get("verification_command") or "").strip()
+                    if verification:
+                        verification_commands = [verification]
+        if not verification_commands and task.workspace_id is not None:
+            workspace = self._store.get_workspace(task.workspace_id)
+            if workspace is not None:
+                runbook = dict(workspace.metadata.get("workspace_runbook") or {})
+                verification_commands = self._string_list(runbook.get("test_commands"))[:2]
+        if not acceptance_checks:
+            acceptance_checks = [
+                "Produce a concrete artifact or code change.",
+                "Run verification commands and confirm success.",
+            ]
+        if not proposed_actions:
+            proposed_actions = [
+                "Inspect the repo state relevant to the task.",
+                "Apply the smallest safe change required.",
+                "Run verification and summarize the result.",
+            ]
+        risk_level = "medium"
+        lowered = output_text.lower()
+        if any(
+            token in lowered
+            for token in ("migration", "auth", "secret", "credential", "deploy")
+        ):
+            risk_level = "high"
+        elif any(token in lowered for token in ("docs", "config", "test", "yaml", "readme")):
+            risk_level = "low"
+        payload = {
+            "objective": task.title,
+            "target_files": target_files[:12],
+            "proposed_actions": proposed_actions[:8],
+            "verification_commands": verification_commands[:4],
+            "acceptance_checks": acceptance_checks[:8],
+            "fallback_strategy": self._strategy_guidance(strategy),
+            "risk_level": risk_level,
+        }
+        signature = hashlib.sha1(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        payload["signature"] = signature
+        return payload
+
+    def _latest_execute_plan(self, task_id: UUID) -> dict[str, object] | None:
+        events = self._store.list_project_events(task_id=task_id, limit=300)
+        event = self._latest_event(events, "autonomy.execute_plan.created")
+        if event is None:
+            return None
+        return {
+            "cycle": _event_int(event.event_data.get("cycle")) or 1,
+            "objective": str(event.event_data.get("objective") or "").strip(),
+            "actions": self._split_delimited(
+                str(event.event_data.get("actions") or ""),
+                delimiter="|",
+            ),
+            "target_files": self._split_delimited(str(event.event_data.get("target_files") or "")),
+            "verification_commands": self._split_delimited(
+                str(event.event_data.get("verification_commands") or "")
+            ),
+            "acceptance_checks": self._split_delimited(
+                str(event.event_data.get("acceptance_checks") or ""),
+                delimiter="|",
+            ),
+            "fallback_strategy": str(event.event_data.get("fallback_strategy") or "").strip(),
+            "risk_level": str(event.event_data.get("risk_level") or "medium").strip().lower(),
+            "signature": str(event.event_data.get("signature") or "").strip(),
+        }
+
+    def _execute_plan_gate(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        stage: str,
+        cycle: int,
+        max_cycles: int,
+    ) -> AutonomyResult | None:
+        if stage != "execute" or not self._execute_plan_enabled:
+            return None
+        plan = self._latest_execute_plan(task.id)
+        if plan is not None and self._execute_plan_is_concrete(plan):
+            return None
+        if cycle >= max_cycles:
+            self._store.update_task(task.id, TaskUpdate(status="blocked"))
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task.id,
+                    event_type="autonomy.implementation.blocked.missing_plan",
+                    event_data={"cycle": cycle},
+                )
+            )
+            return AutonomyResult(
+                task_id=task.id,
+                status="failed",
+                note="Execute stage blocked because no concrete execute plan was available.",
+            )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.execute_plan.missing",
+                event_data={
+                    "cycle": cycle,
+                    "parent_task_id": prefs.get("parent_task_id", ""),
+                },
+            )
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.cycle.started",
+                event_data={"cycle": cycle + 1, "mode": "replan", "reason": "missing_execute_plan"},
+            )
+        )
+        return AutonomyResult(
+            task_id=task.id,
+            status="replanning",
+            note=(
+                "Execute stage deferred until a concrete plan exists; "
+                f"moved to cycle {cycle + 1}."
+            ),
+        )
+
+    def _execute_plan_is_concrete(self, plan: dict[str, object]) -> bool:
+        verification_commands = self._string_list(plan.get("verification_commands"))
+        target_files = self._string_list(plan.get("target_files"))
+        actions = self._string_list(plan.get("actions"))
+        objective = str(plan.get("objective") or "").strip()
+        return bool(objective and (verification_commands or target_files or actions))
+
+    def _execute_plan_prompt_context(self, task: Task) -> str:
+        plan = self._latest_execute_plan(task.id)
+        if plan is None:
+            return ""
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.execute_plan.reused",
+                event_data={
+                    "cycle": int(plan.get("cycle") or 1),
+                    "signature": str(plan.get("signature") or "")[:120],
+                },
+            )
+        )
+        lines = ["Execute plan:"]
+        lines.append(f"- Objective: {str(plan.get('objective') or '').strip()}")
+        target_files = self._string_list(plan.get("target_files"))
+        actions = self._string_list(plan.get("actions"))
+        if actions:
+            lines.append(f"- Actions: {'; '.join(actions[:6])}")
+        if target_files:
+            lines.append(f"- Target files: {', '.join(target_files[:12])}")
+        verification_commands = self._string_list(plan.get("verification_commands"))
+        if verification_commands:
+            lines.append(f"- Verification commands: {', '.join(verification_commands[:6])}")
+        acceptance_checks = self._string_list(plan.get("acceptance_checks"))
+        if acceptance_checks:
+            lines.append(f"- Acceptance checks: {'; '.join(acceptance_checks[:6])}")
+        fallback = str(plan.get("fallback_strategy") or "").strip()
+        if fallback:
+            lines.append(f"- Fallback strategy: {fallback}")
+        risk_level = str(plan.get("risk_level") or "").strip()
+        if risk_level:
+            lines.append(f"- Risk level: {risk_level}")
+        return "\n".join(lines)
+
+    def _record_mutation_intent(self, *, task: Task, prefs: dict[str, str]) -> None:
+        plan = self._latest_execute_plan(task.id) or {}
+        candidate_state = self._selected_candidate_state(
+            self._parse_uuid(prefs.get("parent_task_id")) or task.id
+        )
+        target_files = self._string_list(plan.get("target_files"))
+        verification_commands = self._string_list(plan.get("verification_commands"))
+        candidate_id = ""
+        if candidate_state.get("status") == "ready":
+            event = candidate_state.get("event")
+            if isinstance(event, ProjectEvent):
+                candidate_id = str(event.event_data.get("candidate_id") or "")
+                if not target_files:
+                    target_files = self._string_list(event.event_data.get("target_files"))
+                if not verification_commands:
+                    verification = str(event.event_data.get("verification_command") or "").strip()
+                    if verification:
+                        verification_commands = [verification]
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.mutation_intent.declared",
+                event_data={
+                    "candidate_id": candidate_id[:120],
+                    "target_files": ", ".join(target_files[:10])[:250],
+                    "verification_commands": ", ".join(verification_commands[:6])[:250],
+                },
+            )
+        )
+
+    def _record_meaningful_change_assessment(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+        review_output: str,
+    ) -> None:
+        lowered = review_output.lower()
+        marker = "unknown"
+        if "meaningful_change=true" in lowered:
+            marker = "true"
+        elif "meaningful_change=false" in lowered:
+            marker = "false"
+        evidence = "review_output"
+        if marker == "unknown":
+            parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+            if parent_id is not None:
+                candidate_state = self._selected_candidate_state(parent_id)
+                if candidate_state.get("status") == "ready":
+                    marker = "true"
+                    evidence = "selected_candidate"
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.meaningful_change.assessed",
+                event_data={"meaningful_change": marker, "evidence": evidence},
+            )
+        )
+
     def _save_snapshot(
         self,
         *,
@@ -1711,6 +2213,10 @@ class AutonomyService:
             recommendation = self._fallback_recommended_improvement(task, recommendation)
         if not recommendation["summary"] and not recommendation["action"]:
             return
+        candidate = self._build_candidate_artifact(
+            task=task,
+            recommendation=recommendation,
+        )
         existing = self._latest_event(
             self._store.list_project_events(task_id=task.id, limit=200),
             "autonomy.recommended_improvement",
@@ -1733,6 +2239,46 @@ class AutonomyService:
                     "target_files": ", ".join(target_files[:10])[:250],
                     "verification_command": verification[:250],
                     "risks": "; ".join(risks[:6])[:250],
+                },
+            )
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.candidate.ranked",
+                event_data={
+                    "parent_task_id": str(parent_id),
+                    "candidate_id": str(candidate["candidate_id"]),
+                    "rank": 1,
+                    "candidate_type": str(candidate["candidate_type"])[:80],
+                    "summary": summary[:250],
+                    "target_files": ", ".join(target_files[:10])[:250],
+                    "verification_command": verification[:250],
+                    "confidence": int(candidate["confidence"]),
+                    "impact": int(candidate["impact"]),
+                    "effort": int(candidate["effort"]),
+                    "risk_level": str(candidate["risk_level"])[:80],
+                    "evidence_kind": str(candidate["evidence_kind"])[:120],
+                },
+            )
+        )
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.candidate.selected",
+                event_data={
+                    "parent_task_id": str(parent_id),
+                    "candidate_id": str(candidate["candidate_id"]),
+                    "candidate_type": str(candidate["candidate_type"])[:80],
+                    "summary": summary[:250],
+                    "action": action[:250],
+                    "target_files": ", ".join(target_files[:10])[:250],
+                    "verification_command": verification[:250],
+                    "confidence": int(candidate["confidence"]),
+                    "impact": int(candidate["impact"]),
+                    "effort": int(candidate["effort"]),
+                    "risk_level": str(candidate["risk_level"])[:80],
+                    "evidence_kind": str(candidate["evidence_kind"])[:120],
                 },
             )
         )
@@ -1766,6 +2312,17 @@ class AutonomyService:
         if parent_id is None:
             return None
         sibling_state = self._recommended_improvement_state(parent_id)
+        self._store.save_project_event(
+            ProjectEventCreate(
+                task_id=task.id,
+                event_type="autonomy.implementation.bound",
+                event_data={
+                    "stage": stage,
+                    "parent_task_id": str(parent_id),
+                    "recommendation_status": str(sibling_state.get("status") or ""),
+                },
+            )
+        )
         if sibling_state["status"] == "blocked":
             self._store.update_task(task.id, TaskUpdate(status="blocked"))
             self._store.save_project_event(
@@ -1781,6 +2338,13 @@ class AutonomyService:
                 note=str(sibling_state["note"]),
             )
         if sibling_state["status"] == "waiting":
+            self._store.save_project_event(
+                ProjectEventCreate(
+                    task_id=task.id,
+                    event_type="autonomy.implementation.blocked.missing_recommendation",
+                    event_data={"parent_task_id": str(parent_id)},
+                )
+            )
             return AutonomyResult(
                 task_id=task.id,
                 status="in_progress",
@@ -1788,7 +2352,7 @@ class AutonomyService:
             )
         return None
 
-    def _recommended_improvement_prompt_context(
+    def _selected_candidate_prompt_context(
         self,
         *,
         task: Task,
@@ -1799,7 +2363,7 @@ class AutonomyService:
         parent_id = self._parse_uuid(prefs.get("parent_task_id"))
         if parent_id is None:
             return ""
-        sibling_state = self._recommended_improvement_state(parent_id)
+        sibling_state = self._selected_candidate_state(parent_id)
         if sibling_state["status"] != "ready":
             return ""
         event = sibling_state["event"]
@@ -1808,7 +2372,11 @@ class AutonomyService:
         target_files = str(event.event_data.get("target_files") or "").strip()
         verification = str(event.event_data.get("verification_command") or "").strip()
         risks = str(event.event_data.get("risks") or "").strip()
-        context_lines = ["Recommended improvement baton from analysis child:"]
+        confidence = str(event.event_data.get("confidence") or "").strip()
+        candidate_type = str(event.event_data.get("candidate_type") or "").strip()
+        context_lines = ["Selected improvement candidate from analysis child:"]
+        if candidate_type:
+            context_lines.append(f"- Candidate type: {candidate_type}")
         if summary:
             context_lines.append(f"- Candidate improvement: {summary}")
         if action:
@@ -1817,6 +2385,8 @@ class AutonomyService:
             context_lines.append(f"- Suggested files: {target_files}")
         if verification:
             context_lines.append(f"- Verification command: {verification}")
+        if confidence:
+            context_lines.append(f"- Confidence: {confidence}")
         if risks:
             context_lines.append(f"- Risks/constraints: {risks}")
         context_lines.append(
@@ -1824,6 +2394,28 @@ class AutonomyService:
             "Act on this recommendation unless the repo state proves it invalid."
         )
         return "\n".join(context_lines)
+
+    def _recommended_improvement_prompt_context(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+    ) -> str:
+        return self._selected_candidate_prompt_context(task=task, prefs=prefs)
+
+    def _selected_candidate_state(self, parent_id: UUID) -> dict[str, object]:
+        child_ids = self._spawned_child_ids(parent_id)
+        analysis_children: list[Task] = []
+        for child_id in child_ids:
+            child = self._store.get_task(child_id)
+            if child is None or child.task_type != "analysis":
+                continue
+            analysis_children.append(child)
+            child_events = self._store.list_project_events(task_id=child.id, limit=250)
+            selected = self._latest_event(child_events, "autonomy.candidate.selected")
+            if selected is not None:
+                return {"status": "ready", "event": selected, "task": child}
+        return self._recommended_improvement_state(parent_id)
 
     def _recommended_improvement_state(self, parent_id: UUID) -> dict[str, object]:
         child_ids = self._spawned_child_ids(parent_id)
@@ -1926,6 +2518,44 @@ class AutonomyService:
             "verification": verification.strip(),
             "target_files": target_files,
             "risks": risks,
+        }
+
+    def _build_candidate_artifact(
+        self,
+        *,
+        task: Task,
+        recommendation: dict[str, object],
+    ) -> dict[str, object]:
+        summary = str(recommendation.get("summary") or "").strip().lower()
+        target_files = self._string_list(recommendation.get("target_files"))
+        verification = str(recommendation.get("verification") or "").strip()
+        candidate_type = "config_contract"
+        if any(path.endswith((".py", ".ts", ".tsx", ".js", ".rs", ".go")) for path in target_files):
+            candidate_type = "code_fix"
+        elif any("test" in path.lower() for path in target_files):
+            candidate_type = "test_hardening"
+        elif any("readme" in path.lower() or path.endswith(".md") for path in target_files):
+            candidate_type = "docs"
+        if "syncore.yaml" in summary:
+            candidate_type = "config_contract"
+        evidence_kind = "repo_scan"
+        if verification:
+            evidence_kind = "repo_scan+verification"
+        impact = 3 if candidate_type in {"code_fix", "test_hardening"} else 2
+        effort = 1 if len(target_files) <= 2 else 2
+        confidence = 4 if verification else 3
+        risk_level = "low"
+        if candidate_type == "code_fix":
+            risk_level = "medium"
+        return {
+            "candidate_id": uuid4(),
+            "candidate_type": candidate_type,
+            "confidence": confidence,
+            "impact": impact,
+            "effort": effort,
+            "risk_level": risk_level,
+            "evidence_kind": evidence_kind,
+            "task_type": task.task_type,
         }
 
     def _recommendation_needs_workspace_fallback(
@@ -2069,6 +2699,10 @@ class AutonomyService:
                 return str(match.group(1)).strip()
         return ""
 
+    def _parse_plan_lines(self, text: str) -> list[str]:
+        lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
+        return [line[:240] for line in lines[:60]]
+
     def _extract_paths(self, text: str) -> list[str]:
         candidates = re.findall(
             r"\b(?:[\w.-]+/)*[\w.-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|yaml|yml|ini|cfg|txt|rs|go|java|kt|sh)\b",
@@ -2102,6 +2736,191 @@ class AutonomyService:
                     continue
                 break
         return [item for item in items if item][:8]
+
+    def _extract_command_candidates(self, text: str) -> list[str]:
+        commands: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "verify",
+                    "test command",
+                    "verification command",
+                    "run ",
+                    "pytest",
+                    "uv run",
+                    "npm run",
+                    "cargo test",
+                    "go test",
+                )
+            ):
+                candidate = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped
+                candidate = candidate.lstrip("-* ").strip("`")
+                if candidate and len(candidate) < 180:
+                    commands.append(candidate)
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for command in commands:
+            if command not in seen:
+                seen.add(command)
+                ordered.append(command)
+        return ordered[:6]
+
+    def _extract_acceptance_checks(self, text: str) -> list[str]:
+        checks = self._extract_list_items(
+            text,
+            headers=("acceptance", "acceptance checks", "success criteria", "criteria"),
+        )
+        if checks:
+            return checks
+        lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if any(token in lowered for token in ("must", "should", "verify", "pass", "confirm")):
+                lines.append(stripped.lstrip("-* ").strip())
+        return lines[:6]
+
+    def _split_delimited(self, value: str, *, delimiter: str = ",") -> list[str]:
+        if not value.strip():
+            return []
+        return [item.strip() for item in value.split(delimiter) if item.strip()]
+
+    def _classify_autonomy_failure(
+        self,
+        *,
+        task_id: UUID,
+        stage: str,
+        cycle: int,
+        error: Exception,
+    ) -> dict[str, object]:
+        reason = str(error).strip() or f"{stage} failure"
+        category = "stage_failure"
+        strategy = "replan"
+        retry_allowed = True
+        should_replan = False
+        events = self._store.list_project_events(task_id=task_id, limit=300)
+        for event in reversed(events):
+            event_cycle = _event_int(event.event_data.get("cycle")) or cycle
+            if event_cycle != cycle:
+                continue
+            if event.event_type in {
+                "workspace.execution.preflight.failed",
+                "workspace.execution.verification.failed",
+            }:
+                category = str(event.event_data.get("failure_category") or category)
+                strategy = str(event.event_data.get("recommended_strategy") or strategy)
+                reason = str(event.event_data.get("reason") or reason)
+                break
+            if event.event_type == "run.failed":
+                category = "provider_failure"
+                strategy = "switch_model_or_provider"
+                reason = str(event.event_data.get("error") or reason)
+                break
+        lowered = reason.lower()
+        if category == "environment_failure":
+            retry_allowed = False
+        elif category == "provider_failure":
+            retry_allowed = True
+            should_replan = False
+        elif category in {"policy_block", "risk_guardrail"}:
+            retry_allowed = False
+            should_replan = False
+        elif category == "verification_failure":
+            retry_allowed = False
+            should_replan = True
+        elif category == "acceptance_failure":
+            retry_allowed = False
+            should_replan = True
+        elif "no changes or verification commands were produced" in lowered:
+            category = "no_artifact_change"
+            strategy = "tighten_implementation_scope"
+            retry_allowed = False
+            should_replan = True
+        elif "required verification commands did not pass" in lowered:
+            category = "verification_failure"
+            strategy = "raise_verification"
+            retry_allowed = False
+            should_replan = True
+        elif "provider" in lowered:
+            category = "provider_failure"
+            strategy = "switch_model_or_provider"
+            retry_allowed = True
+        elif "approval" in lowered:
+            category = "policy_block"
+            strategy = "request_approval"
+            retry_allowed = False
+        plan = self._latest_execute_plan(task_id)
+        signature_payload = {
+            "stage": stage,
+            "category": category,
+            "reason": lowered[:160],
+            "plan_signature": str((plan or {}).get("signature") or ""),
+        }
+        signature = hashlib.sha1(
+            json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return {
+            "category": category,
+            "strategy": strategy,
+            "retry_allowed": retry_allowed if self._failure_taxonomy_v2_enabled else True,
+            "should_replan": should_replan if self._failure_taxonomy_v2_enabled else False,
+            "reason": reason,
+            "signature": signature,
+        }
+
+    def _is_low_information_failure(
+        self,
+        *,
+        task_id: UUID,
+        stage: str,
+        failure_signature: str,
+    ) -> bool:
+        if not failure_signature:
+            return False
+        events = self._store.list_project_events(task_id=task_id, limit=200)
+        count = 0
+        for event in reversed(events):
+            if event.event_type != "autonomy.stage.failed":
+                continue
+            if str(event.event_data.get("stage") or "").strip().lower() != stage:
+                break
+            if str(event.event_data.get("signature") or "").strip() == failure_signature:
+                count += 1
+            else:
+                break
+        return count >= (self._low_info_threshold - 1)
+
+    def _quality_failure_signature(self, *, task_id: UUID, stage: str, reason: str) -> str:
+        plan = self._latest_execute_plan(task_id)
+        payload = {
+            "stage": stage,
+            "reason": reason.lower()[:160],
+            "plan_signature": str((plan or {}).get("signature") or ""),
+        }
+        return hashlib.sha1(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+
+    def _is_low_information_quality_failure(
+        self, *, task_id: UUID, stage: str, signature: str
+    ) -> bool:
+        if not signature:
+            return False
+        events = self._store.list_project_events(task_id=task_id, limit=200)
+        count = 0
+        for event in reversed(events):
+            if event.event_type != "autonomy.quality.failed":
+                continue
+            if str(event.event_data.get("stage") or "").strip().lower() != stage:
+                break
+            if str(event.event_data.get("signature") or "").strip() == signature:
+                count += 1
+            else:
+                break
+        return count >= (self._low_info_threshold - 1)
 
     def _parse_uuid(self, raw: str | None) -> UUID | None:
         value = (raw or "").strip()

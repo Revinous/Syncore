@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     autonomy_workspace_execution_profile: str = "balanced"
     autonomy_workspace_auto_approve_low_risk: bool = True
     autonomy_workspace_max_steps: int = 4
+    autonomy_execute_plan_enabled: bool = True
+    autonomy_failure_taxonomy_v2: bool = True
+    autonomy_low_info_stop_enabled: bool = True
+    autonomy_low_info_threshold: int = 2
+    autonomy_max_provider_switches: int = 2
     api_auth_enabled: bool = False
     api_auth_token: str | None = None
     rate_limit_enabled: bool = False

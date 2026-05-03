@@ -835,3 +835,36 @@ def test_workspace_runs_all_runner_test_commands_when_required_verification_fail
 
     assert "uv run pytest -q" in results
     assert any(item["command"] == "uv run pytest -q" for item in command_results)
+
+
+def test_meaningful_candidate_change_requires_matching_diff(monkeypatch) -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    parent_id = uuid4()
+
+    monkeypatch.setattr(
+        service,
+        "_selected_candidate_for_parent",
+        lambda parent_id_arg: {
+            "candidate_id": "cand-1",
+            "target_files": "syncore.yaml,README.md",
+            "verification_command": "uv run pytest -q",
+        }
+        if parent_id_arg == parent_id
+        else None,
+    )
+
+    failed = service._validate_meaningful_candidate_change(  # type: ignore[attr-defined]
+        task_id=task_id,
+        task_preferences={"parent_task_id": str(parent_id)},
+        changed_files=["docs/guide.md"],
+    )
+    assert failed["status"] == "failed"
+    assert "selected candidate target files" in str(failed["reason"])
+
+    passed = service._validate_meaningful_candidate_change(  # type: ignore[attr-defined]
+        task_id=task_id,
+        task_preferences={"parent_task_id": str(parent_id)},
+        changed_files=["syncore.yaml"],
+    )
+    assert passed["status"] == "ok"
