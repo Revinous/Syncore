@@ -19,6 +19,7 @@ import {
   TaskChildrenBoard,
   TaskCreatePayload,
   TaskDetail,
+  TaskExecutionReport,
   TaskModelPolicy,
   TaskUpdatePayload,
   Workspace,
@@ -133,6 +134,10 @@ export function getTask(id: string) {
 
 export function getTaskChildren(id: string) {
   return request<TaskChildrenBoard>(`/tasks/${id}/children`);
+}
+
+export function getTaskExecutionReport(id: string) {
+  return request<TaskExecutionReport>(`/tasks/${id}/execution-report`);
 }
 
 export function getTaskModelPolicy(id: string) {

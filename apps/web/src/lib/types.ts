@@ -291,6 +291,51 @@ export type TaskChildrenBoard = {
   children: TaskChildStatusItem[];
 };
 
+export type TaskExecutionCommand = {
+  command: string;
+  status: string;
+  output_preview: string | null;
+};
+
+export type TaskExecutionArtifact = {
+  ref_id: string;
+  path: string;
+  content_type: string;
+  summary: string;
+  retrieval_hint: string;
+  preview: string;
+  created_at: string;
+};
+
+export type TaskExecutionRunOutput = {
+  run_id: string;
+  role: string;
+  status: string;
+  provider: string | null;
+  target_model: string | null;
+  output_ref_id: string | null;
+  output_preview: string | null;
+  error_message: string | null;
+  updated_at: string;
+};
+
+export type TaskExecutionReport = {
+  task_id: string;
+  outcome_status: string;
+  summary_reason: string;
+  meaningful_change: boolean;
+  changed_files: string[];
+  planned_actions: string[];
+  verification_status: string | null;
+  verification_reason: string | null;
+  verification_commands: TaskExecutionCommand[];
+  diff_artifacts: TaskExecutionArtifact[];
+  output_artifacts: TaskExecutionRunOutput[];
+  report_ref_id: string | null;
+  last_event_type: string | null;
+  last_updated_at: string | null;
+};
+
 export type WorkspaceCreatePayload = {
   name: string;
   root_path: string;

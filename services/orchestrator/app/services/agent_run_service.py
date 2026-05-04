@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from packages.contracts.python.models import (
@@ -8,6 +9,8 @@ from packages.contracts.python.models import (
 )
 from pydantic import BaseModel
 from services.memory import MemoryStoreProtocol
+
+from app.config import Settings
 
 
 class AgentRunResult(BaseModel):
@@ -23,8 +26,9 @@ class AgentRunResult(BaseModel):
 
 
 class AgentRunService:
-    def __init__(self, store: MemoryStoreProtocol) -> None:
+    def __init__(self, store: MemoryStoreProtocol, settings: Settings | None = None) -> None:
         self._store = store
+        self._settings = settings
 
     def create_run(self, payload: AgentRunCreate) -> AgentRun:
         task = self._store.get_task(payload.task_id)
@@ -40,7 +44,54 @@ class AgentRunService:
         return self._store.get_agent_run(run_id)
 
     def list_runs(self, task_id: UUID | None = None, limit: int = 50) -> list[AgentRun]:
-        return self._store.list_agent_runs(task_id=task_id, limit=limit)
+        runs = self._store.list_agent_runs(task_id=task_id, limit=limit)
+        return self._reconcile_stale_runs(runs)
+
+    def _reconcile_stale_runs(self, runs: list[AgentRun]) -> list[AgentRun]:
+        timeout_seconds = (
+            self._settings.run_stale_timeout_seconds if self._settings is not None else 1800
+        )
+        if timeout_seconds <= 0:
+            return runs
+
+        now = datetime.now(timezone.utc)
+        reconciled: list[AgentRun] = []
+        for run in runs:
+            if run.status not in {"queued", "running"}:
+                reconciled.append(run)
+                continue
+
+            age_seconds = (now - run.updated_at).total_seconds()
+            if age_seconds < timeout_seconds:
+                reconciled.append(run)
+                continue
+
+            updated = self._store.update_agent_run(
+                run.id,
+                AgentRunUpdate(
+                    status="blocked",
+                    error_message=(
+                        f"Marked stale after {int(age_seconds)}s without progress."
+                    ),
+                ),
+            )
+            if updated is not None:
+                self._store.save_project_event(
+                    ProjectEventCreate(
+                        task_id=updated.task_id,
+                        event_type="run.stale_reconciled",
+                        event_data={
+                            "run_id": str(updated.id),
+                            "previous_status": run.status,
+                            "status": updated.status,
+                            "age_seconds": int(age_seconds),
+                        },
+                    )
+                )
+                reconciled.append(updated)
+            else:
+                reconciled.append(run)
+        return reconciled
 
     def cancel_run(self, run_id: UUID) -> AgentRun | None:
         run = self._store.get_agent_run(run_id)

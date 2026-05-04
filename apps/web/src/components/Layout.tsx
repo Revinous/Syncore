@@ -1,35 +1,81 @@
 import Link from "next/link";
+import { useRouter } from "next/router";
 import { ReactNode } from "react";
 
 const navItems = [
-  { href: "/", label: "Dashboard" },
-  { href: "/workspaces", label: "Workspaces" },
-  { href: "/tasks", label: "Tasks" },
-  { href: "/analyst", label: "Analyst Digest" },
-  { href: "/runs", label: "Agent Runs" },
-  { href: "/notifications", label: "Notifications" },
-  { href: "/diagnostics", label: "Diagnostics" },
+  {
+    href: "/",
+    label: "Dashboard",
+    caption: "Runtime health, savings, and current delivery posture.",
+  },
+  {
+    href: "/workspaces",
+    label: "Workspaces",
+    caption: "Attached repos, scans, contracts, and safe file boundaries.",
+  },
+  {
+    href: "/tasks",
+    label: "Tasks",
+    caption: "Execution queue, planning targets, and active delivery work.",
+  },
+  {
+    href: "/analyst",
+    label: "Analyst Digest",
+    caption: "Human-readable summaries and delivery signal interpretation.",
+  },
+  {
+    href: "/runs",
+    label: "Agent Runs",
+    caption: "Planner, implementer, and reviewer execution visibility.",
+  },
+  {
+    href: "/notifications",
+    label: "Notifications",
+    caption: "Research findings, alerts, and actionable inbox items.",
+  },
+  {
+    href: "/diagnostics",
+    label: "Diagnostics",
+    caption: "Route registry, config, and service-level operational state.",
+  },
 ];
 
 export function Layout({ title, children }: { title: string; children: ReactNode }) {
+  const router = useRouter();
+
   return (
-    <div style={{ fontFamily: "Arial, sans-serif", minHeight: "100vh", background: "#f7f8fa" }}>
-      <header style={{ borderBottom: "1px solid #d8dbe2", background: "#fff", padding: "12px 20px" }}>
-        <strong>Syncore Control Panel</strong>
-      </header>
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", minHeight: "calc(100vh - 50px)" }}>
-        <nav style={{ borderRight: "1px solid #d8dbe2", background: "#fff", padding: 16 }}>
-          {navItems.map((item) => (
-            <div key={item.href} style={{ marginBottom: 8 }}>
-              <Link href={item.href}>{item.label}</Link>
-            </div>
-          ))}
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand-kicker">Local Autonomy Control Plane</div>
+          <div className="brand-title">Syncore</div>
+          <p className="brand-copy">
+            Orchestrate repo-aware planning, execution, review, and diagnostics from one surface.
+          </p>
+        </div>
+
+        <nav className="nav-group" aria-label="Primary navigation">
+          {navItems.map((item) => {
+            const active =
+              item.href === "/"
+                ? router.pathname === "/"
+                : router.pathname === item.href || router.pathname.startsWith(`${item.href}/`);
+            return (
+              <Link key={item.href} href={item.href} className={`nav-link${active ? " active" : ""}`}>
+                <span className="nav-label">{item.label}</span>
+                <span className="nav-caption">{item.caption}</span>
+              </Link>
+            );
+          })}
         </nav>
-        <main style={{ padding: 20 }}>
-          <h1 style={{ marginTop: 0 }}>{title}</h1>
-          {children}
-        </main>
-      </div>
+
+        <div className="sidebar-footnote">
+          <strong>{title}</strong>
+          <div>Built for local-first engineering operations, not toy dashboards.</div>
+        </div>
+      </aside>
+
+      <main className="main-shell">{children}</main>
     </div>
   );
 }

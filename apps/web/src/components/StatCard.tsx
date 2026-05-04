@@ -1,8 +1,17 @@
-export function StatCard({ label, value }: { label: string; value: string | number }) {
+export function StatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+}) {
   return (
-    <div style={{ border: "1px solid #d8dbe2", borderRadius: 8, padding: 12, background: "#fff" }}>
-      <div style={{ fontSize: 12, color: "#666" }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 600 }}>{value}</div>
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
+      {hint ? <div className="stat-hint">{hint}</div> : null}
     </div>
   );
 }

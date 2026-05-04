@@ -378,6 +378,7 @@ def test_open_command_resolves_workspace_and_launches_tui(monkeypatch) -> None:
 
     monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
     monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
     monkeypatch.setattr("syncore_cli.main.SyncoreTuiApp", FakeTui)
 
     result = runner.invoke(app, ["open", "syncore"])
@@ -405,6 +406,7 @@ def test_open_command_creates_workspace_from_local_path(monkeypatch, tmp_path) -
 
     monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
     monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
     monkeypatch.setattr("syncore_cli.main.SyncoreTuiApp", FakeTui)
     monkeypatch.setenv("SYNCORE_CALLER_CWD", str(tmp_path))
 
@@ -413,6 +415,59 @@ def test_open_command_creates_workspace_from_local_path(monkeypatch, tmp_path) -
     assert launched["workspace_id"] == "w2"
     assert launched["workspace_name"] == "demo-repo"
     assert launched["ran"] is True
+
+
+def test_open_command_web_mode_starts_services_and_opens_browser(monkeypatch) -> None:
+    runner = CliRunner()
+    fake = FakeClient()
+    opened: dict[str, object] = {}
+
+    monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
+    monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
+    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: opened.setdefault("url", url))
+
+    class FakeTui:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("TUI should not launch in --web mode")
+
+    monkeypatch.setattr("syncore_cli.main.SyncoreTuiApp", FakeTui)
+
+    result = runner.invoke(app, ["open", "syncore", "--web"])
+    assert result.exit_code == 0
+    assert opened["url"] == "http://localhost:3000/workspaces"
+
+
+def test_open_command_headless_starts_services_without_ui(monkeypatch) -> None:
+    runner = CliRunner()
+    fake = FakeClient()
+
+    monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
+    monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
+
+    class FakeTui:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("TUI should not launch in --headless mode")
+
+    monkeypatch.setattr("syncore_cli.main.SyncoreTuiApp", FakeTui)
+
+    result = runner.invoke(app, ["open", "syncore", "--headless"])
+    assert result.exit_code == 0
+    assert "Services ready" in result.stdout
+
+
+def test_web_command_starts_services_and_opens_browser(monkeypatch) -> None:
+    runner = CliRunner()
+    opened: dict[str, object] = {}
+
+    monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
+    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: opened.setdefault("url", url))
+
+    result = runner.invoke(app, ["web"])
+    assert result.exit_code == 0
+    assert opened["url"] == "http://localhost:3000"
 
 
 def test_openai_auth_models_command(monkeypatch) -> None:

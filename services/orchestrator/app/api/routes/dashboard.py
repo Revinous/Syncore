@@ -8,6 +8,7 @@ from services.analyst.digest import AnalystDigestService
 
 from app.api.routes.health import probe_postgres, probe_redis, probe_sqlite
 from app.config import Settings, get_settings
+from app.services.agent_run_service import AgentRunService
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -44,7 +45,7 @@ def dashboard_summary(settings: Settings = Depends(get_settings)) -> DashboardSu
     tasks = store.list_tasks(limit=500)
     open_task_count = len([task for task in tasks if task.status != "completed"])
 
-    runs = store.list_agent_runs(task_id=None, limit=500)
+    runs = AgentRunService(store, settings=settings).list_runs(task_id=None, limit=500)
     active_run_count = len([run for run in runs if run.status in {"queued", "running"}])
 
     recent_events = [

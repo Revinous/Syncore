@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     provider_failover_enabled: bool = True
     provider_fallback_order: str = "openai,anthropic,gemini,local_echo"
     run_default_timeout_seconds: int = 90
+    run_stale_timeout_seconds: int = 1800
     max_concurrent_runs_per_task: int = 1
     max_concurrent_runs_per_workspace: int = 4
     slo_max_http_error_rate: float = 0.02

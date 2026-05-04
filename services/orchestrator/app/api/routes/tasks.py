@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.services.task_service import (
     ChildTaskStatusBoard,
+    TaskExecutionReport,
     TaskModelPolicy,
     TaskModelPolicyUpdate,
     TaskModelSwitchRecord,
@@ -66,6 +67,17 @@ def get_task_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return detail
+
+
+@router.get("/{task_id}/execution-report", response_model=TaskExecutionReport)
+def get_task_execution_report(
+    task_id: UUID,
+    service: TaskService = Depends(get_task_service),
+) -> TaskExecutionReport:
+    report = service.get_execution_report(task_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return report
 
 
 @router.patch("/{task_id}", response_model=Task)

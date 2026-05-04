@@ -43,6 +43,8 @@ test("analyst page renders digest controls", () => {
 test("task detail page renders model strategy controls", () => {
   const page = read("../pages/tasks/[taskId].tsx");
   assert.match(page, /Model Strategy/);
+  assert.match(page, /Execution Outcome/);
+  assert.match(page, /Verification Commands/);
   assert.match(page, /optimization_goal/);
   assert.match(page, /Save strategy/);
 });

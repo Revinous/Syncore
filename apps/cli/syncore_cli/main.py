@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+import webbrowser
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -219,6 +222,69 @@ def _ensure_api_running(config) -> None:
     raise SyncoreApiError(
         f"Failed to start orchestrator at {config.api_url}. See logs: {log_path}"
     )
+
+
+def _web_url() -> str:
+    return os.getenv("SYNCORE_WEB_URL", "http://localhost:3000").rstrip("/")
+
+
+def _ensure_web_running() -> str:
+    web_url = _web_url()
+    parsed = urlparse(web_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 3000
+    if host not in {"localhost", "127.0.0.1"}:
+        raise SyncoreApiError(
+            f"Syncore Web UI is configured at {web_url}. Auto-start supports local URLs only."
+        )
+
+    health_url = f"{parsed.scheme or 'http'}://{host}:{port}"
+    try:
+        with urlopen(health_url, timeout=1.5):
+            return web_url
+    except URLError:
+        pass
+
+    repo_root = _repo_root()
+    next_bin = repo_root / "apps/web/node_modules/.bin/next"
+    if not next_bin.exists():
+        raise SyncoreApiError(
+            f"Missing Next.js dev binary at {next_bin}. Run `make install-local`."
+        )
+
+    env = os.environ.copy()
+    env.setdefault("NEXT_PUBLIC_API_BASE_URL", "http://localhost:8000")
+    env.setdefault("ORCHESTRATOR_INTERNAL_URL", env["NEXT_PUBLIC_API_BASE_URL"])
+
+    log_dir = repo_root / ".syncore"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "web-cli.log"
+
+    with log_path.open("a", encoding="utf-8") as log_file:
+        subprocess.Popen(
+            [str(next_bin), "dev", "--port", str(port)],
+            cwd=repo_root / "apps/web",
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            with urlopen(health_url, timeout=1.5):
+                return web_url
+        except URLError:
+            time.sleep(0.25)
+
+    raise SyncoreApiError(
+        f"Failed to start Web UI at {web_url}. See logs: {log_path}"
+    )
+
+
+def _open_browser(url: str) -> None:
+    webbrowser.open(url)
 
 
 @openai_auth_app.command("login")
@@ -1033,10 +1099,18 @@ def providers(json_output: bool = typer.Option(False, "--json")) -> None:
 
 
 @app.command("open")
-def open_workspace(workspace_id_or_name: str) -> None:
+def open_workspace(
+    workspace_id_or_name: str,
+    web: bool = typer.Option(False, "--web", help="Open the Web UI in a browser."),
+    tui: bool = typer.Option(False, "--tui", help="Open the TUI after startup."),
+    headless: bool = typer.Option(
+        False, "--headless", help="Start services and attach workspace without opening a UI."
+    ),
+) -> None:
     config = load_config()
     try:
         _ensure_api_running(config)
+        web_url = _ensure_web_running()
         client = _client(config)
         workspace_id, workspace = _resolve_or_create_workspace(
             client, workspace_id_or_name
@@ -1049,11 +1123,33 @@ def open_workspace(workspace_id_or_name: str) -> None:
         f"Opening workspace: {workspace.get('name', workspace_id)} "
         f"({workspace.get('root_path', 'unknown')})"
     )
-    SyncoreTuiApp(
-        config,
-        selected_workspace_id=workspace_id,
-        selected_workspace_name=str(workspace.get("name", workspace_id)),
-    ).run()
+
+    selected_workspace_name = str(workspace.get("name", workspace_id))
+    should_open_tui = tui or not web and not headless
+    if web:
+        _open_browser(f"{web_url}/workspaces")
+    if headless:
+        typer.echo(f"Services ready: API={config.api_url} WEB={web_url}")
+        return
+    if should_open_tui:
+        SyncoreTuiApp(
+            config,
+            selected_workspace_id=workspace_id,
+            selected_workspace_name=selected_workspace_name,
+        ).run()
+
+
+@app.command("web")
+def web() -> None:
+    config = load_config()
+    try:
+        _ensure_api_running(config)
+        web_url = _ensure_web_running()
+    except SyncoreApiError as error:
+        print_error(str(error))
+        raise typer.Exit(code=1)
+    _open_browser(web_url)
+    typer.echo(f"Web UI: {web_url}")
 
 
 @app.command("tui")

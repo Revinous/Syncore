@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -120,3 +121,49 @@ def test_dashboard_summary_empty_ok_without_redis(monkeypatch, tmp_path) -> None
     assert payload["workspace_count"] == 0
     assert payload["open_task_count"] == 0
     assert payload["active_run_count"] == 0
+
+
+def test_dashboard_reconciles_stale_runs(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "syncore.db"
+    _init_sqlite(db_path)
+
+    monkeypatch.setenv("SYNCORE_RUNTIME_MODE", "native")
+    monkeypatch.setenv("SYNCORE_DB_BACKEND", "sqlite")
+    monkeypatch.setenv("SQLITE_DB_PATH", str(db_path))
+    monkeypatch.setenv("REDIS_REQUIRED", "false")
+    monkeypatch.setenv("RUN_STALE_TIMEOUT_SECONDS", "60")
+
+    client = TestClient(create_app())
+
+    task = client.post(
+        "/tasks",
+        json={"title": "Stale planner", "task_type": "analysis", "complexity": "low"},
+    )
+    assert task.status_code == 201
+    task_id = task.json()["id"]
+
+    run = client.post(
+        "/agent-runs",
+        json={"task_id": task_id, "role": "planner", "status": "running"},
+    )
+    assert run.status_code == 201
+    run_id = run.json()["id"]
+
+    stale_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE agent_runs SET updated_at = ? WHERE id = ?",
+            (stale_at, run_id),
+        )
+        connection.commit()
+
+    response = client.get("/dashboard/summary")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_run_count"] == 0
+
+    runs = client.get("/agent-runs")
+    assert runs.status_code == 200
+    reconciled = next(item for item in runs.json() if item["id"] == run_id)
+    assert reconciled["status"] == "blocked"
+    assert "Marked stale" in (reconciled["error_message"] or "")

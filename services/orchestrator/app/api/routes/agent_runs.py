@@ -11,7 +11,7 @@ router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 
 
 def get_agent_run_service(settings: Settings = Depends(get_settings)) -> AgentRunService:
-    return AgentRunService(build_memory_store(settings))
+    return AgentRunService(build_memory_store(settings), settings=settings)
 
 
 @router.post("", response_model=AgentRun, status_code=201)

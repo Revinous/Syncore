@@ -793,6 +793,19 @@ class RunExecutionService:
                 stage="verification",
                 reason=str(verification.get("reason") or "verification failed"),
             )
+            report_ref_id = self._store_workspace_execution_report(
+                task_id=payload.task_id,
+                status="failed",
+                summary_reason=str(verification.get("reason") or "verification failed"),
+                provider=provider_name,
+                target_model=payload.target_model,
+                profile=profile,
+                changed_files=changed_files,
+                diff_refs=diff_refs,
+                planned_actions=planned_actions,
+                command_results=command_results,
+                verification=verification,
+            )
             self._update_workspace_learning_failure(
                 workspace_id=task.workspace_id,
                 reason=str(verification.get("reason") or "verification failed"),
@@ -807,6 +820,7 @@ class RunExecutionService:
                     "failure_category": classification["category"],
                     "recommended_strategy": classification["strategy"],
                     "provider": provider_name,
+                    "report_ref_id": report_ref_id,
                 },
             )
             raise RuntimeError(str(verification.get("reason") or "Workspace verification failed"))
@@ -821,6 +835,24 @@ class RunExecutionService:
                 stage="verification",
                 reason=str(candidate_validation.get("reason") or "candidate validation failed"),
             )
+            report_ref_id = self._store_workspace_execution_report(
+                task_id=payload.task_id,
+                status="failed",
+                summary_reason=str(
+                    candidate_validation.get("reason") or "candidate validation failed"
+                ),
+                provider=provider_name,
+                target_model=payload.target_model,
+                profile=profile,
+                changed_files=changed_files,
+                diff_refs=diff_refs,
+                planned_actions=planned_actions,
+                command_results=command_results,
+                verification={
+                    **verification,
+                    "candidate_validation": candidate_validation,
+                },
+            )
             self._record_event(
                 task_id=payload.task_id,
                 event_type="workspace.execution.meaningful_change.failed",
@@ -829,12 +861,26 @@ class RunExecutionService:
                     "failure_category": classification["category"],
                     "recommended_strategy": classification["strategy"],
                     "candidate_id": str(candidate_validation.get("candidate_id") or ""),
+                    "report_ref_id": report_ref_id,
                 },
             )
             raise RuntimeError(
                 str(candidate_validation.get("reason") or "Meaningful change gate failed")
             )
 
+        report_ref_id = self._store_workspace_execution_report(
+            task_id=payload.task_id,
+            status="completed",
+            summary_reason=str(verification.get("reason") or "Workspace verification passed."),
+            provider=provider_name,
+            target_model=payload.target_model,
+            profile=profile,
+            changed_files=changed_files,
+            diff_refs=diff_refs,
+            planned_actions=planned_actions,
+            command_results=command_results,
+            verification=verification,
+        )
         self._record_event(
             task_id=payload.task_id,
             event_type="workspace.execution.completed",
@@ -846,6 +892,7 @@ class RunExecutionService:
                 "read_refs": len([item for item in read_refs if item]),
                 "profile": profile,
                 "meaningful_change": "true",
+                "report_ref_id": report_ref_id,
             },
         )
 
@@ -904,6 +951,7 @@ class RunExecutionService:
             "commands": command_results,
             "baton_id": str(baton.id),
             "verification": verification,
+            "report_ref_id": report_ref_id,
             "digest": digest.model_dump(mode="json"),
         }
 
@@ -2518,6 +2566,58 @@ class RunExecutionService:
                 "target_model": model,
                 "chars": len(output_text),
             },
+        )
+        return ref_id
+
+    def _store_workspace_execution_report(
+        self,
+        *,
+        task_id: UUID,
+        status: str,
+        summary_reason: str,
+        provider: str,
+        target_model: str,
+        profile: str,
+        changed_files: list[str],
+        diff_refs: list[str],
+        planned_actions: list[str],
+        command_results: list[dict[str, object]],
+        verification: dict[str, object],
+    ) -> str:
+        payload = {
+            "status": status,
+            "summary_reason": summary_reason,
+            "provider": provider,
+            "target_model": target_model,
+            "profile": profile,
+            "changed_files": changed_files,
+            "diff_ref_ids": diff_refs,
+            "planned_actions": planned_actions[:40],
+            "commands": command_results,
+            "verification": verification,
+        }
+        original = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2)
+        summary = shorten(
+            f"{status} {summary_reason} files={len(changed_files)} commands={len(command_results)}",
+            width=220,
+            placeholder=" ...",
+        )
+        record = self._store.upsert_context_reference(
+            ref_id=build_ref_id(task_id, "workspace_execution_report", original),
+            task_id=task_id,
+            content_type="workspace_execution_report",
+            original_content=original,
+            summary=summary,
+            retrieval_hint=(
+                "Workspace execution report with verification commands, diff refs, and "
+                "outcome rationale."
+            ),
+        )
+        ref_id = str(record["ref_id"])
+        self._record_event(
+            task_id=task_id,
+            event_type="workspace.execution.report.stored",
+            event_data={"ref_id": ref_id, "status": status, "profile": profile},
         )
         return ref_id
 

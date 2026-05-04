@@ -7,7 +7,9 @@ import { EmptyState } from "../src/components/EmptyState";
 import { ErrorState } from "../src/components/ErrorState";
 import { Layout } from "../src/components/Layout";
 import { LoadingState } from "../src/components/LoadingState";
+import { PageHeader } from "../src/components/PageHeader";
 import { StatusBadge } from "../src/components/StatusBadge";
+import { Surface } from "../src/components/Surface";
 
 export default function RunsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -35,37 +37,52 @@ export default function RunsPage() {
 
   return (
     <Layout title="Agent Runs">
-      <button onClick={() => void load()} style={{ marginBottom: 12 }}>Refresh</button>
-      {loading && <LoadingState message="Loading runs..." />}
-      {error && <ErrorState message={error} />}
-      {!loading && !error && runs.length === 0 && <EmptyState message="No agent runs yet." />}
+      <div className="page-shell">
+        <PageHeader
+          title="Run Monitor"
+          subtitle="Track which role is executing, where it is attached, and whether the delivery loop is healthy or stalled."
+          kicker="Execution Threads"
+          actions={<button className="button" onClick={() => void load()}>Refresh Runs</button>}
+          metrics={[
+            { label: "Active Records", value: runs.length },
+            { label: "Live States", value: runs.filter((run) => run.status === "running" || run.status === "in_progress").length },
+          ]}
+        />
 
-      {runs.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", background: "#fff", border: "1px solid #d8dbe2" }}>
-          <thead>
-            <tr>
-              <th align="left">Run ID</th>
-              <th align="left">Task</th>
-              <th align="left">Role</th>
-              <th align="left">Status</th>
-              <th align="left">Updated</th>
-            </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td>{run.id.slice(0, 8)}...</td>
-                <td>
-                  <Link href={`/tasks/${run.task_id}`}>{tasksById[run.task_id]?.title ?? run.task_id}</Link>
-                </td>
-                <td>{run.role}</td>
-                <td><StatusBadge status={run.status} /></td>
-                <td>{new Date(run.updated_at).toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+        {loading && <LoadingState message="Loading runs..." />}
+        {error && <ErrorState message={error} />}
+
+        <Surface title="Agent Run Ledger" description="Recent execution attempts and the task each run is attached to.">
+          {!loading && !error && runs.length === 0 ? (
+            <EmptyState message="No agent runs yet." />
+          ) : runs.length > 0 ? (
+            <div className="data-table-wrap">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Run ID</th>
+                    <th>Task</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.map((run) => (
+                    <tr key={run.id}>
+                      <td><span className="inline-code">{run.id.slice(0, 8)}...</span></td>
+                      <td><Link href={`/tasks/${run.task_id}`}>{tasksById[run.task_id]?.title ?? run.task_id}</Link></td>
+                      <td>{run.role}</td>
+                      <td><StatusBadge status={run.status} /></td>
+                      <td>{new Date(run.updated_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </Surface>
+      </div>
     </Layout>
   );
 }

@@ -19,7 +19,9 @@ import { EmptyState } from "../src/components/EmptyState";
 import { ErrorState } from "../src/components/ErrorState";
 import { Layout } from "../src/components/Layout";
 import { LoadingState } from "../src/components/LoadingState";
+import { PageHeader } from "../src/components/PageHeader";
 import { StatusBadge } from "../src/components/StatusBadge";
+import { Surface } from "../src/components/Surface";
 
 export default function DiagnosticsPage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -59,50 +61,70 @@ export default function DiagnosticsPage() {
 
   return (
     <Layout title="Diagnostics">
-      <button onClick={() => void load()} style={{ marginBottom: 12 }}>Refresh</button>
-      <p>Frontend API base URL: {getApiBaseUrl()}</p>
-      {loading && <LoadingState message="Loading diagnostics..." />}
-      {error && <ErrorState message={error} />}
+      <div className="page-shell">
+        <PageHeader
+          title="Operational Diagnostics"
+          subtitle="Inspect route registration, runtime shape, dependency posture, and the exact frontend-to-orchestrator connection being used right now."
+          kicker="Operational State"
+          actions={<button className="button" onClick={() => void load()}>Refresh Diagnostics</button>}
+          metrics={[
+            { label: "API Base", value: getApiBaseUrl() },
+            { label: "Health", value: health?.status ?? "unknown" },
+          ]}
+        />
 
-      {overview && config && health && servicesHealth && (
-        <>
-          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
-            <h2>Service Health</h2>
-            <p>Orchestrator: <StatusBadge status={health.status} /></p>
-            <p>Dependencies: <StatusBadge status={servicesHealth.status} /></p>
-            <ul>
-              {servicesHealth.dependencies.map((dependency) => (
-                <li key={dependency.name}>{dependency.name}: <StatusBadge status={dependency.status} /> ({dependency.detail})</li>
-              ))}
-            </ul>
-          </section>
+        {loading && <LoadingState message="Loading diagnostics..." />}
+        {error && <ErrorState message={error} />}
 
-          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
-            <h2>Runtime</h2>
-            <p>Runtime mode: {overview.runtime_mode}</p>
-            <p>DB backend: {overview.db_backend}</p>
-            <p>Redis required: {String(overview.redis_required)}</p>
-          </section>
+        {overview && config && health && servicesHealth ? (
+          <div className="content-grid two-column">
+            <div className="stack">
+              <Surface title="Service Health" description="Health endpoints surfaced by the orchestrator.">
+                <div className="meta-grid">
+                  <div className="meta-card">
+                    <span className="meta-label">Orchestrator</span>
+                    <div className="meta-value"><StatusBadge status={health.status} /></div>
+                  </div>
+                  <div className="meta-card">
+                    <span className="meta-label">Dependencies</span>
+                    <div className="meta-value"><StatusBadge status={servicesHealth.status} /></div>
+                  </div>
+                </div>
+                <div className="stack" style={{ marginTop: 16 }}>
+                  {servicesHealth.dependencies.map((dependency) => (
+                    <div className="meta-card" key={dependency.name}>
+                      <span className="meta-label">{dependency.name}</span>
+                      <div className="meta-value"><StatusBadge status={dependency.status} /> {dependency.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              </Surface>
 
-          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
-            <h2>Config</h2>
-            <pre>{JSON.stringify(config, null, 2)}</pre>
-          </section>
+              <Surface title="Runtime Shape" description="Backend runtime flags relevant to local operation.">
+                <div className="meta-grid">
+                  <div className="meta-card"><span className="meta-label">Runtime Mode</span><div className="meta-value">{overview.runtime_mode}</div></div>
+                  <div className="meta-card"><span className="meta-label">DB Backend</span><div className="meta-value">{overview.db_backend}</div></div>
+                  <div className="meta-card"><span className="meta-label">Redis Required</span><div className="meta-value">{String(overview.redis_required)}</div></div>
+                </div>
+              </Surface>
+            </div>
 
-          <section style={{ marginBottom: 16, background: "#fff", border: "1px solid #d8dbe2", borderRadius: 8, padding: 12 }}>
-            <h2>Registered Routes</h2>
-            {!routes?.routes?.length ? (
-              <EmptyState message="No route metadata available." />
-            ) : (
-              <ul>
-                {routes.routes.slice(0, 200).map((route) => (
-                  <li key={route}>{route}</li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
+            <div className="stack">
+              <Surface title="Config Snapshot" description="Current orchestrator config as exposed by diagnostics.">
+                <div className="code-block">{JSON.stringify(config, null, 2)}</div>
+              </Surface>
+
+              <Surface title="Registered Routes" description="Current route inventory available to the UI and CLI.">
+                {!routes?.routes?.length ? (
+                  <EmptyState message="No route metadata available." />
+                ) : (
+                  <div className="code-block">{routes.routes.slice(0, 200).join("\n")}</div>
+                )}
+              </Surface>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </Layout>
   );
 }
