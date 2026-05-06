@@ -65,7 +65,37 @@ class FakeClient:
 
     def get_task(self, task_id: str):
         return {
-            "task": {"id": task_id, "task_type": "analysis", "complexity": "medium"}
+            "task": {
+                "id": task_id,
+                "title": "demo task",
+                "status": "completed",
+                "task_type": "analysis",
+                "complexity": "medium",
+                "workspace_id": "w1",
+            }
+        }
+
+    def get_task_execution_report(self, task_id: str):
+        return {
+            "task_id": task_id,
+            "outcome": "completed",
+            "outcome_status": "completed",
+            "meaningful_change": True,
+            "verification_status": "ok",
+            "summary_reason": "Verification passed and artifact diff was persisted.",
+            "verification_reason": "pytest passed",
+            "last_updated_at": "now",
+            "changed_files": ["syncore.yaml"],
+            "planned_actions": ["Create syncore.yaml"],
+            "verification_commands": [
+                {
+                    "command": "pytest -q",
+                    "status": "ok",
+                    "output_preview": "12 passed",
+                }
+            ],
+            "output_artifacts": [],
+            "diff_artifacts": [],
         }
 
     def switch_task_model(self, task_id: str, payload):
@@ -81,6 +111,17 @@ class FakeClient:
             "estimated_token_count": 512,
             "included_refs": [],
         }
+
+    def list_task_model_switches(self, task_id: str, limit: int = 100):
+        return [
+            {
+                "task_id": task_id,
+                "from_provider": "openai",
+                "from_model": "gpt-4.1-mini",
+                "to_provider": "openai",
+                "to_model": "gpt-5.4",
+            }
+        ]
 
     def get_task_model_policy(self, task_id: str):
         return {
@@ -425,7 +466,10 @@ def test_open_command_web_mode_starts_services_and_opens_browser(monkeypatch) ->
     monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
     monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
     monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
-    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(
+        "syncore_cli.main._open_browser",
+        lambda url: opened.setdefault("url", url) or True,
+    )
 
     class FakeTui:
         def __init__(self, *args, **kwargs):
@@ -436,6 +480,27 @@ def test_open_command_web_mode_starts_services_and_opens_browser(monkeypatch) ->
     result = runner.invoke(app, ["open", "syncore", "--web"])
     assert result.exit_code == 0
     assert opened["url"] == "http://localhost:3000/workspaces"
+    assert "Web UI:" in result.stdout
+
+
+def test_open_command_web_mode_without_browser_still_reports_url(monkeypatch) -> None:
+    runner = CliRunner()
+    fake = FakeClient()
+
+    monkeypatch.setattr("syncore_cli.main._client", lambda config=None: fake)
+    monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
+    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: False)
+
+    class FakeTui:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("TUI should not launch in --web mode")
+
+    monkeypatch.setattr("syncore_cli.main.SyncoreTuiApp", FakeTui)
+
+    result = runner.invoke(app, ["open", "syncore", "--web"])
+    assert result.exit_code == 0
+    assert "Web UI ready: http://localhost:3000/workspaces" in result.stdout
 
 
 def test_open_command_headless_starts_services_without_ui(monkeypatch) -> None:
@@ -463,11 +528,26 @@ def test_web_command_starts_services_and_opens_browser(monkeypatch) -> None:
 
     monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
     monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
-    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: opened.setdefault("url", url))
+    monkeypatch.setattr(
+        "syncore_cli.main._open_browser",
+        lambda url: opened.setdefault("url", url) or True,
+    )
 
     result = runner.invoke(app, ["web"])
     assert result.exit_code == 0
     assert opened["url"] == "http://localhost:3000"
+
+
+def test_web_command_without_browser_still_reports_url(monkeypatch) -> None:
+    runner = CliRunner()
+
+    monkeypatch.setattr("syncore_cli.main._ensure_api_running", lambda config: None)
+    monkeypatch.setattr("syncore_cli.main._ensure_web_running", lambda: "http://localhost:3000")
+    monkeypatch.setattr("syncore_cli.main._open_browser", lambda url: False)
+
+    result = runner.invoke(app, ["web"])
+    assert result.exit_code == 0
+    assert "Web UI ready: http://localhost:3000" in result.stdout
 
 
 def test_openai_auth_models_command(monkeypatch) -> None:
@@ -500,6 +580,32 @@ def test_run_result_json(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["run_id"] == "r1"
     assert payload["output_ref_id"] == "ctxref_1"
+
+
+def test_run_result_human_output(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["run", "result", "r1"])
+    assert result.exit_code == 0
+    assert "Output preview" in result.stdout
+    assert "full output" in result.stdout
+
+
+def test_task_show_human_output_includes_execution_report(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["task", "show", "t1"])
+    assert result.exit_code == 0
+    assert "Execution outcome:" in result.stdout
+    assert "syncore.yaml" in result.stdout
+
+
+def test_inspect_command_delegates_to_task_show(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["inspect", "t1"])
+    assert result.exit_code == 0
+    assert "Task: demo task" in result.stdout
 
 
 def test_task_switch_model_json(monkeypatch) -> None:

@@ -29,6 +29,13 @@ set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT}"
 
+run_syncore() {
+  local caller_cwd="\$PWD"
+  cd "\${REPO_ROOT}"
+  exec env SYNCORE_CALLER_CWD="\${caller_cwd}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. \
+    .venv/bin/python -c "from apps.cli.syncore_cli.main import app; app(prog_name='syncore')" "\$@"
+}
+
 case "\${1:-dev}" in
   install)
     shift
@@ -47,34 +54,31 @@ case "\${1:-dev}" in
     if [[ "\${1:-}" == "" ]]; then
       exec bash "\${REPO_ROOT}/dev.sh"
     fi
-    CALLER_CWD="\$PWD"
-    cd "\${REPO_ROOT}"
-    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main workspace "\$@"
+    run_syncore workspace "\$@"
     ;;
   task)
     shift
-    CALLER_CWD="\$PWD"
-    cd "\${REPO_ROOT}"
-    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main task "\$@"
+    run_syncore task "\$@"
     ;;
   demo-local)
     shift
     exec bash "\${REPO_ROOT}/scripts/demo_local_flow.sh" "\$@"
     ;;
   *)
-    CALLER_CWD="\$PWD"
-    cd "\${REPO_ROOT}"
     if [[ "\${1:-}" != "" ]] && [[ "\${1}" != -* ]]; then
       case "\${1}" in
-        status|dashboard|events|baton|route|digest|diagnostics|open|tui|help|--help|-h|run|auth|metrics|notifications)
-          exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main "\$@"
+        status|dashboard|events|baton|route|digest|diagnostics|providers|open|web|tui|workspace|task|run|metrics|notifications|auth|install|db-init|dev|demo-local|help|--help|-h)
           ;;
         *)
-          exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main open "\$@"
+          echo "Unknown command '\${1}'."
+          echo "Use: syncore open \${1}"
+          echo "Other entrypoints: syncore web | syncore tui | syncore status"
+          echo "Help: syncore --help"
+          exit 2
           ;;
       esac
     fi
-    exec env SYNCORE_CALLER_CWD="\${CALLER_CWD}" SYNCORE_REPO_ROOT="\${REPO_ROOT}" PYTHONPATH=. .venv/bin/python -m apps.cli.syncore_cli.main "\$@"
+    run_syncore "\$@"
     ;;
 esac
 EOF

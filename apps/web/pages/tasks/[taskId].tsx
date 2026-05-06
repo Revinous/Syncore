@@ -231,13 +231,19 @@ export default function TaskDetailPage() {
 
                 <Surface title="Agent Runs" description="Runs already attached to this task.">
                   {detail.agent_runs.length === 0 ? (
-                    <EmptyState message="No runs yet." />
+                    <EmptyState
+                      message="No runs are attached to this task yet."
+                      hint="Start an agent run or execute the task to generate output, verification results, and artifacts."
+                    />
                   ) : (
                     <div className="stack">
                       {detail.agent_runs.map((run: AgentRun) => (
                         <div className="meta-card" key={run.id}>
                           <span className="meta-label">{run.role}</span>
                           <div className="meta-value"><StatusBadge status={run.status} /></div>
+                          <div className="helper-text" style={{ marginTop: 8 }}>
+                            {run.output_summary ?? run.error_message ?? "No output summary recorded yet."}
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -246,7 +252,10 @@ export default function TaskDetailPage() {
 
                 <Surface title="Child Tasks" description="Planner fanout and current completion board.">
                   {!childrenBoard || !childrenBoard.has_children ? (
-                    <EmptyState message="No spawned child tasks." />
+                    <EmptyState
+                      message="No spawned child tasks were recorded for this task."
+                      hint="Planner fanout appears here when autonomy decomposes the parent task into implementation, review, or analysis children."
+                    />
                   ) : (
                     <>
                       <div className="meta-grid">
@@ -268,7 +277,14 @@ export default function TaskDetailPage() {
                 </Surface>
 
                 <Surface title="Routing Decision" description="Latest next-action route computed for this task.">
-                  {routing ? <div className="code-block">{JSON.stringify(routing, null, 2)}</div> : <EmptyState message="No routing decision yet." />}
+                  {routing ? (
+                    <div className="code-block">{JSON.stringify(routing, null, 2)}</div>
+                  ) : (
+                    <EmptyState
+                      message="No routing decision has been recorded yet."
+                      hint="Use “Route next action” to ask the orchestrator which worker role and model tier should act next."
+                    />
+                  )}
                 </Surface>
               </div>
 
@@ -277,12 +293,14 @@ export default function TaskDetailPage() {
                   {digest ? (
                     <div className="stack">
                       <div className="callout">
-                        <strong>Headline</strong>
-                        <div>{digest.headline}</div>
+                        <p className="callout-title">Headline</p>
+                        <p className="callout-copy">{digest.headline}</p>
                       </div>
                       <div className="callout">
-                        <strong>ELI5</strong>
-                        <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{formatEli5ForDisplay(eli5Text(digest))}</div>
+                        <p className="callout-title">ELI5</p>
+                        <p className="callout-copy" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                          {formatEli5ForDisplay(eli5Text(digest))}
+                        </p>
                       </div>
                       <div className="meta-grid">
                         <div className="meta-card"><span className="meta-label">Risk</span><div className="meta-value">{digest.risk_level}</div></div>
@@ -291,13 +309,19 @@ export default function TaskDetailPage() {
                       <div className="code-block">{JSON.stringify(digest, null, 2)}</div>
                     </div>
                   ) : (
-                    <EmptyState message="No digest yet." />
+                    <EmptyState
+                      message="No digest has been generated for this task yet."
+                      hint="Generate a digest after events, runs, or baton handoffs exist so the analyst can explain what changed and why it matters."
+                    />
                   )}
                 </Surface>
 
                 <Surface title="Event Timeline" description="Raw project events attached to this task.">
                   {events.length === 0 ? (
-                    <EmptyState message="No events." />
+                    <EmptyState
+                      message="No task events were recorded yet."
+                      hint="Execution, baton handoffs, approval gates, and analyst generation all leave events here."
+                    />
                   ) : (
                     <div className="event-stream">
                       {events.map((event: ProjectEvent) => (
@@ -312,7 +336,10 @@ export default function TaskDetailPage() {
 
                 <Surface title="Baton Packets" description="Role handoffs and summarized transfer context.">
                   {batons.length === 0 ? (
-                    <EmptyState message="No baton handoffs." />
+                    <EmptyState
+                      message="No baton handoffs were recorded."
+                      hint="Planner, implementer, reviewer, and analyst handoffs appear here once the task moves through the multi-agent loop."
+                    />
                   ) : (
                     <div className="baton-stream">
                       {batons.map((packet: BatonPacket) => (
@@ -333,10 +360,13 @@ export default function TaskDetailPage() {
               tone="highlight"
             >
               {!executionReport ? (
-                <EmptyState message="No execution report recorded yet." />
+                <EmptyState
+                  message="No execution report was persisted for this task yet."
+                  hint="Execution reports appear after workspace execution or run completion and consolidate outputs, diffs, and verification."
+                />
               ) : (
                 <div className="stack">
-                  <div className="meta-grid">
+                  <div className="outcome-grid">
                     <div className="meta-card">
                       <span className="meta-label">Outcome</span>
                       <div className="meta-value"><StatusBadge status={executionReport.outcome_status} /></div>
@@ -356,8 +386,8 @@ export default function TaskDetailPage() {
                   </div>
 
                   <div className="callout">
-                    <strong>Why it ended this way</strong>
-                    <div>{executionReport.summary_reason}</div>
+                    <p className="callout-title">Why it ended this way</p>
+                    <p className="callout-copy">{executionReport.summary_reason}</p>
                     {executionReport.verification_reason ? (
                       <div className="helper-text" style={{ marginTop: 8 }}>{executionReport.verification_reason}</div>
                     ) : null}
@@ -365,7 +395,7 @@ export default function TaskDetailPage() {
 
                   <div className="panel-grid two-up">
                     <div className="callout">
-                      <strong>Changed Files</strong>
+                      <p className="callout-title">Changed Files</p>
                       {executionReport.changed_files.length === 0 ? (
                         <div className="helper-text">No changed files recorded.</div>
                       ) : (
@@ -375,7 +405,7 @@ export default function TaskDetailPage() {
                       )}
                     </div>
                     <div className="callout">
-                      <strong>Planned Actions</strong>
+                      <p className="callout-title">Planned Actions</p>
                       {executionReport.planned_actions.length === 0 ? (
                         <div className="helper-text">No planned actions recorded.</div>
                       ) : (
@@ -386,6 +416,15 @@ export default function TaskDetailPage() {
                     </div>
                   </div>
 
+                  {executionReport.output_artifacts.length > 0 ? (
+                    <div className="callout">
+                      <p className="callout-title">Latest Output Summary</p>
+                      <p className="callout-copy">
+                        {executionReport.output_artifacts[0]?.output_preview || "No output preview recorded."}
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="panel-grid two-up">
                     <div className="surface inset">
                       <div className="section-header">
@@ -395,7 +434,10 @@ export default function TaskDetailPage() {
                         </div>
                       </div>
                       {executionReport.verification_commands.length === 0 ? (
-                        <EmptyState message="No verification command results were persisted for this task." />
+                        <EmptyState
+                          message="No verification command results were persisted for this task."
+                          hint="Once verification runs are captured, this panel shows which commands passed or failed and why."
+                        />
                       ) : (
                         <div className="stack">
                           {executionReport.verification_commands.map((item, index) => (
@@ -419,7 +461,10 @@ export default function TaskDetailPage() {
                         </div>
                       </div>
                       {executionReport.output_artifacts.length === 0 ? (
-                        <EmptyState message="No run outputs recorded." />
+                        <EmptyState
+                          message="No run outputs were recorded for this task."
+                          hint="Run outputs appear here after a worker produces an output summary or a captured failure message."
+                        />
                       ) : (
                         <div className="stack">
                           {executionReport.output_artifacts.map((item) => (
@@ -448,7 +493,10 @@ export default function TaskDetailPage() {
                       </div>
                     </div>
                     {executionReport.diff_artifacts.length === 0 ? (
-                      <EmptyState message="No diff artifacts recorded." />
+                      <EmptyState
+                        message="No diff artifacts were recorded for this task."
+                        hint="When workspace execution stores file diffs, you can inspect the persisted previews here."
+                      />
                     ) : (
                       <div className="stack">
                         {executionReport.diff_artifacts.map((artifact) => (
@@ -473,7 +521,10 @@ export default function TaskDetailPage() {
 
             <Surface title="Model Strategy" description="Per-stage provider and model policy used by autonomy arbitration.">
               {!modelPolicy ? (
-                <EmptyState message="No model strategy loaded." />
+                <EmptyState
+                  message="No model strategy is loaded for this task."
+                  hint="Model strategy appears once the orchestrator or operator assigns provider and model preferences."
+                />
               ) : (
                 <form
                   onSubmit={(event) => {

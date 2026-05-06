@@ -123,10 +123,9 @@ syncore metrics context
 
 ```bash
 syncore open my-app
-syncore my-app
 ```
 
-`syncore my-app` is a shorthand for opening a workspace-driven TUI session.
+Use the explicit `syncore open <workspace>` form for workspace startup.
 
 ## Error Behavior
 

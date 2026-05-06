@@ -6,6 +6,7 @@ from typing import Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 console = Console()
 
@@ -39,3 +40,8 @@ def print_table(title: str, columns: list[str], rows: list[list[str]]) -> None:
     for row in rows:
         table.add_row(*row)
     console.print(table)
+
+
+def print_lines_panel(title: str, lines: list[str]) -> None:
+    body = "\n".join(line for line in lines if line is not None)
+    console.print(Panel(Text(body), title=title))

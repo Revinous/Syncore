@@ -383,9 +383,11 @@ class SyncoreTuiApp(App[None]):
         self._task_batons: list[dict[str, Any]] = []
         self._task_runs: list[dict[str, Any]] = []
         self._latest_task_run: dict[str, Any] | None = None
+        self._latest_run_result: dict[str, Any] | None = None
         self._task_latest_baton: dict[str, Any] | None = None
         self._task_routing: dict[str, Any] | None = None
         self._task_digest: dict[str, Any] | None = None
+        self._task_execution_report: dict[str, Any] | None = None
         self._task_preferences: dict[str, str] = {}
         self._latest_model_switch: dict[str, Any] | None = None
         self._last_scan: dict[str, Any] | None = None
@@ -597,9 +599,11 @@ class SyncoreTuiApp(App[None]):
             self._task_batons = []
             self._task_runs = []
             self._latest_task_run = None
+            self._latest_run_result = None
             self._task_latest_baton = None
             self._task_routing = None
             self._task_digest = None
+            self._task_execution_report = None
             self._task_preferences = {}
             self._latest_model_switch = None
             return
@@ -622,6 +626,16 @@ class SyncoreTuiApp(App[None]):
         self._task_digest = self._safe_request(
             lambda: self._client.get_task_digest(task_id), None
         )
+        self._task_execution_report = self._safe_request(
+            lambda: self._client.get_task_execution_report(task_id), None
+        )
+        if self._latest_task_run is not None and self._latest_task_run.get("id"):
+            self._latest_run_result = self._safe_request(
+                lambda: self._client.get_agent_run_result(str(self._latest_task_run.get("id"))),
+                None,
+            )
+        else:
+            self._latest_run_result = None
         self._task_preferences = self._extract_task_preferences(self._task_events)
         self._latest_model_switch = self._extract_latest_model_switch(self._task_events)
 
@@ -938,7 +952,7 @@ class SyncoreTuiApp(App[None]):
         return "\n".join(lines)
 
     def _render_task_detail_center(self) -> str:
-        lines = ["Baton / Routing / Digest"]
+        lines = ["Execution / Baton / Routing / Digest"]
         if self._latest_task_run:
             lines.extend(
                 [
@@ -956,6 +970,31 @@ class SyncoreTuiApp(App[None]):
                 lines.append("result: (no output yet)")
         else:
             lines.append("latest run: none")
+        if self._task_execution_report:
+            changed_files = self._task_execution_report.get("changed_files") or []
+            verification_commands = self._task_execution_report.get("verification_commands") or []
+            lines.extend(
+                [
+                    "",
+                    f"execution outcome: {self._task_execution_report.get('outcome', '-')}",
+                    f"verification: {self._task_execution_report.get('verification_status', '-')}",
+                    f"meaningful change: {self._task_execution_report.get('meaningful_change', '-')}",
+                    f"changed files: {len(changed_files)}",
+                    f"verification commands: {len(verification_commands)}",
+                ]
+            )
+            if changed_files:
+                lines.append("changed:")
+                lines.extend([f"- {path}" for path in changed_files[:5]])
+        if self._latest_run_result:
+            lines.extend(
+                [
+                    "",
+                    f"output ref: {self._latest_run_result.get('output_ref_id', '-')}",
+                    f"context ref: {self._latest_run_result.get('context_ref_id', '-')}",
+                    f"summary: {str(self._latest_run_result.get('output_summary') or '-')[:96]}",
+                ]
+            )
         if self._task_latest_baton:
             lines.append(
                 f"latest baton: {self._task_latest_baton.get('summary', self._task_latest_baton.get('id'))}"
@@ -994,16 +1033,29 @@ class SyncoreTuiApp(App[None]):
         run = self._selected_run()
         if run is None:
             return "No runs."
-        return "\n".join(
-            [
-                "Selected run",
-                f"id: {run.get('id')}",
-                f"task_id: {run.get('task_id')}",
-                f"role: {run.get('role')}",
-                f"status: {run.get('status')}",
-                f"updated: {run.get('updated_at')}",
-            ]
+        run_result = self._safe_request(
+            lambda: self._client.get_agent_run_result(str(run.get("id"))),
+            None,
         )
+        lines = [
+            "Selected run",
+            f"id: {run.get('id')}",
+            f"task_id: {run.get('task_id')}",
+            f"role: {run.get('role')}",
+            f"status: {run.get('status')}",
+            f"updated: {run.get('updated_at')}",
+        ]
+        if isinstance(run_result, dict):
+            lines.extend(
+                [
+                    "",
+                    f"prompt ref: {run_result.get('prompt_ref_id') or '-'}",
+                    f"context ref: {run_result.get('context_ref_id') or '-'}",
+                    f"output ref: {run_result.get('output_ref_id') or '-'}",
+                    f"summary: {str(run_result.get('output_summary') or '-')[:120]}",
+                ]
+            )
+        return "\n".join(lines)
 
     def _render_diagnostics_left(self) -> str:
         dependencies = self._services.get("dependencies", []) if self._services else []

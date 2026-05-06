@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import sys
 import time
-import webbrowser
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -19,19 +20,30 @@ from .render import (
     print_error,
     print_json,
     print_kv_panel,
+    print_lines_panel,
     print_status_table,
     print_table,
 )
 from .tui import SyncoreTuiApp
 
-app = typer.Typer(help="Syncore CLI")
-workspace_app = typer.Typer(help="Workspace commands")
-task_app = typer.Typer(help="Task commands")
-run_app = typer.Typer(help="Agent run commands")
-metrics_app = typer.Typer(help="Metrics commands")
-notifications_app = typer.Typer(help="Notification inbox commands")
-auth_app = typer.Typer(help="Authentication commands")
-openai_auth_app = typer.Typer(help="OpenAI auth commands")
+
+TYPER_KWARGS = {
+    "rich_markup_mode": None,
+    "pretty_exceptions_enable": False,
+}
+
+app = typer.Typer(name="syncore", help="Syncore CLI", **TYPER_KWARGS)
+workspace_app = typer.Typer(name="workspace", help="Workspace commands", **TYPER_KWARGS)
+task_app = typer.Typer(name="task", help="Task commands", **TYPER_KWARGS)
+run_app = typer.Typer(name="run", help="Agent run commands", **TYPER_KWARGS)
+metrics_app = typer.Typer(name="metrics", help="Metrics commands", **TYPER_KWARGS)
+notifications_app = typer.Typer(
+    name="notifications", help="Notification inbox commands", **TYPER_KWARGS
+)
+auth_app = typer.Typer(name="auth", help="Authentication commands", **TYPER_KWARGS)
+openai_auth_app = typer.Typer(
+    name="openai", help="OpenAI auth commands", **TYPER_KWARGS
+)
 app.add_typer(workspace_app, name="workspace")
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
@@ -143,6 +155,75 @@ def _latest_model_switch(events: list[dict[str, object]]) -> dict[str, object] |
         if isinstance(event_data, dict):
             return event_data
     return None
+
+
+def _truncate_text(value: object, limit: int = 160) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _task_detail_lines(
+    task: dict[str, object],
+    events: list[dict[str, object]],
+    baton: dict[str, object] | None,
+    digest: dict[str, object] | None,
+    execution_report: dict[str, object] | None,
+) -> list[str]:
+    task_payload = task.get("task", task) if isinstance(task, dict) else {}
+    if not isinstance(task_payload, dict):
+        task_payload = {}
+    lines = [
+        f"Task: {task_payload.get('title', '-')}",
+        f"ID: {task_payload.get('id', '-')}",
+        f"Status: {task_payload.get('status', '-')}",
+        f"Type: {task_payload.get('task_type', '-')}",
+        f"Complexity: {task_payload.get('complexity', '-')}",
+        f"Workspace: {task_payload.get('workspace_id') or '-'}",
+        "",
+        f"Recent events: {len(events)}",
+    ]
+    if baton:
+        lines.append(f"Latest baton: {baton.get('summary', baton.get('id', '-'))}")
+    if digest:
+        lines.append(f"Digest: {_truncate_text(digest.get('headline') or digest.get('summary', '-'))}")
+    if execution_report:
+        changed_files = execution_report.get("changed_files") or []
+        verification_commands = execution_report.get("verification_commands") or []
+        lines.extend(
+            [
+                "",
+                "Execution outcome:",
+                f"- outcome: {execution_report.get('outcome', '-')}",
+                f"- meaningful_change: {execution_report.get('meaningful_change', '-')}",
+                f"- verification: {execution_report.get('verification_status', '-')}",
+                f"- reason: {_truncate_text(execution_report.get('summary_reason', '-'))}",
+                f"- changed files: {len(changed_files)}",
+                f"- verification commands: {len(verification_commands)}",
+            ]
+        )
+        for path in list(changed_files)[:5]:
+            lines.append(f"  • {path}")
+    return lines
+
+
+def _run_result_lines(result: dict[str, object]) -> list[str]:
+    output_text = _truncate_text(result.get("output_text"), 500)
+    return [
+        f"Run ID: {result.get('run_id', '-')}",
+        f"Task ID: {result.get('task_id', '-')}",
+        f"Status: {result.get('status', '-')}",
+        f"Prompt ref: {result.get('prompt_ref_id') or '-'}",
+        f"Context ref: {result.get('context_ref_id') or '-'}",
+        f"Output ref: {result.get('output_ref_id') or '-'}",
+        f"Retrieval hint: {result.get('retrieval_hint') or '-'}",
+        "",
+        f"Summary: {_truncate_text(result.get('output_summary', '-'))}",
+        "",
+        "Output preview:",
+        output_text or "(no output text)",
+    ]
 
 
 def _ensure_api_running(config) -> None:
@@ -283,8 +364,40 @@ def _ensure_web_running() -> str:
     )
 
 
-def _open_browser(url: str) -> None:
-    webbrowser.open(url)
+def _open_browser(url: str) -> bool:
+    if os.name == "nt":
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            return False
+
+    commands: list[list[str]] = []
+    if os.getenv("WSL_DISTRO_NAME"):
+        if shutil.which("wslview"):
+            commands.append(["wslview", url])
+        if shutil.which("cmd.exe"):
+            commands.append(["cmd.exe", "/c", "start", "", url])
+    elif sys.platform == "darwin":
+        commands.append(["open", url])
+    else:
+        has_display = bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
+        if has_display and shutil.which("xdg-open"):
+            commands.append(["xdg-open", url])
+
+    for command in commands:
+        try:
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except OSError:
+            continue
+
+    return False
 
 
 @openai_auth_app.command("login")
@@ -644,6 +757,10 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
             model_policy = client.get_task_model_policy(task_id)
         except SyncoreApiError:
             model_policy = None
+        try:
+            execution_report = client.get_task_execution_report(task_id)
+        except SyncoreApiError:
+            execution_report = None
     except SyncoreApiError as error:
         print_error(str(error))
         raise typer.Exit(code=1)
@@ -653,6 +770,7 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
         "recent_events": events,
         "latest_baton": baton,
         "digest": digest,
+        "execution_report": execution_report,
         "latest_model_switch": _latest_model_switch(events),
         "model_switches": model_switches,
         "model_policy": model_policy,
@@ -660,7 +778,10 @@ def task_show(task_id: str, json_output: bool = typer.Option(False, "--json")) -
     if json_output:
         print_json(payload)
         return
-    print_kv_panel("Task Detail", payload)
+    print_lines_panel(
+        "Task Detail",
+        _task_detail_lines(task, events, baton, digest, execution_report),
+    )
 
 
 @task_app.command("model-policy")
@@ -823,11 +944,16 @@ def run_list() -> None:
             str(run.get("task_id")),
             str(run.get("role")),
             str(run.get("status")),
+            _truncate_text(run.get("output_summary") or run.get("error_message") or "", 48),
             str(run.get("updated_at")),
         ]
         for run in runs
     ]
-    print_table("Agent Runs", ["id", "task_id", "role", "status", "updated_at"], rows)
+    print_table(
+        "Agent Runs",
+        ["id", "task_id", "role", "status", "result", "updated_at"],
+        rows,
+    )
 
 
 @run_app.command("start")
@@ -896,7 +1022,7 @@ def run_result(
     if json_output:
         print_json(result)
         return
-    print_kv_panel("Run Result", result)
+    print_lines_panel("Run Result", _run_result_lines(result))
 
 
 @run_app.command("cancel")
@@ -936,6 +1062,14 @@ def events(task_id: str) -> None:
         print_error(str(error))
         raise typer.Exit(code=1)
     print_json(payload)
+
+
+@app.command(
+    "inspect",
+    help="Inspect a task with execution outcome, digest, baton, and recent event context in one operator-friendly view.",
+)
+def inspect_task(task_id: str) -> None:
+    task_show(task_id, json_output=False)
 
 
 @app.command("baton")
@@ -1098,13 +1232,45 @@ def providers(json_output: bool = typer.Option(False, "--json")) -> None:
     )
 
 
-@app.command("open")
+@app.command(
+    "open",
+    help=(
+        "Start local Syncore services if needed, resolve or create a workspace, "
+        "and open the requested operator surface."
+    ),
+)
 def open_workspace(
-    workspace_id_or_name: str,
-    web: bool = typer.Option(False, "--web", help="Open the Web UI in a browser."),
-    tui: bool = typer.Option(False, "--tui", help="Open the TUI after startup."),
+    workspace_id_or_name: str = typer.Argument(
+        ...,
+        help=(
+            "Workspace id, workspace name, or local repo directory to open. "
+            "If a local directory is not registered yet, Syncore creates the workspace first."
+        ),
+        metavar="WORKSPACE",
+    ),
+    web: bool = typer.Option(
+        False,
+        "--web",
+        help=(
+            "Open the Web UI in your browser after starting local services. "
+            "Use this when you want the browser control panel instead of the TUI."
+        ),
+    ),
+    tui: bool = typer.Option(
+        False,
+        "--tui",
+        help=(
+            "Open the terminal UI after startup. This is the default if you do not pass "
+            "--web or --headless."
+        ),
+    ),
     headless: bool = typer.Option(
-        False, "--headless", help="Start services and attach workspace without opening a UI."
+        False,
+        "--headless",
+        help=(
+            "Start local services and resolve the workspace without opening the Web UI or TUI. "
+            "Use this for background startup or scripting."
+        ),
     ),
 ) -> None:
     config = load_config()
@@ -1127,7 +1293,11 @@ def open_workspace(
     selected_workspace_name = str(workspace.get("name", workspace_id))
     should_open_tui = tui or not web and not headless
     if web:
-        _open_browser(f"{web_url}/workspaces")
+        workspace_url = f"{web_url}/workspaces"
+        if _open_browser(workspace_url):
+            typer.echo(f"Web UI: {workspace_url}")
+        else:
+            typer.echo(f"Web UI ready: {workspace_url}")
     if headless:
         typer.echo(f"Services ready: API={config.api_url} WEB={web_url}")
         return
@@ -1139,7 +1309,7 @@ def open_workspace(
         ).run()
 
 
-@app.command("web")
+@app.command("web", help="Start the local API and Web UI, then open the browser.")
 def web() -> None:
     config = load_config()
     try:
@@ -1148,8 +1318,10 @@ def web() -> None:
     except SyncoreApiError as error:
         print_error(str(error))
         raise typer.Exit(code=1)
-    _open_browser(web_url)
-    typer.echo(f"Web UI: {web_url}")
+    if _open_browser(web_url):
+        typer.echo(f"Web UI: {web_url}")
+    else:
+        typer.echo(f"Web UI ready: {web_url}")
 
 
 @app.command("tui")

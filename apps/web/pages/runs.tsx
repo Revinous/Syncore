@@ -54,7 +54,10 @@ export default function RunsPage() {
 
         <Surface title="Agent Run Ledger" description="Recent execution attempts and the task each run is attached to.">
           {!loading && !error && runs.length === 0 ? (
-            <EmptyState message="No agent runs yet." />
+            <EmptyState
+              message="No agent runs have been recorded yet."
+              hint="Start a run from a task detail page or use `syncore run start <task_id> --agent-role <role>`."
+            />
           ) : runs.length > 0 ? (
             <div className="data-table-wrap">
               <table className="data-table">
@@ -64,6 +67,7 @@ export default function RunsPage() {
                     <th>Task</th>
                     <th>Role</th>
                     <th>Status</th>
+                    <th>Result</th>
                     <th>Updated</th>
                   </tr>
                 </thead>
@@ -74,6 +78,7 @@ export default function RunsPage() {
                       <td><Link href={`/tasks/${run.task_id}`}>{tasksById[run.task_id]?.title ?? run.task_id}</Link></td>
                       <td>{run.role}</td>
                       <td><StatusBadge status={run.status} /></td>
+                      <td className="two-line-clamp">{run.output_summary ?? run.error_message ?? "Awaiting output"}</td>
                       <td>{new Date(run.updated_at).toLocaleString()}</td>
                     </tr>
                   ))}

@@ -191,7 +191,6 @@ Examples:
 - `syncore run result RUN_ID`
 - `syncore providers`
 - `syncore open my-app`
-- `syncore my-app` (shortcut for `syncore open my-app`)
 - `syncore tui`
 
 For both lanes, verify:

@@ -12,7 +12,6 @@ or scoped session:
 
 ```bash
 syncore open my-app
-syncore my-app
 ```
 
 ## Core Interaction Model
