@@ -1,7 +1,7 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
 	install-local db-local-init dev-local bootstrap-local local-test \
 	install-cli cli-status tui web ui-check db-migrate db-revision \
-	docs-install docs-serve docs-build
+	docs-install docs-serve docs-build benchmark-local
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -45,6 +45,9 @@ web:
 ui-check:
 	npm --prefix apps/web run lint
 	cd apps/cli && ../../.venv/bin/python -m pytest -q
+
+benchmark-local:
+	python3 scripts/run_benchmark_suite.py --api-url http://127.0.0.1:8000
 
 docs-install:
 	uv pip install --python .venv/bin/python -r docs/requirements-rtd.txt

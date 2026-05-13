@@ -3,6 +3,7 @@ import {
   AnalystDigest,
   ApiError,
   BatonPacket,
+  BenchmarkReport,
   ContextReference,
   DashboardSummary,
   ContextEfficiencyMetrics,
@@ -289,6 +290,10 @@ export function getDiagnosticsConfig() {
 
 export function getDiagnosticsRoutes() {
   return request<DiagnosticsRoutes>("/diagnostics/routes");
+}
+
+export function getLatestBenchmarkReport() {
+  return request<BenchmarkReport>("/benchmarks/latest");
 }
 
 export function listProviderCapabilities() {

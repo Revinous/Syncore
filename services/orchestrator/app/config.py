@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     slo_min_run_success_rate: float = 0.97
     slo_min_context_savings_pct: float = 5.0
     slo_max_context_layering_fallback_rate: float = 0.4
+    benchmark_report_path: str = ".syncore/benchmarks/latest.json"
     context_layering_enabled: bool = False
     context_layering_dual_mode: bool = False
     context_layering_fallback_threshold_pct: float = 2.0

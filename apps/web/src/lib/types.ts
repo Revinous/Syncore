@@ -274,6 +274,43 @@ export type DiagnosticsRoutes = {
   routes: string[];
 };
 
+export type BenchmarkCaseResult = {
+  name: string;
+  repo_url: string;
+  root_path: string;
+  baseline_test_command: string;
+  baseline_test_passed: boolean;
+  workspace_id: string | null;
+  languages: string[];
+  frameworks: string[];
+  package_managers: string[];
+  test_commands: string[];
+  readiness_pack: string | null;
+  readiness_runner: string | null;
+  live_execution_attempted: boolean;
+  live_execution_passed: boolean;
+  task_id: string | null;
+  execution_outcome: string | null;
+  verification_status: string | null;
+  meaningful_change: boolean | null;
+  notes: string[];
+};
+
+export type BenchmarkReport = {
+  available: boolean;
+  generated_at: string | null;
+  api_url: string | null;
+  execute_enabled: boolean;
+  provider: string | null;
+  model: string | null;
+  case_count: number;
+  baseline_pass_count: number;
+  live_pass_count: number;
+  meaningful_change_count: number;
+  cases: BenchmarkCaseResult[];
+  raw?: Record<string, unknown> | null;
+};
+
 export type TaskDetail = {
   task: Task;
   agent_runs: AgentRun[];

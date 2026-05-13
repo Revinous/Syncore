@@ -5,6 +5,7 @@ from app.api.routes.agent_runs import router as agent_runs_router
 from app.api.routes.analyst import router as analyst_router
 from app.api.routes.autonomy import router as autonomy_router
 from app.api.routes.baton_packets import router as baton_packets_router
+from app.api.routes.benchmarks import router as benchmarks_router
 from app.api.routes.compat import router as compat_router
 from app.api.routes.context import router as context_router
 from app.api.routes.dashboard import router as dashboard_router
@@ -44,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(metrics_router)
     app.include_router(notifications_router)
+    app.include_router(benchmarks_router)
     app.include_router(tasks_router)
     app.include_router(workspaces_router)
     app.include_router(agent_runs_router)

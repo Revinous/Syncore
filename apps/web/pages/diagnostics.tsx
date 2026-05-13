@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import {
   getApiBaseUrl,
+  getLatestBenchmarkReport,
   getDiagnostics,
   getDiagnosticsConfig,
   getDiagnosticsRoutes,
@@ -12,6 +13,7 @@ import {
   DiagnosticsConfig,
   DiagnosticsOverview,
   DiagnosticsRoutes,
+  BenchmarkReport,
   HealthResponse,
   ServicesHealthResponse,
 } from "../src/lib/types";
@@ -29,6 +31,7 @@ export default function DiagnosticsPage() {
   const [overview, setOverview] = useState<DiagnosticsOverview | null>(null);
   const [config, setConfig] = useState<DiagnosticsConfig | null>(null);
   const [routes, setRoutes] = useState<DiagnosticsRoutes | null>(null);
+  const [benchmark, setBenchmark] = useState<BenchmarkReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
@@ -54,6 +57,11 @@ export default function DiagnosticsPage() {
       setOverview(ov);
       setConfig(cfg);
       setRoutes(rt);
+      try {
+        setBenchmark(await getLatestBenchmarkReport());
+      } catch {
+        setBenchmark(null);
+      }
       setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load diagnostics");
@@ -159,6 +167,39 @@ export default function DiagnosticsPage() {
                   <div className="meta-card"><span className="meta-label">DB Backend</span><div className="meta-value">{overview.db_backend}</div></div>
                   <div className="meta-card"><span className="meta-label">Redis Required</span><div className="meta-value">{String(overview.redis_required)}</div></div>
                 </div>
+              </Surface>
+
+              <Surface title="Benchmark Proof" description="Latest repeatable benchmark suite result captured against public repos.">
+                {!benchmark?.available ? (
+                  <EmptyState
+                    message="No benchmark report captured yet."
+                    hint="Run `make benchmark-local` against the active local API to generate a repeatable proof artifact."
+                  />
+                ) : (
+                  <div className="stack">
+                    <div className="meta-grid">
+                      <div className="meta-card"><span className="meta-label">Generated</span><div className="meta-value">{benchmark.generated_at ?? "unknown"}</div></div>
+                      <div className="meta-card"><span className="meta-label">Cases</span><div className="meta-value">{benchmark.case_count}</div></div>
+                      <div className="meta-card"><span className="meta-label">Baseline Pass</span><div className="meta-value">{benchmark.baseline_pass_count}</div></div>
+                      <div className="meta-card"><span className="meta-label">Live Pass</span><div className="meta-value">{benchmark.live_pass_count}</div></div>
+                      <div className="meta-card"><span className="meta-label">Meaningful Change</span><div className="meta-value">{benchmark.meaningful_change_count}</div></div>
+                    </div>
+                    <div className="stack">
+                      {benchmark.cases.map((item) => (
+                        <div className="meta-card" key={item.name}>
+                          <span className="meta-label">{item.name}</span>
+                          <div className="meta-value">
+                            baseline <StatusBadge status={item.baseline_test_passed ? "completed" : "failed"} /> ·
+                            live <StatusBadge status={item.live_execution_attempted ? (item.live_execution_passed ? "completed" : "blocked") : "pending"} />
+                          </div>
+                          <div className="helper-text" style={{ marginTop: 8 }}>
+                            {item.frameworks.join(", ") || item.languages.join(", ") || "stack unknown"} · {item.test_commands.join(", ") || item.baseline_test_command}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </Surface>
             </div>
 
