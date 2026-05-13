@@ -30,10 +30,16 @@ export default function DiagnosticsPage() {
   const [config, setConfig] = useState<DiagnosticsConfig | null>(null);
   const [routes, setRoutes] = useState<DiagnosticsRoutes | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
+  async function load(background = false) {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [h, sh, ov, cfg, rt] = await Promise.all([
@@ -48,16 +54,36 @@ export default function DiagnosticsPage() {
       setOverview(ov);
       setConfig(cfg);
       setRoutes(rt);
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load diagnostics");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 15000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 20
+        ? "fresh"
+        : "stale";
+  const isOfflineError = error?.includes("Could not reach Syncore API");
 
   return (
     <Layout title="Diagnostics">
@@ -73,8 +99,35 @@ export default function DiagnosticsPage() {
           ]}
         />
 
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Freshness</span>
+            <div className="operator-strip-value"><StatusBadge status={freshnessState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">
+              {lastLoadedAt ? `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}` : "waiting"}
+            </div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Cadence</span>
+            <div className="operator-strip-value">auto every 15s</div>
+          </div>
+        </div>
+
         {loading && <LoadingState message="Loading diagnostics..." />}
-        {error && <ErrorState message={error} />}
+        {error && (
+          <ErrorState
+            title={isOfflineError ? "Syncore API offline" : "Operator attention required"}
+            message={error}
+            hint={
+              isOfflineError
+                ? "The browser cannot reach the local orchestrator. Start Syncore services, then refresh diagnostics."
+                : "Refresh the surface. If this persists, check diagnostics and service health."
+            }
+          />
+        )}
 
         {overview && config && health && servicesHealth ? (
           <div className="content-grid two-column">

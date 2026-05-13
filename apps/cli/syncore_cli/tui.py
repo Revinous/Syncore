@@ -973,6 +973,7 @@ class SyncoreTuiApp(App[None]):
         if self._task_execution_report:
             changed_files = self._task_execution_report.get("changed_files") or []
             verification_commands = self._task_execution_report.get("verification_commands") or []
+            diff_artifacts = self._task_execution_report.get("diff_artifacts") or []
             lines.extend(
                 [
                     "",
@@ -981,11 +982,36 @@ class SyncoreTuiApp(App[None]):
                     f"meaningful change: {self._task_execution_report.get('meaningful_change', '-')}",
                     f"changed files: {len(changed_files)}",
                     f"verification commands: {len(verification_commands)}",
+                    f"diff artifacts: {len(diff_artifacts)}",
                 ]
             )
             if changed_files:
                 lines.append("changed:")
                 lines.extend([f"- {path}" for path in changed_files[:5]])
+            if verification_commands:
+                first_command = verification_commands[0]
+                lines.extend(
+                    [
+                        "",
+                        f"verify cmd: {first_command.get('command', '-')}",
+                        f"verify status: {first_command.get('status', '-')}",
+                    ]
+                )
+                preview = str(first_command.get("output_preview") or "").strip()
+                if preview:
+                    lines.append(f"verify preview: {preview[:160]}")
+            if diff_artifacts:
+                first_diff = diff_artifacts[0]
+                lines.extend(
+                    [
+                        "",
+                        f"diff file: {first_diff.get('path', '-')}",
+                        f"diff ref: {first_diff.get('ref_id', '-')}",
+                    ]
+                )
+                diff_preview = str(first_diff.get("preview") or "").strip()
+                if diff_preview:
+                    lines.append(diff_preview[:240])
         if self._latest_run_result:
             lines.extend(
                 [
@@ -995,6 +1021,9 @@ class SyncoreTuiApp(App[None]):
                     f"summary: {str(self._latest_run_result.get('output_summary') or '-')[:96]}",
                 ]
             )
+            output_preview = str(self._latest_run_result.get("output_text") or "").strip()
+            if output_preview:
+                lines.append(f"output preview: {output_preview[:240]}")
         if self._task_latest_baton:
             lines.append(
                 f"latest baton: {self._task_latest_baton.get('summary', self._task_latest_baton.get('id'))}"

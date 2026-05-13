@@ -3,7 +3,9 @@ import { useEffect, useState } from "react";
 
 import {
   createAgentRun,
+  executeTaskAuto,
   generateDigest,
+  getContextReference,
   getTaskModelPolicy,
   getTaskExecutionReport,
   getTask,
@@ -20,6 +22,7 @@ import {
   AgentRun,
   AnalystDigest,
   BatonPacket,
+  ContextReference,
   ProviderCapability,
   ProjectEvent,
   RoutingDecision,
@@ -50,12 +53,23 @@ export default function TaskDetailPage() {
   const [modelPolicy, setModelPolicy] = useState<TaskModelPolicy | null>(null);
   const [providerCapabilities, setProviderCapabilities] = useState<ProviderCapability[]>([]);
   const [savingPolicy, setSavingPolicy] = useState(false);
+  const [runningAction, setRunningAction] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [commandPrompt, setCommandPrompt] = useState("");
+  const [selectedReference, setSelectedReference] = useState<ContextReference | null>(null);
+  const [loadingReferenceId, setLoadingReferenceId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
+  async function load(background = false) {
     if (!taskId) return;
-    setLoading(true);
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [taskDetail, eventData, batonData] = await Promise.all([
@@ -64,6 +78,11 @@ export default function TaskDetailPage() {
         listTaskBatonPackets(taskId),
       ]);
       setDetail(taskDetail);
+      setCommandPrompt((existing) => (
+        existing.trim().length > 0
+          ? existing
+          : `Implement the task "${taskDetail.task.title}" in the workspace, verify the result, and report the final outcome.`
+      ));
       setEvents(eventData);
       setBatons(batonData);
       try {
@@ -96,37 +115,116 @@ export default function TaskDetailPage() {
       } catch {
         setProviderCapabilities([]);
       }
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load task detail");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    if (!taskId) return;
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, [taskId]);
 
   async function startRun() {
     if (!taskId) return;
-    await createAgentRun({ task_id: taskId, role: "coder", status: "running" });
-    await load();
+    setRunningAction("start-run");
+    setActionMessage(null);
+    try {
+      await createAgentRun({ task_id: taskId, role: "coder", status: "running" });
+      setActionMessage("Agent run record created. Use Execute Task to run the current task against the configured model strategy.");
+      await load();
+    } finally {
+      setRunningAction(null);
+    }
   }
 
   async function routeTask() {
     if (!detail) return;
-    const decision = await routeNextAction({
-      task_type: detail.task.task_type,
-      complexity: detail.task.complexity,
-      requires_memory: events.length > 0,
-    });
-    setRouting(decision);
+    setRunningAction("route");
+    setActionMessage(null);
+    try {
+      const decision = await routeNextAction({
+        task_type: detail.task.task_type,
+        complexity: detail.task.complexity,
+        requires_memory: events.length > 0,
+      });
+      setRouting(decision);
+      setActionMessage(`Routing updated: ${decision.worker_role} on ${decision.model_tier}.`);
+    } finally {
+      setRunningAction(null);
+    }
   }
 
   async function generateTaskDigest() {
     if (!taskId) return;
-    const nextDigest = await generateDigest({ task_id: taskId, limit: 50 });
-    setDigest(nextDigest);
+    setRunningAction("digest");
+    setActionMessage(null);
+    try {
+      const nextDigest = await generateDigest({ task_id: taskId, limit: 50 });
+      setDigest(nextDigest);
+      setActionMessage("Digest generated from the current task stream.");
+    } finally {
+      setRunningAction(null);
+    }
+  }
+
+  async function executeTask() {
+    if (!taskId || !commandPrompt.trim()) return;
+    setRunningAction("execute");
+    setActionMessage(null);
+    setError(null);
+    try {
+      const response = await executeTaskAuto({
+        task_id: taskId,
+        stage: "execute",
+        prompt: commandPrompt.trim(),
+        target_agent: "coder",
+        target_model: modelPolicy?.execute.model || modelPolicy?.default_model || undefined,
+        provider: modelPolicy?.execute.provider || modelPolicy?.default_provider || undefined,
+        agent_role: "coder",
+        token_budget: 8000,
+      });
+      setActionMessage(
+        `Execution finished via ${response.provider}/${response.target_model}. Estimated tokens: ${response.total_estimated_tokens}.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Task execution failed");
+    } finally {
+      setRunningAction(null);
+    }
+  }
+
+  async function openReference(refId: string) {
+    setLoadingReferenceId(refId);
+    try {
+      const reference = await getContextReference(refId);
+      setSelectedReference(reference);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load artifact reference");
+    } finally {
+      setLoadingReferenceId(null);
+    }
+  }
+
+  async function copyValue(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setActionMessage("Copied to clipboard.");
+    } catch {
+      setActionMessage("Clipboard access is unavailable in this browser context.");
+    }
   }
 
   async function saveModelPolicy(formData: FormData) {
@@ -191,6 +289,22 @@ export default function TaskDetailPage() {
     return `ctx ${item.max_context_tokens.toLocaleString()} | quality ${item.quality_tier}/5 | speed ${item.speed_tier}/5 | cost ${item.cost_tier}/5`;
   }
 
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 20
+        ? "fresh"
+        : "stale";
+  const executionState =
+    executionReport?.outcome_status ||
+    detail?.agent_runs.find((run) => run.status === "running" || run.status === "in_progress")?.status ||
+    detail?.task.status ||
+    "unknown";
+  const isOfflineError = error?.includes("Could not reach Syncore API");
+
   return (
     <Layout title="Task Detail">
       <div className="page-shell">
@@ -198,14 +312,6 @@ export default function TaskDetailPage() {
           title={detail?.task.title ?? "Task Detail"}
           subtitle="Inspect a single task across task metadata, child execution, baton handoffs, routing, and the model strategy shaping autonomy behavior."
           kicker="Task Control"
-          actions={
-            <>
-              <button className="secondary-button" onClick={() => void startRun()} disabled={!detail}>Start agent run</button>
-              <button className="secondary-button" onClick={() => void routeTask()} disabled={!detail}>Route next action</button>
-              <button className="button" onClick={() => void generateTaskDigest()} disabled={!detail}>Generate digest</button>
-              <button className="ghost-button" onClick={() => void load()}>Refresh</button>
-            </>
-          }
           metrics={[
             { label: "Task Status", value: detail ? <StatusBadge status={detail.task.status} /> : "loading" },
             { label: "Task Type", value: detail?.task.task_type ?? "n/a" },
@@ -213,13 +319,89 @@ export default function TaskDetailPage() {
           ]}
         />
 
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Freshness</span>
+            <div className="operator-strip-value"><StatusBadge status={freshnessState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Execution</span>
+            <div className="operator-strip-value"><StatusBadge status={executionState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Verification</span>
+            <div className="operator-strip-value">
+              {executionReport?.verification_status ? (
+                <StatusBadge status={executionReport.verification_status} />
+              ) : (
+                "pending"
+              )}
+            </div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">
+              {lastLoadedAt ? `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}` : "waiting"}
+            </div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Cadence</span>
+            <div className="operator-strip-value">auto every 10s</div>
+          </div>
+        </div>
+
         {loading && <LoadingState message="Loading task detail..." />}
-        {error && <ErrorState message={error} />}
+        {error && (
+          <ErrorState
+            title={isOfflineError ? "Syncore API offline" : "Operator attention required"}
+            message={error}
+            hint={
+              isOfflineError
+                ? "The browser cannot reach the local orchestrator. Start Syncore services, then refresh this task."
+                : "Refresh the surface. If this persists, check diagnostics and service health."
+            }
+          />
+        )}
 
         {detail ? (
           <>
             <div className="content-grid two-column">
               <div className="stack">
+                <Surface
+                  title="Command Center"
+                  description="Run the current task, route it, refresh the digest, and inspect the outcome from one operator surface."
+                  tone="highlight"
+                >
+                  <div className="stack">
+                    <label className="field-label">
+                      Execution prompt
+                      <textarea
+                        className="field"
+                        rows={4}
+                        value={commandPrompt}
+                        onChange={(event) => setCommandPrompt(event.target.value)}
+                        placeholder="Describe exactly what Syncore should execute for this task."
+                      />
+                    </label>
+                    <div className="page-actions">
+                      <button className="button" onClick={() => void executeTask()} disabled={!detail || runningAction !== null || !commandPrompt.trim()}>
+                        {runningAction === "execute" ? "Executing..." : "Execute Task"}
+                      </button>
+                      <button className="secondary-button" onClick={() => void startRun()} disabled={!detail || runningAction !== null}>
+                        {runningAction === "start-run" ? "Creating..." : "Start Agent Run"}
+                      </button>
+                      <button className="secondary-button" onClick={() => void routeTask()} disabled={!detail || runningAction !== null}>
+                        {runningAction === "route" ? "Routing..." : "Route Next Action"}
+                      </button>
+                      <button className="secondary-button" onClick={() => void generateTaskDigest()} disabled={!detail || runningAction !== null}>
+                        {runningAction === "digest" ? "Generating..." : "Generate Digest"}
+                      </button>
+                      <button className="ghost-button" onClick={() => void load()} disabled={runningAction !== null}>Refresh</button>
+                    </div>
+                    {actionMessage ? <div className="helper-text">{actionMessage}</div> : null}
+                  </div>
+                </Surface>
+
                 <Surface title="Task Overview" description="Core task metadata and current execution posture.">
                   <div className="meta-grid">
                     <div className="meta-card"><span className="meta-label">Task ID</span><div className="meta-value">{detail.task.id}</div></div>
@@ -441,13 +623,20 @@ export default function TaskDetailPage() {
                       ) : (
                         <div className="stack">
                           {executionReport.verification_commands.map((item, index) => (
-                            <div className="meta-card" key={`${index}-${item.command}`}>
-                              <div className="section-header" style={{ marginBottom: 8 }}>
-                                <span className="inline-code">{item.command}</span>
-                                <StatusBadge status={item.status} />
+                            <details className="artifact-details" key={`${index}-${item.command}`}>
+                              <summary className="artifact-summary">
+                                <div className="artifact-summary-row">
+                                  <div className="artifact-summary-copy">
+                                    <div className="artifact-summary-title"><span className="inline-code">{item.command}</span></div>
+                                    <div className="artifact-summary-meta">Verification command output and status.</div>
+                                  </div>
+                                  <StatusBadge status={item.status} />
+                                </div>
+                              </summary>
+                              <div className="artifact-body">
+                                {item.output_preview ? <div className="code-block">{item.output_preview}</div> : <div className="helper-text">No output preview was captured.</div>}
                               </div>
-                              {item.output_preview ? <div className="code-block">{item.output_preview}</div> : null}
-                            </div>
+                            </details>
                           ))}
                         </div>
                       )}
@@ -467,19 +656,42 @@ export default function TaskDetailPage() {
                         />
                       ) : (
                         <div className="stack">
-                          {executionReport.output_artifacts.map((item) => (
-                            <div className="meta-card" key={item.run_id}>
-                              <div className="section-header" style={{ marginBottom: 8 }}>
-                                <div>
-                                  <div className="item-title">{item.role}</div>
-                                  <div className="item-meta">{item.provider ?? "unknown"} · {item.target_model ?? "unknown"} · {new Date(item.updated_at).toLocaleString()}</div>
+                          {executionReport.output_artifacts.map((item) => {
+                            const outputRefId = item.output_ref_id;
+                            return (
+                              <details className="artifact-details" key={item.run_id}>
+                              <summary className="artifact-summary">
+                                <div className="artifact-summary-row">
+                                  <div className="artifact-summary-copy">
+                                    <div className="artifact-summary-title">{item.role}</div>
+                                    <div className="artifact-summary-meta">
+                                      {item.provider ?? "unknown"} · {item.target_model ?? "unknown"} · {new Date(item.updated_at).toLocaleString()}
+                                    </div>
+                                  </div>
+                                  <StatusBadge status={item.status} />
                                 </div>
-                                <StatusBadge status={item.status} />
+                              </summary>
+                              <div className="artifact-body">
+                                <div className="page-actions" style={{ marginBottom: 10 }}>
+                                  {outputRefId ? (
+                                    <>
+                                      <button className="secondary-button" onClick={() => void openReference(outputRefId)} disabled={loadingReferenceId === outputRefId}>
+                                        {loadingReferenceId === outputRefId ? "Loading..." : "Open Full Output"}
+                                      </button>
+                                      <button className="ghost-button" onClick={() => void copyValue(outputRefId)}>Copy Ref ID</button>
+                                    </>
+                                  ) : null}
+                                </div>
+                                <div className="helper-text">Run ID: <span className="inline-code">{item.run_id}</span></div>
+                                {outputRefId ? (
+                                  <div className="helper-text">Output ref: <span className="inline-code">{outputRefId}</span></div>
+                                ) : null}
+                                {item.error_message ? <div className="error-state">{item.error_message}</div> : null}
+                                {item.output_preview ? <div className="code-block">{item.output_preview}</div> : <div className="helper-text">No output preview was captured.</div>}
                               </div>
-                              {item.error_message ? <div className="error-state">{item.error_message}</div> : null}
-                              {item.output_preview ? <div className="code-block">{item.output_preview}</div> : null}
-                            </div>
-                          ))}
+                              </details>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -500,21 +712,54 @@ export default function TaskDetailPage() {
                     ) : (
                       <div className="stack">
                         {executionReport.diff_artifacts.map((artifact) => (
-                          <div className="meta-card" key={artifact.ref_id}>
-                            <div className="section-header" style={{ marginBottom: 8 }}>
-                              <div>
-                                <div className="item-title">{artifact.path}</div>
-                                <div className="item-meta">{artifact.summary}</div>
+                          <details className="artifact-details" key={artifact.ref_id}>
+                            <summary className="artifact-summary">
+                              <div className="artifact-summary-row">
+                                <div className="artifact-summary-copy">
+                                  <div className="artifact-summary-title">{artifact.path}</div>
+                                  <div className="artifact-summary-meta">{artifact.summary}</div>
+                                </div>
+                                <span className="label-chip">{artifact.content_type}</span>
                               </div>
-                              <span className="label-chip">{artifact.content_type}</span>
+                            </summary>
+                            <div className="artifact-body">
+                              <div className="page-actions" style={{ marginBottom: 10 }}>
+                                <button className="secondary-button" onClick={() => void openReference(artifact.ref_id)} disabled={loadingReferenceId === artifact.ref_id}>
+                                  {loadingReferenceId === artifact.ref_id ? "Loading..." : "Open Full Artifact"}
+                                </button>
+                                <button className="ghost-button" onClick={() => void copyValue(artifact.ref_id)}>Copy Ref ID</button>
+                              </div>
+                              <div className="helper-text">Ref: <span className="inline-code">{artifact.ref_id}</span></div>
+                              <div className="helper-text">{artifact.retrieval_hint}</div>
+                              <div className="code-block">{artifact.preview}</div>
                             </div>
-                            <div className="helper-text" style={{ marginBottom: 8 }}>{artifact.retrieval_hint}</div>
-                            <div className="code-block">{artifact.preview}</div>
-                          </div>
+                          </details>
                         ))}
                       </div>
                     )}
                   </div>
+
+                  {selectedReference ? (
+                    <div className="surface inset">
+                      <div className="section-header">
+                        <div>
+                          <h3 className="section-title">Retrieved Reference</h3>
+                          <p className="section-copy">Full stored content for the selected diff, output, or context artifact.</p>
+                        </div>
+                        <div className="page-actions">
+                          <button className="ghost-button" onClick={() => setSelectedReference(null)}>Close</button>
+                          <button className="secondary-button" onClick={() => void copyValue(selectedReference.ref_id)}>Copy Ref ID</button>
+                        </div>
+                      </div>
+                      <div className="helper-text" style={{ marginBottom: 8 }}>
+                        {selectedReference.content_type} · {selectedReference.retrieval_hint}
+                      </div>
+                      <div className="helper-text" style={{ marginBottom: 8 }}>
+                        Ref: <span className="inline-code">{selectedReference.ref_id}</span>
+                      </div>
+                      <div className="code-block">{selectedReference.original_content}</div>
+                    </div>
+                  ) : null}
                 </div>
               )}
             </Surface>

@@ -4,6 +4,16 @@ export type ApiError = {
   detail?: unknown;
 };
 
+export type ContextReference = {
+  ref_id: string;
+  task_id: string;
+  content_type: string;
+  original_content: string;
+  summary: string;
+  retrieval_hint: string;
+  created_at: string;
+};
+
 export type ServiceStatus = {
   name: string;
   status: "ok" | "unavailable";

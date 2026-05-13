@@ -15,25 +15,53 @@ export default function RunsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
   const [tasksById, setTasksById] = useState<Record<string, Task>>({});
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
+  async function load(background = false) {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [runData, taskData] = await Promise.all([listAgentRuns(), listTasks()]);
       setRuns(runData);
       setTasksById(Object.fromEntries(taskData.map((task) => [task.id, task])));
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load runs");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 12000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const runningCount = runs.filter((run) => run.status === "running" || run.status === "in_progress").length;
+  const queuedCount = runs.filter((run) => run.status === "queued").length;
+  const blockedCount = runs.filter((run) => run.status === "blocked" || run.status === "failed").length;
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 20
+        ? "fresh"
+        : "stale";
 
   return (
     <Layout title="Agent Runs">
@@ -45,9 +73,34 @@ export default function RunsPage() {
           actions={<button className="button" onClick={() => void load()}>Refresh Runs</button>}
           metrics={[
             { label: "Active Records", value: runs.length },
-            { label: "Live States", value: runs.filter((run) => run.status === "running" || run.status === "in_progress").length },
+            { label: "Live States", value: runningCount },
           ]}
         />
+
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Freshness</span>
+            <div className="operator-strip-value"><StatusBadge status={freshnessState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Running</span>
+            <div className="operator-strip-value">{runningCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Queued</span>
+            <div className="operator-strip-value">{queuedCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Blocked / Failed</span>
+            <div className="operator-strip-value">{blockedCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">
+              {lastLoadedAt ? `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}` : "waiting"}
+            </div>
+          </div>
+        </div>
 
         {loading && <LoadingState message="Loading runs..." />}
         {error && <ErrorState message={error} />}

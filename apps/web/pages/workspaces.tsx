@@ -22,6 +22,8 @@ export default function WorkspacesPage() {
   const [filesResult, setFilesResult] = useState<WorkspaceFile | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
 
   const [name, setName] = useState("syncore");
   const [rootPath, setRootPath] = useState("./");
@@ -33,8 +35,12 @@ export default function WorkspacesPage() {
     [workspaces, selectedWorkspaceId]
   );
 
-  async function load() {
-    setLoading(true);
+  async function load(background = false) {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const nextWorkspaces = await listWorkspaces();
@@ -42,15 +48,24 @@ export default function WorkspacesPage() {
       if (!selectedWorkspaceId && nextWorkspaces.length > 0) {
         setSelectedWorkspaceId(nextWorkspaces[0].id);
       }
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load workspaces");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 20000);
+    return () => window.clearInterval(timer);
   }, []);
 
   async function onCreateWorkspace(event: FormEvent<HTMLFormElement>) {
@@ -91,6 +106,16 @@ export default function WorkspacesPage() {
   }
 
   const scan = scanResult?.scan;
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 25
+        ? "fresh"
+        : "stale";
+  const isOfflineError = error?.includes("Could not reach Syncore API");
 
   return (
     <Layout title="Workspaces">
@@ -111,8 +136,35 @@ export default function WorkspacesPage() {
           ]}
         />
 
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Freshness</span>
+            <div className="operator-strip-value">{freshnessState}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">
+              {lastLoadedAt ? `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}` : "waiting"}
+            </div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Cadence</span>
+            <div className="operator-strip-value">auto every 20s</div>
+          </div>
+        </div>
+
         {loading && <LoadingState message="Loading workspaces..." />}
-        {error && <ErrorState message={error} />}
+        {error && (
+          <ErrorState
+            title={isOfflineError ? "Syncore API offline" : "Operator attention required"}
+            message={error}
+            hint={
+              isOfflineError
+                ? "The browser cannot reach the local orchestrator. Start Syncore services, then refresh the workspace registry."
+                : "Refresh the surface. If this persists, check diagnostics and service health."
+            }
+          />
+        )}
 
         <div className="content-grid two-column">
           <div className="stack">

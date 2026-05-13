@@ -15,10 +15,16 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [efficiency, setEfficiency] = useState<ContextEfficiencyMetrics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
+  async function load(background = false) {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const [summary, contextEfficiency] = await Promise.all([
@@ -27,16 +33,39 @@ export default function DashboardPage() {
       ]);
       setData(summary);
       setEfficiency(contextEfficiency);
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 15000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 20
+        ? "fresh"
+        : "stale";
+  const refreshLabel =
+    lastLoadedAt === null
+      ? "waiting"
+      : `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}`;
 
   return (
     <Layout title="Dashboard">
@@ -52,6 +81,21 @@ export default function DashboardPage() {
             { label: "DB Backend", value: data?.db_backend ?? "n/a" },
           ]}
         />
+
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Data Freshness</span>
+            <div className="operator-strip-value"><StatusBadge status={freshnessState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">{refreshLabel}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Cadence</span>
+            <div className="operator-strip-value">auto every 15s</div>
+          </div>
+        </div>
 
         {loading && <LoadingState message="Loading dashboard summary..." />}
         {error && <ErrorState message={error} />}

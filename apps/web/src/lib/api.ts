@@ -3,6 +3,7 @@ import {
   AnalystDigest,
   ApiError,
   BatonPacket,
+  ContextReference,
   DashboardSummary,
   ContextEfficiencyMetrics,
   DiagnosticsConfig,
@@ -33,13 +34,23 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers || {}),
+      },
+    });
+  } catch (error) {
+    const networkError: ApiError = {
+      status: 0,
+      message: `Could not reach Syncore API at ${API_BASE_URL}`,
+      detail: error instanceof Error ? error.message : error,
+    };
+    throw networkError;
+  }
 
   const contentType = response.headers.get("content-type") || "";
   let payload: unknown = null;
@@ -140,6 +151,10 @@ export function getTaskExecutionReport(id: string) {
   return request<TaskExecutionReport>(`/tasks/${id}/execution-report`);
 }
 
+export function getContextReference(refId: string) {
+  return request<ContextReference>(`/context/references/${encodeURIComponent(refId)}`);
+}
+
 export function getTaskModelPolicy(id: string) {
   return request<TaskModelPolicy>(`/tasks/${id}/model-policy`);
 }
@@ -174,6 +189,42 @@ export function createAgentRun(payload: {
   input_summary?: string;
 }) {
   return request<AgentRun>("/agent-runs", { method: "POST", body: JSON.stringify(payload) });
+}
+
+export function executeTaskAuto(payload: {
+  task_id: string;
+  stage?: string;
+  prompt: string;
+  target_agent: string;
+  token_budget?: number;
+  provider?: string;
+  target_model?: string;
+  agent_role?: string;
+  system_prompt?: string;
+  max_output_tokens?: number;
+  temperature?: number;
+  timeout_seconds?: number;
+}) {
+  return request<{
+    run_id: string;
+    task_id: string;
+    status: string;
+    provider: string;
+    target_agent: string;
+    target_model: string;
+    output_text: string;
+    estimated_input_tokens: number;
+    estimated_output_tokens: number;
+    total_estimated_tokens: number;
+    optimized_bundle_id?: string;
+    included_refs: string[];
+    warnings: string[];
+    created_at: string;
+    completed_at: string;
+  }>("/runs/execute-auto", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function getAgentRun(id: string) {

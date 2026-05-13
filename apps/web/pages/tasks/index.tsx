@@ -19,6 +19,8 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState("Analyze auth flow");
@@ -38,9 +40,30 @@ export default function TasksPage() {
     () => tasks.filter((task) => statusFilter === "all" || task.status === statusFilter),
     [tasks, statusFilter]
   );
+  const activeCount = filtered.filter((task) => task.status === "in_progress").length;
+  const blockedCount = filtered.filter((task) => task.status === "blocked").length;
+  const staleCount = filtered.filter((task) => {
+    if (!["new", "in_progress", "blocked"].includes(task.status)) return false;
+    const ageMs = Date.now() - new Date(task.updated_at).getTime();
+    return ageMs > 30 * 60 * 1000;
+  }).length;
+  const secondsSinceRefresh = lastLoadedAt
+    ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
+    : null;
+  const freshnessState =
+    secondsSinceRefresh === null
+      ? "unknown"
+      : secondsSinceRefresh <= 20
+        ? "fresh"
+        : "stale";
+  const isOfflineError = error?.includes("Could not reach Syncore API");
 
-  async function load() {
-    setLoading(true);
+  async function load(background = false) {
+    if (background) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     try {
       const selectedWorkspaceId = workspaceFilter === "all" ? undefined : workspaceFilter;
@@ -50,15 +73,24 @@ export default function TasksPage() {
       ]);
       setTasks(taskData);
       setWorkspaces(workspaceData);
+      setLastLoadedAt(new Date());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load tasks");
     } finally {
-      setLoading(false);
+      if (background) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 15000);
+    return () => window.clearInterval(timer);
   }, [workspaceFilter]);
 
   async function onCreateTask(event: FormEvent<HTMLFormElement>) {
@@ -96,8 +128,43 @@ export default function TasksPage() {
           ]}
         />
 
+        <div className="operator-strip">
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Freshness</span>
+            <div className="operator-strip-value"><StatusBadge status={freshnessState} /></div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Active</span>
+            <div className="operator-strip-value">{activeCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Blocked</span>
+            <div className="operator-strip-value">{blockedCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Stale</span>
+            <div className="operator-strip-value">{staleCount}</div>
+          </div>
+          <div className="operator-strip-block">
+            <span className="operator-strip-label">Last Refresh</span>
+            <div className="operator-strip-value">
+              {lastLoadedAt ? `${lastLoadedAt.toLocaleTimeString()}${refreshing ? " · refreshing" : ""}` : "waiting"}
+            </div>
+          </div>
+        </div>
+
         {loading && <LoadingState message="Loading tasks..." />}
-        {error && <ErrorState message={error} />}
+        {error && (
+          <ErrorState
+            title={isOfflineError ? "Syncore API offline" : "Operator attention required"}
+            message={error}
+            hint={
+              isOfflineError
+                ? "The browser cannot reach the local orchestrator. Start Syncore services, then refresh the task queue."
+                : "Refresh the surface. If this persists, check diagnostics and service health."
+            }
+          />
+        )}
 
         <div className="content-grid two-column">
           <div className="stack">

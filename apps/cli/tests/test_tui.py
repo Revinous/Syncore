@@ -35,6 +35,44 @@ class FakeClient:
     def get_task(self, task_id):
         return {"task": {"id": task_id, "task_type": "analysis", "complexity": "low"}}
 
+    def list_task_events(self, task_id: str):
+        return [{"id": "e1", "event_type": "run.completed", "task_id": task_id}]
+
+    def list_task_batons(self, task_id: str):
+        return [{"id": "b1", "task_id": task_id, "summary": "handoff"}]
+
+    def latest_task_baton(self, task_id: str):
+        return {"id": "b1", "task_id": task_id, "summary": "handoff"}
+
+    def get_task_routing(self, task_id: str):
+        return {"worker_role": "reviewer", "model_tier": "balanced"}
+
+    def get_task_digest(self, task_id: str):
+        return {"headline": "Digest ready", "eli5_summary": "Simple explanation."}
+
+    def get_task_execution_report(self, task_id: str):
+        return {
+            "task_id": task_id,
+            "outcome": "completed",
+            "verification_status": "ok",
+            "meaningful_change": True,
+            "changed_files": ["syncore.yaml"],
+            "verification_commands": [
+                {
+                    "command": "pytest -q",
+                    "status": "ok",
+                    "output_preview": "12 passed",
+                }
+            ],
+            "diff_artifacts": [
+                {
+                    "path": "syncore.yaml",
+                    "ref_id": "ref-1",
+                    "preview": "+ policy_pack: python-fastapi",
+                }
+            ],
+        }
+
     def route_next_action(self, payload):
         self.routed_payload = payload
         return {"worker_role": "analyst", "model_tier": "balanced"}
@@ -42,6 +80,15 @@ class FakeClient:
     def create_agent_run(self, payload):
         self.started_run_payload = payload
         return {"id": "r1", **payload}
+
+    def get_agent_run_result(self, run_id: str):
+        return {
+            "run_id": run_id,
+            "output_ref_id": "ctxref-1",
+            "context_ref_id": "ctxref-2",
+            "output_summary": "Updated syncore.yaml",
+            "output_text": "Added repo contract and policy pack.",
+        }
 
     def execute_run(self, payload):
         self.executed_payload = payload
@@ -244,6 +291,23 @@ def test_action_execute_task_uses_model_preferences() -> None:
     assert fake.executed_payload["task_id"] == "t1"
     assert fake.executed_payload["target_model"] == "gpt-5.5"
     assert fake.executed_payload["prompt"] == "Do the thing"
+
+
+def test_task_detail_center_includes_execution_report_preview() -> None:
+    app = SyncoreTuiApp(CliConfig(api_url="http://localhost:8000", timeout_seconds=1.0))
+    fake = FakeClient()
+    app._client = fake
+    app._tasks = [{"id": "t1", "title": "Task 1"}]
+    app._runs = [{"id": "r1", "task_id": "t1", "role": "coder", "status": "completed", "updated_at": "now"}]
+    app._selected_task_id = "t1"
+    app._selected_task_title = "Task 1"
+    app._selected_task_index = 0
+    app._refresh_task_context()
+
+    rendered = app._render_task_detail_center()
+    assert "diff file: syncore.yaml" in rendered
+    assert "verify cmd: pytest -q" in rendered
+    assert "output preview: Added repo contract and policy pack." in rendered
 
 
 def test_toggle_autonomy_runs_scan_on_refresh() -> None:
