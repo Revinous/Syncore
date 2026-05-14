@@ -5,15 +5,15 @@ from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskU
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
-from app.services.task_service import (
+from app.services.task_models import (
     ChildTaskStatusBoard,
     TaskExecutionReport,
     TaskModelPolicy,
     TaskModelPolicyUpdate,
     TaskModelSwitchRecord,
     TaskModelSwitchResult,
-    TaskService,
 )
+from app.services.task_service import TaskService
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])

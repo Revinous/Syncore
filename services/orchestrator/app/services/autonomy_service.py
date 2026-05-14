@@ -28,6 +28,17 @@ from app.services.autonomy_candidates import CandidateStateService
 from app.services.autonomy_failure_policy import FailurePolicy
 from app.services.autonomy_finalizer import TaskFinalizationService
 from app.services.autonomy_subtasks import SubtaskFanoutCoordinator
+from app.services.autonomy_text_utils import (
+    extract_acceptance_checks,
+    extract_command_candidates,
+    extract_first_match,
+    extract_list_items,
+    extract_paths,
+    parse_plan_lines,
+    parse_uuid,
+    split_delimited,
+    string_list,
+)
 from app.services.execute_plan_builder import ExecutePlanBuilder
 from app.services.routing_service import RoutingService
 from app.services.run_execution_service import RunExecutionService
@@ -112,7 +123,7 @@ class AutonomyService:
         self._max_provider_switches = max(max_provider_switches, 0)
         self._candidate_state = CandidateStateService(
             store=self._store,
-            parse_uuid=self._parse_uuid,
+            parse_uuid=parse_uuid,
         )
         self._finalizer = TaskFinalizationService(
             store=self._store,
@@ -123,9 +134,7 @@ class AutonomyService:
             default_provider=self._default_provider,
             default_model=self._default_model,
             as_bool=_as_bool,
-            parse_positive_int=lambda value: _parse_positive_int(
-                value, default=3, maximum=8
-            ),
+            parse_positive_int=lambda value: _parse_positive_int(value, default=3, maximum=8),
         )
         self._failure_policy = FailurePolicy(self._store)
         self._execute_plan_builder = ExecutePlanBuilder(
@@ -135,13 +144,13 @@ class AutonomyService:
                 prefs=prefs,
             ),
             recommendation_state=self._recommended_improvement_state,
-            extract_paths=self._extract_paths,
-            extract_command_candidates=self._extract_command_candidates,
-            extract_acceptance_checks=self._extract_acceptance_checks,
-            parse_plan_lines=self._parse_plan_lines,
+            extract_paths=extract_paths,
+            extract_command_candidates=extract_command_candidates,
+            extract_acceptance_checks=extract_acceptance_checks,
+            parse_plan_lines=parse_plan_lines,
             strategy_guidance=self._strategy_guidance,
-            string_list=self._string_list,
-            parse_uuid=self._parse_uuid,
+            string_list=string_list,
+            parse_uuid=parse_uuid,
         )
 
     @classmethod
@@ -665,8 +674,7 @@ class AutonomyService:
                                     "stage": "review",
                                     "cycle": cycle,
                                     "error": (
-                                        "Review did not satisfy pass gate; "
-                                        "max cycles reached."
+                                        "Review did not satisfy pass gate; max cycles reached."
                                     ),
                                 },
                             )
@@ -857,9 +865,9 @@ class AutonomyService:
                     task_id=task_id,
                     status="retry_scheduled",
                     note=(
-                            f"Stage '{next_stage}' failed (attempt {attempt}/{max_retries}); "
-                            f"retry scheduled in {round(delay_seconds, 2)}s."
-                        ),
+                        f"Stage '{next_stage}' failed (attempt {attempt}/{max_retries}); "
+                        f"retry scheduled in {round(delay_seconds, 2)}s."
+                    ),
                 )
             if bool(failure.get("should_replan")) and cycle < self._max_cycles:
                 next_cycle = cycle + 1
@@ -1189,9 +1197,7 @@ class AutonomyService:
             .strip()
             .lower()
             != "false",
-            "maintain_context_continuity": str(
-                prefs.get("maintain_context_continuity") or "true"
-            )
+            "maintain_context_continuity": str(prefs.get("maintain_context_continuity") or "true")
             .strip()
             .lower()
             != "false",
@@ -1312,12 +1318,16 @@ class AutonomyService:
         elif explicit_default and provider == explicit_default:
             score += 120
 
-        if previous_provider and provider == previous_provider and bool(
-            policy["maintain_context_continuity"]
+        if (
+            previous_provider
+            and provider == previous_provider
+            and bool(policy["maintain_context_continuity"])
         ):
             score += 40
-        if previous_provider and provider != previous_provider and not bool(
-            policy["allow_cross_provider_switching"]
+        if (
+            previous_provider
+            and provider != previous_provider
+            and not bool(policy["allow_cross_provider_switching"])
         ):
             score -= 200
         if provider == self._workspace_learning_value(task=task, key="last_successful_provider"):
@@ -1398,9 +1408,11 @@ class AutonomyService:
         for event in reversed(events):
             if event.event_type not in {"run.completed", "model.switch.completed"}:
                 continue
-            provider = str(
-                event.event_data.get("provider") or event.event_data.get("to_provider") or ""
-            ).strip().lower()
+            provider = (
+                str(event.event_data.get("provider") or event.event_data.get("to_provider") or "")
+                .strip()
+                .lower()
+            )
             model = str(
                 event.event_data.get("target_model") or event.event_data.get("to_model") or ""
             ).strip()
@@ -1653,8 +1665,7 @@ class AutonomyService:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         if stage == "plan":
             has_step_shape = any(
-                line.startswith(("-", "*")) or line[:2].isdigit()
-                for line in lines
+                line.startswith(("-", "*")) or line[:2].isdigit() for line in lines
             )
             if not has_step_shape:
                 reasons.append("Plan missing explicit step list.")
@@ -1665,16 +1676,11 @@ class AutonomyService:
             if enforce_sdlc:
                 missing = _missing_sdlc_topics(text)
                 if missing:
-                    reasons.append(
-                        f"Plan missing SDLC coverage for: {', '.join(missing)}."
-                    )
+                    reasons.append(f"Plan missing SDLC coverage for: {', '.join(missing)}.")
                     score -= min(10 + (len(missing) * 5), 35)
         if stage == "execute":
             has_actionable = (
-                ("```" in text)
-                or ("$ " in text)
-                or ("def " in text)
-                or ("class " in text)
+                ("```" in text) or ("$ " in text) or ("def " in text) or ("class " in text)
             )
             if not has_actionable:
                 reasons.append("Execute output missing concrete code/command artifacts.")
@@ -1702,9 +1708,7 @@ class AutonomyService:
                     item for item in SDLC_CHECKLIST_ITEMS if not checklist_status.get(item, False)
                 ]
                 if missing_checks:
-                    reasons.append(
-                        f"Review checklist incomplete: {', '.join(missing_checks)}."
-                    )
+                    reasons.append(f"Review checklist incomplete: {', '.join(missing_checks)}.")
                     score -= min(12 + (len(missing_checks) * 4), 45)
         if strategy == "raise_verification":
             if "test" not in text.lower() and "verify" not in text.lower():
@@ -1828,15 +1832,15 @@ class AutonomyService:
         return {
             "cycle": _event_int(event.event_data.get("cycle")) or 1,
             "objective": str(event.event_data.get("objective") or "").strip(),
-            "actions": self._split_delimited(
+            "actions": split_delimited(
                 str(event.event_data.get("actions") or ""),
                 delimiter="|",
             ),
-            "target_files": self._split_delimited(str(event.event_data.get("target_files") or "")),
-            "verification_commands": self._split_delimited(
+            "target_files": split_delimited(str(event.event_data.get("target_files") or "")),
+            "verification_commands": split_delimited(
                 str(event.event_data.get("verification_commands") or "")
             ),
-            "acceptance_checks": self._split_delimited(
+            "acceptance_checks": split_delimited(
                 str(event.event_data.get("acceptance_checks") or ""),
                 delimiter="|",
             ),
@@ -1894,15 +1898,14 @@ class AutonomyService:
             task_id=task.id,
             status="replanning",
             note=(
-                "Execute stage deferred until a concrete plan exists; "
-                f"moved to cycle {cycle + 1}."
+                f"Execute stage deferred until a concrete plan exists; moved to cycle {cycle + 1}."
             ),
         )
 
     def _execute_plan_is_concrete(self, plan: dict[str, object]) -> bool:
-        verification_commands = self._string_list(plan.get("verification_commands"))
-        target_files = self._string_list(plan.get("target_files"))
-        actions = self._string_list(plan.get("actions"))
+        verification_commands = string_list(plan.get("verification_commands"))
+        target_files = string_list(plan.get("target_files"))
+        actions = string_list(plan.get("actions"))
         objective = str(plan.get("objective") or "").strip()
         return bool(objective and (verification_commands or target_files or actions))
 
@@ -1922,16 +1925,16 @@ class AutonomyService:
         )
         lines = ["Execute plan:"]
         lines.append(f"- Objective: {str(plan.get('objective') or '').strip()}")
-        target_files = self._string_list(plan.get("target_files"))
-        actions = self._string_list(plan.get("actions"))
+        target_files = string_list(plan.get("target_files"))
+        actions = string_list(plan.get("actions"))
         if actions:
             lines.append(f"- Actions: {'; '.join(actions[:6])}")
         if target_files:
             lines.append(f"- Target files: {', '.join(target_files[:12])}")
-        verification_commands = self._string_list(plan.get("verification_commands"))
+        verification_commands = string_list(plan.get("verification_commands"))
         if verification_commands:
             lines.append(f"- Verification commands: {', '.join(verification_commands[:6])}")
-        acceptance_checks = self._string_list(plan.get("acceptance_checks"))
+        acceptance_checks = string_list(plan.get("acceptance_checks"))
         if acceptance_checks:
             lines.append(f"- Acceptance checks: {'; '.join(acceptance_checks[:6])}")
         fallback = str(plan.get("fallback_strategy") or "").strip()
@@ -1945,17 +1948,17 @@ class AutonomyService:
     def _record_mutation_intent(self, *, task: Task, prefs: dict[str, str]) -> None:
         plan = self._latest_execute_plan(task.id) or {}
         candidate_state = self._selected_candidate_state(
-            self._parse_uuid(prefs.get("parent_task_id")) or task.id
+            parse_uuid(prefs.get("parent_task_id")) or task.id
         )
-        target_files = self._string_list(plan.get("target_files"))
-        verification_commands = self._string_list(plan.get("verification_commands"))
+        target_files = string_list(plan.get("target_files"))
+        verification_commands = string_list(plan.get("verification_commands"))
         candidate_id = ""
         if candidate_state.get("status") == "ready":
             event = candidate_state.get("event")
             if isinstance(event, ProjectEvent):
                 candidate_id = str(event.event_data.get("candidate_id") or "")
                 if not target_files:
-                    target_files = self._string_list(event.event_data.get("target_files"))
+                    target_files = string_list(event.event_data.get("target_files"))
                 if not verification_commands:
                     verification = str(event.event_data.get("verification_command") or "").strip()
                     if verification:
@@ -1987,7 +1990,7 @@ class AutonomyService:
             marker = "false"
         evidence = "review_output"
         if marker == "unknown":
-            parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+            parent_id = parse_uuid(prefs.get("parent_task_id"))
             if parent_id is not None:
                 candidate_state = self._selected_candidate_state(parent_id)
                 if candidate_state.get("status") == "ready":
@@ -2050,7 +2053,7 @@ class AutonomyService:
     ) -> None:
         if stage != "execute":
             return
-        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+        parent_id = parse_uuid(prefs.get("parent_task_id"))
         if parent_id is None:
             return
         if task.task_type != "analysis":
@@ -2155,7 +2158,7 @@ class AutonomyService:
     ) -> AutonomyResult | None:
         if stage != "execute" or task.task_type != "implementation":
             return None
-        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
+        parent_id = parse_uuid(prefs.get("parent_task_id"))
         if parent_id is None:
             return None
         sibling_state = self._recommended_improvement_state(parent_id)
@@ -2229,28 +2232,28 @@ class AutonomyService:
 
     def _extract_recommended_improvement(self, output_text: str) -> dict[str, object]:
         text = (output_text or "").strip()
-        summary = self._extract_first_match(
+        summary = extract_first_match(
             text,
             [
                 r"(?im)^(?:candidate improvement|recommended improvement|improvement)\s*:\s*(.+)$",
                 r"(?im)^(?:summary|change summary)\s*:\s*(.+)$",
             ],
         )
-        action = self._extract_first_match(
+        action = extract_first_match(
             text,
             [
                 r"(?im)^(?:next best action|required implementation|implementation)\s*:\s*(.+)$",
                 r"(?im)^(?:action|do this)\s*:\s*(.+)$",
             ],
         )
-        verification = self._extract_first_match(
+        verification = extract_first_match(
             text,
             [
                 r"(?im)^(?:verification command|verify(?: with)?|test command)\s*:\s*(.+)$",
             ],
         )
-        target_files = self._extract_paths(text)
-        risks = self._extract_list_items(
+        target_files = extract_paths(text)
+        risks = extract_list_items(
             text,
             headers=("risk", "risks", "constraints"),
         )
@@ -2273,7 +2276,7 @@ class AutonomyService:
         recommendation: dict[str, object],
     ) -> dict[str, object]:
         summary = str(recommendation.get("summary") or "").strip().lower()
-        target_files = self._string_list(recommendation.get("target_files"))
+        target_files = string_list(recommendation.get("target_files"))
         verification = str(recommendation.get("verification") or "").strip()
         candidate_type = "config_contract"
         if any(path.endswith((".py", ".ts", ".tsx", ".js", ".rs", ".go")) for path in target_files):
@@ -2304,9 +2307,7 @@ class AutonomyService:
             "task_type": task.task_type,
         }
 
-    def _recommendation_needs_workspace_fallback(
-        self, recommendation: dict[str, object]
-    ) -> bool:
+    def _recommendation_needs_workspace_fallback(self, recommendation: dict[str, object]) -> bool:
         text = " ".join(
             [
                 str(recommendation.get("summary") or ""),
@@ -2336,8 +2337,8 @@ class AutonomyService:
         runbook = dict(metadata.get("workspace_runbook") or {})
         root = Path(workspace.root_path).resolve()
         verification = (
-            self._string_list(runbook.get("test_commands"))[:1]
-            or self._string_list(runbook.get("runbook_commands"))[:1]
+            string_list(runbook.get("test_commands"))[:1]
+            or string_list(runbook.get("runbook_commands"))[:1]
         )
         verify_cmd = verification[0] if verification else ""
         syncore_contract = root / "syncore.yaml"
@@ -2382,10 +2383,10 @@ class AutonomyService:
             ("Important files", "important_files"),
             ("Docs", "docs"),
         ]:
-            values = self._string_list(metadata.get(key))
+            values = string_list(metadata.get(key))
             if values:
                 summary_lines.append(f"- {label}: {', '.join(values[:8])}")
-        test_commands = self._string_list(runbook.get("test_commands"))
+        test_commands = string_list(runbook.get("test_commands"))
         if test_commands:
             summary_lines.append(f"- Test commands: {', '.join(test_commands[:4])}")
         root_files = self._workspace_root_files(root)
@@ -2428,111 +2429,6 @@ class AutonomyService:
             compact = shorten(" ".join(text.split()), width=220, placeholder=" ...")
             previews.append(f"- {name}: {compact}")
         return previews[:6]
-
-    def _string_list(self, value: object) -> list[str]:
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        if isinstance(value, tuple):
-            return [str(item).strip() for item in value if str(item).strip()]
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return []
-
-    def _extract_first_match(self, text: str, patterns: list[str]) -> str:
-        for pattern in patterns:
-            match = re.search(pattern, text)
-            if match:
-                return str(match.group(1)).strip()
-        return ""
-
-    def _parse_plan_lines(self, text: str) -> list[str]:
-        lines = [line.strip(" -\t") for line in text.splitlines() if line.strip()]
-        return [line[:240] for line in lines[:60]]
-
-    def _extract_paths(self, text: str) -> list[str]:
-        candidates = re.findall(
-            r"\b(?:[\w.-]+/)*[\w.-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|yaml|yml|ini|cfg|txt|rs|go|java|kt|sh)\b",
-            text,
-        )
-        seen: set[str] = set()
-        paths: list[str] = []
-        for item in candidates:
-            if item not in seen:
-                seen.add(item)
-                paths.append(item)
-        return paths[:12]
-
-    def _extract_list_items(self, text: str, *, headers: tuple[str, ...]) -> list[str]:
-        lines = [line.strip() for line in text.splitlines()]
-        items: list[str] = []
-        capture = False
-        for line in lines:
-            normalized = line.lower().rstrip(":")
-            if normalized in headers:
-                capture = True
-                continue
-            if capture:
-                if not line:
-                    break
-                if line.startswith(("-", "*")):
-                    items.append(line.lstrip("-* ").strip())
-                    continue
-                if re.match(r"^\d+\.\s+", line):
-                    items.append(re.sub(r"^\d+\.\s+", "", line).strip())
-                    continue
-                break
-        return [item for item in items if item][:8]
-
-    def _extract_command_candidates(self, text: str) -> list[str]:
-        commands: list[str] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            lowered = stripped.lower()
-            if any(
-                marker in lowered
-                for marker in (
-                    "verify",
-                    "test command",
-                    "verification command",
-                    "run ",
-                    "pytest",
-                    "uv run",
-                    "npm run",
-                    "cargo test",
-                    "go test",
-                )
-            ):
-                candidate = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped
-                candidate = candidate.lstrip("-* ").strip("`")
-                if candidate and len(candidate) < 180:
-                    commands.append(candidate)
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for command in commands:
-            if command not in seen:
-                seen.add(command)
-                ordered.append(command)
-        return ordered[:6]
-
-    def _extract_acceptance_checks(self, text: str) -> list[str]:
-        checks = self._extract_list_items(
-            text,
-            headers=("acceptance", "acceptance checks", "success criteria", "criteria"),
-        )
-        if checks:
-            return checks
-        lines: list[str] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            lowered = stripped.lower()
-            if any(token in lowered for token in ("must", "should", "verify", "pass", "confirm")):
-                lines.append(stripped.lstrip("-* ").strip())
-        return lines[:6]
-
-    def _split_delimited(self, value: str, *, delimiter: str = ",") -> list[str]:
-        if not value.strip():
-            return []
-        return [item.strip() for item in value.split(delimiter) if item.strip()]
 
     def _classify_autonomy_failure(
         self,
@@ -2668,15 +2564,6 @@ class AutonomyService:
                 break
         return count >= (self._low_info_threshold - 1)
 
-    def _parse_uuid(self, raw: str | None) -> UUID | None:
-        value = (raw or "").strip()
-        if not value:
-            return None
-        try:
-            return UUID(value)
-        except ValueError:
-            return None
-
     def _finalize_task(self, task_id: UUID) -> None:
         self._finalizer.finalize_task(task_id)
 
@@ -2699,9 +2586,7 @@ class AutonomyService:
                 return event
         return None
 
-    def _child_gate_status(
-        self, *, task: Task, events: list[ProjectEvent]
-    ) -> dict[str, str]:
+    def _child_gate_status(self, *, task: Task, events: list[ProjectEvent]) -> dict[str, str]:
         return self._finalizer.child_gate_status(task=task, events=events)
 
     def _generate_digest_event(self, task_id: UUID) -> None:

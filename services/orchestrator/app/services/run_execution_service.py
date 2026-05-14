@@ -4,7 +4,6 @@ import json
 import os
 import platform
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -43,6 +42,18 @@ from app.runs.providers import (
 )
 from app.services.context_service import ContextService
 from app.services.execution_policy import ExecutionPolicyResolver
+from app.services.workspace_acceptance_service import string_list
+from app.services.workspace_execution_utils import (
+    binary_install_suggestions,
+    check_action_allowed,
+    classify_workspace_issue,
+    command_allowed,
+    needs_dependency_bootstrap,
+    normalize_workspace_command,
+    preflight_failure,
+    resolve_workspace_path,
+    runner_default_command,
+)
 from app.services.workspace_learning_service import WorkspaceLearningService
 from app.services.workspace_verification_service import WorkspaceVerificationService
 
@@ -137,6 +148,7 @@ class RunExecutionService:
             "max_output_chars": 10000,
         },
     }
+
     def __init__(
         self,
         *,
@@ -209,9 +221,7 @@ class RunExecutionService:
                 timeout_seconds=settings.openai_timeout_seconds,
             )
         fallback_order = [
-            p.strip().lower()
-            for p in settings.provider_fallback_order.split(",")
-            if p.strip()
+            p.strip().lower() for p in settings.provider_fallback_order.split(",") if p.strip()
         ]
         return cls(
             store=store,
@@ -369,11 +379,11 @@ class RunExecutionService:
         if not root.exists() or not root.is_dir():
             raise ValueError(f"Workspace path not found: {root}")
         profile = str(policy_profile or "balanced").strip().lower()
-        task_preferences = self._load_task_preferences(payload.task_id)
+        task_preferences = self._task_preferences(payload.task_id)
         contract = dict(workspace.metadata.get("syncore_contract") or {})
         runbook = dict(workspace.metadata.get("workspace_runbook") or {})
         runner = dict(workspace.metadata.get("workspace_runner") or runbook.get("runner") or {})
-        policy = self._effective_workspace_policy(
+        policy = self._policy_resolver.resolve_workspace_policy(
             requested_profile=profile,
             workspace_metadata=workspace.metadata,
             task_preferences=task_preferences,
@@ -383,11 +393,11 @@ class RunExecutionService:
         preflight = self._workspace_preflight(
             root=root,
             provider_hint=payload.provider,
-            required_env=self._string_list(runbook.get("required_env")),
-            required_binaries=self._string_list(runbook.get("required_binaries"))
-            or self._string_list(runner.get("required_binaries")),
-            required_files=self._string_list(runbook.get("required_files")),
-            supported_os=self._string_list(runner.get("supported_os")),
+            required_env=string_list(runbook.get("required_env")),
+            required_binaries=string_list(runbook.get("required_binaries"))
+            or string_list(runner.get("required_binaries")),
+            required_files=string_list(runbook.get("required_files")),
+            supported_os=string_list(runner.get("supported_os")),
             runner=runner,
         )
         if preflight["status"] != "ok":
@@ -402,15 +412,15 @@ class RunExecutionService:
                 preflight = self._workspace_preflight(
                     root=root,
                     provider_hint=payload.provider,
-                    required_env=self._string_list(runbook.get("required_env")),
-                    required_binaries=self._string_list(runbook.get("required_binaries"))
-                    or self._string_list(runner.get("required_binaries")),
-                    required_files=self._string_list(runbook.get("required_files")),
-                    supported_os=self._string_list(runner.get("supported_os")),
+                    required_env=string_list(runbook.get("required_env")),
+                    required_binaries=string_list(runbook.get("required_binaries"))
+                    or string_list(runner.get("required_binaries")),
+                    required_files=string_list(runbook.get("required_files")),
+                    supported_os=string_list(runner.get("supported_os")),
                     runner=runner,
                 )
         if preflight["status"] != "ok":
-            classification = self._classify_workspace_issue(
+            classification = classify_workspace_issue(
                 stage="preflight",
                 reason=str(preflight.get("reason") or "unknown"),
             )
@@ -522,7 +532,7 @@ class RunExecutionService:
 
             for action in actions:
                 action_type = str(action.get("type", "")).strip().lower()
-                action_gate = self._check_action_allowed(
+                action_gate = check_action_allowed(
                     action_type=action_type,
                     policy=policy,
                     relative_path=str(action.get("path", "")).strip() or None,
@@ -645,7 +655,7 @@ class RunExecutionService:
                 elif action_type == "run_test":
                     command = str(
                         action.get("command")
-                        or self._runner_default_command(runner, "test", "pytest -q")
+                        or runner_default_command(runner, "test", "pytest -q")
                     ).strip()
                     command_results.append(
                         self._safe_run_workspace_command(root, command, policy=policy)
@@ -653,15 +663,14 @@ class RunExecutionService:
                 elif action_type == "run_build":
                     command = str(
                         action.get("command")
-                        or self._runner_default_command(runner, "build", "npm run build")
+                        or runner_default_command(runner, "build", "npm run build")
                     ).strip()
                     command_results.append(
                         self._safe_run_workspace_command(root, command, policy=policy)
                     )
                 elif action_type == "run_lint":
                     command = str(
-                        action.get("command")
-                        or self._runner_default_command(runner, "lint", "")
+                        action.get("command") or runner_default_command(runner, "lint", "")
                     ).strip()
                     if not command:
                         continue
@@ -670,8 +679,7 @@ class RunExecutionService:
                     )
                 elif action_type == "run_format":
                     command = str(
-                        action.get("command")
-                        or self._runner_default_command(runner, "format", "")
+                        action.get("command") or runner_default_command(runner, "format", "")
                     ).strip()
                     if not command:
                         continue
@@ -681,15 +689,14 @@ class RunExecutionService:
                 elif action_type == "run_targeted_test":
                     command = str(
                         action.get("command")
-                        or self._runner_default_command(runner, "test", "pytest -q")
+                        or runner_default_command(runner, "test", "pytest -q")
                     ).strip()
                     command_results.append(
                         self._safe_run_workspace_command(root, command, policy=policy)
                     )
                 elif action_type == "install_deps":
                     command = str(
-                        action.get("command")
-                        or self._runner_default_command(runner, "setup", "")
+                        action.get("command") or runner_default_command(runner, "setup", "")
                     ).strip()
                     if not command:
                         continue
@@ -712,10 +719,10 @@ class RunExecutionService:
                     break
 
             if changed_files or command_results:
-                self._ensure_required_verification_commands_run(
+                self._workspace_verifier.ensure_required_verification_commands_run(
                     root=root,
                     command_results=command_results,
-                    acceptance=self._merged_acceptance_criteria(
+                    acceptance=self._workspace_verifier.merged_acceptance_criteria(
                         task_preferences=task_preferences,
                         contract=contract,
                         runbook=runbook,
@@ -723,7 +730,7 @@ class RunExecutionService:
                     runner=runner,
                     policy=policy,
                 )
-                step_verification = self._verify_workspace_execution(
+                step_verification = self._workspace_verifier.verify_workspace_execution(
                     changed_files=changed_files,
                     command_results=list(command_results),
                     root=root,
@@ -745,10 +752,10 @@ class RunExecutionService:
             event_type="workspace.execution.state.changed",
             event_data={"state": "verifying", "profile": profile},
         )
-        self._ensure_required_verification_commands_run(
+        self._workspace_verifier.ensure_required_verification_commands_run(
             root=root,
             command_results=command_results,
-            acceptance=self._merged_acceptance_criteria(
+            acceptance=self._workspace_verifier.merged_acceptance_criteria(
                 task_preferences=task_preferences,
                 contract=contract,
                 runbook=runbook,
@@ -756,7 +763,7 @@ class RunExecutionService:
             runner=runner,
             policy=policy,
         )
-        verification = self._verify_workspace_execution(
+        verification = self._workspace_verifier.verify_workspace_execution(
             changed_files=changed_files,
             command_results=command_results,
             root=root,
@@ -767,13 +774,13 @@ class RunExecutionService:
             policy=policy,
         )
         if str(verification.get("reason") or "") == "Required verification commands did not pass.":
-            self._run_all_runner_test_commands(
+            self._workspace_verifier.run_all_runner_test_commands(
                 root=root,
                 command_results=command_results,
                 runner=runner,
                 policy=policy,
             )
-            verification = self._verify_workspace_execution(
+            verification = self._workspace_verifier.verify_workspace_execution(
                 changed_files=changed_files,
                 command_results=command_results,
                 root=root,
@@ -797,7 +804,7 @@ class RunExecutionService:
                 "No-op local echo execution accepted for autonomy dry progression."
             )
         if verification["status"] != "ok":
-            classification = self._classify_workspace_issue(
+            classification = classify_workspace_issue(
                 stage="verification",
                 reason=str(verification.get("reason") or "verification failed"),
             )
@@ -839,7 +846,7 @@ class RunExecutionService:
             changed_files=changed_files,
         )
         if candidate_validation["status"] != "ok":
-            classification = self._classify_workspace_issue(
+            classification = classify_workspace_issue(
                 stage="verification",
                 reason=str(candidate_validation.get("reason") or "candidate validation failed"),
             )
@@ -1269,8 +1276,8 @@ class RunExecutionService:
             "You are Syncore workspace coder.\n"
             f"Step {step}/{max_steps}.\n"
             "Return ONLY JSON with schema: "
-            "{\"actions\":[{\"type\":\"read_file|search_code|write_file|create_file|patch_file|move_file|delete_file|run_command|run_test|run_build|run_lint|run_format|run_targeted_test|install_deps|complete_work|next_action|finish\","
-            "\"path\":\"...\",\"destination\":\"...\",\"content\":\"...\",\"before\":\"...\",\"after\":\"...\",\"pattern\":\"...\",\"command\":\"...\",\"text\":\"...\",\"summary\":\"...\"}]}\n"
+            '{"actions":[{"type":"read_file|search_code|write_file|create_file|patch_file|move_file|delete_file|run_command|run_test|run_build|run_lint|run_format|run_targeted_test|install_deps|complete_work|next_action|finish",'
+            '"path":"...","destination":"...","content":"...","before":"...","after":"...","pattern":"...","command":"...","text":"...","summary":"..."}]}\n'
             "Prefer write_file with full file content for deterministic updates.\n"
             "Use commands only when needed for verification.\n\n"
             "Task:\n"
@@ -1340,57 +1347,6 @@ class RunExecutionService:
                 parsed.append(action)
         return parsed
 
-    def _resolve_workspace_path(self, root: Path, relative_path: str) -> Path:
-        target = (root / relative_path).resolve()
-        if root != target and root not in target.parents:
-            raise PermissionError(f"Path traversal blocked: {relative_path}")
-        name = target.name
-        blocked = (
-            name == ".env"
-            or name.startswith(".env.")
-            or name in {"id_rsa", "id_dsa"}
-            or name.endswith((".pem", ".key"))
-            or name.startswith(("secrets.", "credentials."))
-        )
-        if blocked:
-            raise PermissionError(f"Blocked file path: {relative_path}")
-        return target
-
-    def _safe_read_file(self, *, root: Path, relative_path: str) -> str:
-        target = self._resolve_workspace_path(root, relative_path)
-        if not target.exists() or not target.is_file():
-            return ""
-        if target.stat().st_size > 1_000_000:
-            return ""
-        return target.read_text(encoding="utf-8", errors="replace")
-
-    def _safe_search_code(self, *, root: Path, pattern: str, limit: int = 80) -> list[str]:
-        safe_pattern = pattern[:120]
-        hits: list[str] = []
-        for path in root.rglob("*"):
-            if len(hits) >= limit:
-                break
-            if path.is_dir():
-                continue
-            rel = path.relative_to(root)
-            if any(
-                part in {".git", "node_modules", ".venv", "__pycache__", ".next"}
-                for part in rel.parts
-            ):
-                continue
-            if path.stat().st_size > 1_000_000:
-                continue
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            for idx, line in enumerate(text.splitlines(), start=1):
-                if safe_pattern in line:
-                    hits.append(f"{rel.as_posix()}:{idx}:{line[:200]}")
-                    if len(hits) >= limit:
-                        break
-        return hits
-
     def _safe_write_with_diff(
         self,
         *,
@@ -1399,7 +1355,7 @@ class RunExecutionService:
         relative_path: str,
         content: str,
     ) -> str:
-        target = self._resolve_workspace_path(root, relative_path)
+        target = resolve_workspace_path(root, relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         before = ""
         if target.exists():
@@ -1441,7 +1397,7 @@ class RunExecutionService:
         before_text: str,
         after_text: str,
     ) -> str:
-        target = self._resolve_workspace_path(root, relative_path)
+        target = resolve_workspace_path(root, relative_path)
         if not target.exists():
             raise FileNotFoundError(f"Patch target does not exist: {relative_path}")
         existing = target.read_text(encoding="utf-8", errors="replace")
@@ -1462,7 +1418,7 @@ class RunExecutionService:
         root: Path,
         relative_path: str,
     ) -> str:
-        target = self._resolve_workspace_path(root, relative_path)
+        target = resolve_workspace_path(root, relative_path)
         if not target.exists():
             raise FileNotFoundError(f"Delete target does not exist: {relative_path}")
         before = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
@@ -1482,7 +1438,7 @@ class RunExecutionService:
             content_type="workspace_diff",
             original_content=diff or f"Deleted {relative_path}",
             summary=shorten(
-                " ".join((diff or f'Deleted {relative_path}').split()),
+                " ".join((diff or f"Deleted {relative_path}").split()),
                 width=220,
                 placeholder=" ...",
             ),
@@ -1504,16 +1460,15 @@ class RunExecutionService:
         source_path: str,
         destination_path: str,
     ) -> str:
-        source = self._resolve_workspace_path(root, source_path)
-        destination = self._resolve_workspace_path(root, destination_path)
+        source = resolve_workspace_path(root, source_path)
+        destination = resolve_workspace_path(root, destination_path)
         if not source.exists():
             raise FileNotFoundError(f"Move source does not exist: {source_path}")
         before = source.read_text(encoding="utf-8", errors="replace") if source.is_file() else ""
         destination.parent.mkdir(parents=True, exist_ok=True)
         source.rename(destination)
         diff = (
-            f"Moved {source_path} -> {destination_path}\n"
-            f"Original content preview:\n{before[:1000]}"
+            f"Moved {source_path} -> {destination_path}\nOriginal content preview:\n{before[:1000]}"
         )
         ref = self._store.upsert_context_reference(
             ref_id=build_ref_id(task_id, "workspace_diff", diff),
@@ -1531,169 +1486,6 @@ class RunExecutionService:
         )
         return ref_id
 
-    def _runner_default_command(
-        self,
-        runner: dict[str, object],
-        section: str,
-        fallback: str,
-    ) -> str:
-        commands = dict(runner.get("commands") or {})
-        values = self._string_list(commands.get(section))
-        return values[0] if values else fallback
-
-    def _check_action_allowed(
-        self,
-        *,
-        action_type: str,
-        policy: dict[str, object],
-        relative_path: str | None = None,
-        command: str | None = None,
-    ) -> dict[str, str]:
-        allowed_actions = {
-            str(item).strip().lower() for item in tuple(policy.get("allowed_actions") or ())
-        }
-        denied_actions = {
-            str(item).strip().lower() for item in tuple(policy.get("denied_actions") or ())
-        }
-        if action_type in denied_actions:
-            return {"status": "blocked", "reason": f"Action '{action_type}' denied by policy"}
-        if allowed_actions and action_type not in allowed_actions:
-            return {"status": "blocked", "reason": f"Action '{action_type}' is not allowed"}
-        forbidden_paths = self._string_list(policy.get("forbidden_paths"))
-        if relative_path and forbidden_paths and any(
-            relative_path == path or relative_path.startswith(path.rstrip("/") + "/")
-            for path in forbidden_paths
-        ):
-            return {
-                "status": "blocked",
-                "reason": f"Path '{relative_path}' is forbidden by workspace policy",
-            }
-        allowed_paths = self._string_list(policy.get("allowed_paths"))
-        if relative_path and allowed_paths and not any(
-            relative_path == path or relative_path.startswith(path.rstrip("/") + "/")
-            for path in allowed_paths
-        ):
-            return {
-                "status": "blocked",
-                "reason": f"Path '{relative_path}' is outside allowed workspace roots",
-            }
-        approval_paths = self._string_list(policy.get("approval_required_paths"))
-        if relative_path and approval_paths and any(
-            relative_path == path or relative_path.startswith(path.rstrip("/") + "/")
-            for path in approval_paths
-        ):
-            return {
-                "status": "blocked",
-                "reason": f"Path '{relative_path}' requires explicit approval",
-            }
-        if command:
-            allowed = self._command_allowed(command, policy)
-            if not allowed:
-                return {"status": "blocked", "reason": f"Command '{command}' is not allowed"}
-        return {"status": "ok", "reason": ""}
-
-    def _command_allowed(self, command: str, policy: dict[str, object]) -> bool:
-        blocked_commands = tuple(policy.get("blocked_commands", ()))
-        if any(command.startswith(str(prefix)) for prefix in blocked_commands):
-            return False
-        allowed_prefixes = tuple(policy.get("allow_commands", ()))
-        if any(command.startswith(str(prefix)) for prefix in allowed_prefixes):
-            return True
-        patterns = tuple(policy.get("allowed_command_patterns", ()))
-        return any(re.fullmatch(str(pattern), command) for pattern in patterns)
-
-    def _preflight_failure(
-        self,
-        *,
-        reason: str,
-        suggestions: list[str],
-        missing_env: list[str] | None = None,
-        missing_binaries: list[str] | None = None,
-        missing_files: list[str] | None = None,
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "status": "failed",
-            "reason": reason,
-            "suggestions": suggestions[:8],
-        }
-        if missing_env:
-            payload["missing_env"] = missing_env[:20]
-        if missing_binaries:
-            payload["missing_binaries"] = missing_binaries[:20]
-        if missing_files:
-            payload["missing_files"] = missing_files[:20]
-        return payload
-
-    def _binary_install_suggestions(self, binary: str) -> list[str]:
-        common = {
-            "python": ["Install Python 3.10+ and ensure `python` or `python3` is on PATH."],
-            "node": ["Install Node.js 20+ and ensure `node` is on PATH."],
-            "npm": ["Install Node.js/npm and verify `npm --version` succeeds."],
-            "pnpm": ["Install pnpm globally, for example `npm install -g pnpm`."],
-            "uv": ["Install uv, for example `curl -LsSf https://astral.sh/uv/install.sh | sh`."],
-            "cargo": ["Install Rust toolchain via rustup so `cargo` is available on PATH."],
-            "go": ["Install Go and verify `go version` succeeds."],
-            "gradle": ["Install Gradle or use the project wrapper if available."],
-            "java": ["Install a JDK and verify `java -version` succeeds."],
-        }
-        return common.get(
-            binary,
-            [f"Install '{binary}' and ensure it is available on PATH before retrying."],
-        )
-
-    def _attempt_workspace_auto_repair(
-        self,
-        *,
-        task_id: UUID,
-        root: Path,
-        runner: dict[str, object],
-        runbook: dict[str, object],
-        policy: dict[str, object],
-    ) -> bool:
-        if self._needs_dependency_bootstrap(root=root, runner=runner, runbook=runbook) is False:
-            return False
-        setup_command = self._runner_default_command(runner, "setup", "")
-        if not setup_command:
-            return False
-        result = self._safe_run_workspace_command(root, setup_command, policy=policy)
-        self._record_event(
-            task_id=task_id,
-            event_type="workspace.auto_repair.attempted",
-            event_data={
-                "command": setup_command[:200],
-                "status": str(result.get("status") or ""),
-            },
-        )
-        return str(result.get("status")) == "ok"
-
-    def _needs_dependency_bootstrap(
-        self,
-        *,
-        root: Path,
-        runner: dict[str, object],
-        runbook: dict[str, object],
-    ) -> bool:
-        package_manager = str(runbook.get("package_manager") or runner.get("package_manager") or "")
-        runner_name = str(runner.get("name") or "")
-        if (
-            package_manager in {"npm", "pnpm", "yarn"}
-            or runner_name.startswith("node-")
-            or runner_name == "monorepo-pnpm"
-        ):
-            return (root / "package.json").exists() and not (root / "node_modules").exists()
-        if runner_name.startswith("python-"):
-            if (root / "pyproject.toml").exists() and not (root / ".venv").exists():
-                return True
-            if (root / "requirements.txt").exists():
-                return True
-        if runner_name == "rust-cli":
-            return (root / "Cargo.toml").exists()
-        if runner_name == "go-service":
-            return (root / "go.mod").exists()
-        if runner_name == "java-gradle":
-            return (root / "build.gradle").exists() or (root / "build.gradle.kts").exists()
-        return False
-
     def _safe_run_workspace_command(
         self,
         root: Path,
@@ -1701,9 +1493,9 @@ class RunExecutionService:
         *,
         policy: dict[str, object],
     ) -> dict[str, object]:
-        if not self._command_allowed(command, policy):
+        if not command_allowed(command, policy):
             return {"command": command, "status": "blocked", "output": "Command not allowed"}
-        command = self._normalize_workspace_command(command)
+        command = normalize_workspace_command(command)
         timeout = int(policy.get("timeout_seconds", 120))
         max_output = int(policy.get("max_output_chars", 4000))
         completed = subprocess.run(
@@ -1721,6 +1513,126 @@ class RunExecutionService:
             "exit_code": completed.returncode,
             "output": output[:max_output],
         }
+
+    def _attempt_workspace_auto_repair(
+        self,
+        *,
+        task_id: UUID,
+        root: Path,
+        runner: dict[str, object],
+        runbook: dict[str, object],
+        policy: dict[str, object],
+    ) -> bool:
+        if not needs_dependency_bootstrap(root=root, runner=runner, runbook=runbook):
+            return False
+        setup_command = runner_default_command(runner, "setup", "")
+        if not setup_command:
+            return False
+        result = self._safe_run_workspace_command(root, setup_command, policy=policy)
+        self._record_event(
+            task_id=task_id,
+            event_type="workspace.auto_repair.attempted",
+            event_data={
+                "command": setup_command[:200],
+                "status": str(result.get("status") or ""),
+            },
+        )
+        return str(result.get("status")) == "ok"
+
+    def _effective_workspace_policy(
+        self,
+        *,
+        requested_profile: str,
+        workspace_metadata: dict[str, object],
+        task_preferences: dict[str, str],
+    ) -> dict[str, object]:
+        return self._policy_resolver.resolve_workspace_policy(
+            requested_profile=requested_profile,
+            workspace_metadata=workspace_metadata,
+            task_preferences=task_preferences,
+        )
+
+    def _normalize_workspace_command(self, command: str) -> str:
+        normalized = normalize_workspace_command(command)
+        if (
+            normalized.startswith("python ")
+            and shutil.which("python") is None
+            and self._binary_available("python3")
+        ):
+            return normalized.replace("python ", "python3 ", 1)
+        return normalized
+
+    def _resolve_workspace_path(self, root: Path, relative_path: str) -> Path:
+        try:
+            return resolve_workspace_path(root, relative_path)
+        except ValueError as exc:
+            raise PermissionError(str(exc)) from exc
+
+    def _check_action_allowed(
+        self,
+        *,
+        action_type: str,
+        policy: dict[str, object],
+        relative_path: str | None = None,
+        command: str | None = None,
+    ) -> dict[str, str]:
+        return check_action_allowed(
+            action_type=action_type,
+            policy=policy,
+            relative_path=relative_path,
+            command=command,
+        )
+
+    def _verify_mechanical_gates(
+        self,
+        *,
+        command_results: list[dict[str, object]],
+        acceptance: dict[str, list[str]],
+        runner: dict[str, object],
+    ) -> dict[str, object]:
+        return self._workspace_verifier.verify_mechanical_gates(
+            command_results=command_results,
+            acceptance=acceptance,
+            runner=runner,
+        )
+
+    def _verify_workspace_execution(
+        self,
+        *,
+        changed_files: list[str],
+        command_results: list[dict[str, object]],
+        root: Path,
+        task_preferences: dict[str, str],
+        contract: dict[str, object],
+        runbook: dict[str, object],
+        runner: dict[str, object] | None = None,
+        policy: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return self._workspace_verifier.verify_workspace_execution(
+            changed_files=changed_files,
+            command_results=command_results,
+            root=root,
+            task_preferences=task_preferences,
+            contract=contract,
+            runbook=runbook,
+            runner=runner,
+            policy=policy,
+        )
+
+    def _run_all_runner_test_commands(
+        self,
+        *,
+        root: Path,
+        command_results: list[dict[str, object]],
+        runner: dict[str, object],
+        policy: dict[str, object],
+    ) -> None:
+        self._workspace_verifier.run_all_runner_test_commands(
+            root=root,
+            command_results=command_results,
+            runner=runner,
+            policy=policy,
+        )
 
     def _verify_secret_safety(
         self,
@@ -1806,7 +1718,7 @@ class RunExecutionService:
     def _candidate_target_files(self, value: object) -> list[str]:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
-        return self._string_list(value)
+        return string_list(value)
 
     def _selected_candidate_for_parent(self, parent_id: UUID) -> dict[str, object] | None:
         parent_events = self._store.list_project_events(task_id=parent_id, limit=500)
@@ -1882,12 +1794,12 @@ class RunExecutionService:
         runner: dict[str, object] | None = None,
     ) -> dict[str, object]:
         if not root.exists() or not root.is_dir():
-            return self._preflight_failure(
+            return preflight_failure(
                 reason="workspace root missing",
                 suggestions=["Ensure the workspace path exists before running Syncore."],
             )
         if not os.access(root, os.R_OK | os.W_OK):
-            return self._preflight_failure(
+            return preflight_failure(
                 reason="workspace root not writable/readable",
                 suggestions=[
                     "Check filesystem permissions for the workspace directory.",
@@ -1896,7 +1808,7 @@ class RunExecutionService:
             )
         provider_name = (provider_hint or self._default_provider or "local_echo").strip().lower()
         if provider_name and provider_name not in self._providers:
-            return self._preflight_failure(
+            return preflight_failure(
                 reason=f"provider '{provider_name}' is not configured",
                 suggestions=[
                     f"Configure credentials for provider '{provider_name}' in .env.",
@@ -1905,7 +1817,7 @@ class RunExecutionService:
             )
         for env_name in required_env or []:
             if env_name and not os.getenv(env_name):
-                return self._preflight_failure(
+                return preflight_failure(
                     reason=f"required env var '{env_name}' is missing",
                     suggestions=[
                         f"Export {env_name}=... in the shell before starting Syncore.",
@@ -1916,7 +1828,7 @@ class RunExecutionService:
         current_os = platform.system().lower()
         supported = [item.lower() for item in (supported_os or []) if item]
         if supported and current_os not in supported:
-            return self._preflight_failure(
+            return preflight_failure(
                 reason=f"workspace contract does not support current os '{current_os}'",
                 suggestions=[
                     "Run the workspace on a supported OS or update syncore.yaml environment.os.",
@@ -1924,15 +1836,15 @@ class RunExecutionService:
             )
         for binary in required_binaries or []:
             if binary and not self._binary_available(binary):
-                return self._preflight_failure(
+                return preflight_failure(
                     reason=f"required binary '{binary}' is missing from PATH",
-                    suggestions=self._binary_install_suggestions(binary),
+                    suggestions=binary_install_suggestions(binary),
                     missing_binaries=[binary],
                 )
         if runner:
-            runner_expected = self._string_list(runner.get("expected_files"))
+            runner_expected = string_list(runner.get("expected_files"))
             if runner_expected and not any((root / rel).exists() for rel in runner_expected):
-                return self._preflight_failure(
+                return preflight_failure(
                     reason="workspace does not match the expected runner file layout",
                     suggestions=[
                         "Rescan the workspace and confirm the selected policy pack/runner.",
@@ -1941,18 +1853,18 @@ class RunExecutionService:
                     missing_files=runner_expected,
                 )
             commands = dict(runner.get("commands") or {})
-            setup_commands = self._string_list(commands.get("setup"))
+            setup_commands = string_list(commands.get("setup"))
             for command in setup_commands[:1]:
                 binary = command.split()[0] if command.split() else ""
                 if binary and not self._binary_available(binary):
-                    return self._preflight_failure(
+                    return preflight_failure(
                         reason=f"runner setup binary '{binary}' is missing from PATH",
-                        suggestions=self._binary_install_suggestions(binary),
+                        suggestions=binary_install_suggestions(binary),
                         missing_binaries=[binary],
                     )
         for rel in required_files or []:
             if rel and not (root / rel).exists():
-                return self._preflight_failure(
+                return preflight_failure(
                     reason=f"required file '{rel}' is missing",
                     suggestions=[
                         f"Create or restore '{rel}' before autonomous execution.",
@@ -1978,189 +1890,6 @@ class RunExecutionService:
             if resolved and (os.path.sep not in candidate or Path(candidate).exists()):
                 return resolved
         return None
-
-    def _normalize_workspace_command(self, command: str) -> str:
-        try:
-            tokens = shlex.split(command, posix=True)
-        except ValueError:
-            return command
-        if not tokens:
-            return command
-        resolved = self._resolve_binary(tokens[0])
-        if not resolved:
-            return command
-        if tokens[0] == "python" and resolved.endswith("python3"):
-            tokens[0] = "python3"
-            return shlex.join(tokens)
-        if tokens[0] == "pip" and resolved.endswith("pip3"):
-            tokens[0] = "pip3"
-            return shlex.join(tokens)
-        return command
-
-    def _verify_workspace_execution(
-        self,
-        *,
-        changed_files: list[str],
-        command_results: list[dict[str, object]],
-        root: Path,
-        task_preferences: dict[str, str],
-        contract: dict[str, object],
-        runbook: dict[str, object],
-        runner: dict[str, object] | None = None,
-        policy: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        return self._workspace_verifier.verify_workspace_execution(
-            changed_files=changed_files,
-            command_results=command_results,
-            root=root,
-            task_preferences=task_preferences,
-            contract=contract,
-            runbook=runbook,
-            runner=runner,
-            policy=policy,
-        )
-
-    def _effective_workspace_policy(
-        self,
-        *,
-        requested_profile: str,
-        workspace_metadata: dict[str, object],
-        task_preferences: dict[str, str],
-    ) -> dict[str, object]:
-        return self._policy_resolver.resolve_workspace_policy(
-            requested_profile=requested_profile,
-            workspace_metadata=workspace_metadata,
-            task_preferences=task_preferences,
-        )
-
-    def _load_task_preferences(self, task_id: UUID) -> dict[str, str]:
-        events = self._store.list_project_events(task_id=task_id, limit=200)
-        for event in reversed(events):
-            if event.event_type != "task.preferences":
-                continue
-            prefs: dict[str, str] = {}
-            for key, value in event.event_data.items():
-                if value is None:
-                    continue
-                prefs[str(key)] = str(value)
-            return prefs
-        return {}
-
-    def _merged_acceptance_criteria(
-        self,
-        *,
-        task_preferences: dict[str, str],
-        contract: dict[str, object],
-        runbook: dict[str, object],
-    ) -> dict[str, list[str]]:
-        return self._workspace_verifier.merged_acceptance_criteria(
-            task_preferences=task_preferences,
-            contract=contract,
-            runbook=runbook,
-        )
-
-    def _verify_mechanical_gates(
-        self,
-        *,
-        command_results: list[dict[str, object]],
-        acceptance: dict[str, list[str]],
-        runner: dict[str, object],
-    ) -> dict[str, object]:
-        return self._workspace_verifier.verify_mechanical_gates(
-            command_results=command_results,
-            acceptance=acceptance,
-            runner=runner,
-        )
-
-    def _ensure_required_verification_commands_run(
-        self,
-        *,
-        root: Path,
-        command_results: list[dict[str, object]],
-        acceptance: dict[str, list[str]],
-        runner: dict[str, object],
-        policy: dict[str, object],
-    ) -> None:
-        self._workspace_verifier.ensure_required_verification_commands_run(
-            root=root,
-            command_results=command_results,
-            acceptance=acceptance,
-            runner=runner,
-            policy=policy,
-        )
-
-    def _run_all_runner_test_commands(
-        self,
-        *,
-        root: Path,
-        command_results: list[dict[str, object]],
-        runner: dict[str, object],
-        policy: dict[str, object],
-    ) -> None:
-        self._workspace_verifier.run_all_runner_test_commands(
-            root=root,
-            command_results=command_results,
-            runner=runner,
-            policy=policy,
-        )
-
-    def _workspace_commands_match(self, expected: str, observed: str) -> bool:
-        return self._workspace_verifier.workspace_commands_match(expected, observed)
-
-    def _verify_diff_risk(
-        self,
-        *,
-        changed_files: list[str],
-        forbidden_paths: list[str],
-        risk_rules: dict[str, object],
-    ) -> dict[str, object]:
-        return self._workspace_verifier.verify_diff_risk(
-            changed_files=changed_files,
-            forbidden_paths=forbidden_paths,
-            risk_rules=risk_rules,
-        )
-
-    def _verify_acceptance_criteria(
-        self,
-        *,
-        root: Path,
-        changed_files: list[str],
-        acceptance: dict[str, list[str]],
-    ) -> dict[str, object]:
-        return self._workspace_verifier.verify_acceptance_criteria(
-            root=root,
-            changed_files=changed_files,
-            acceptance=acceptance,
-        )
-
-    def _run_behavioral_probes(
-        self,
-        *,
-        root: Path,
-        acceptance: dict[str, list[str]],
-        policy: dict[str, object],
-        command_results: list[dict[str, object]],
-    ) -> dict[str, object]:
-        return self._workspace_verifier.run_behavioral_probes(
-            root=root,
-            acceptance=acceptance,
-            policy=policy,
-            command_results=command_results,
-        )
-
-    def _default_probe_markers(self, *, probe_commands: list[str]) -> list[str]:
-        return self._workspace_verifier.default_probe_markers(
-            probe_commands=probe_commands
-        )
-
-    def _string_list(self, value: object) -> list[str]:
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        if isinstance(value, tuple):
-            return [str(item).strip() for item in value if str(item).strip()]
-        if isinstance(value, str) and value.strip():
-            return [value.strip()]
-        return []
 
     def _record_event(
         self,

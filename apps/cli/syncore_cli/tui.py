@@ -1,308 +1,30 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, Label, Static
+from textual.widgets import Footer, Header, Static
 
 from .client import SyncoreApiClient, SyncoreApiError
 from .config import CliConfig
-from .openai_auth import OpenAIAuthError, OpenAIAuthStore, OpenAIModelClient, OpenAICredentials
-
-
-TASK_TYPES = (
-    "analysis",
-    "implementation",
-    "integration",
-    "review",
-    "memory_retrieval",
-    "memory_update",
+from .openai_auth import (
+    OpenAIAuthError,
+    OpenAIAuthStore,
+    OpenAIModelClient,
+    OpenAICredentials,
 )
-COMPLEXITY_LEVELS = ("low", "medium", "high")
-AGENT_ROLES = ("planner", "coder", "reviewer", "analyst", "memory")
-MODEL_PROVIDERS = ("local_echo", "openai", "anthropic", "google", "xai", "other")
-PROVIDER_MODEL_CATALOG: dict[str, list[str]] = {
-    "local_echo": ["local_echo"],
-    "openai": ["gpt-5.4", "gpt-5.5", "gpt-5.2-codex"],
-    "anthropic": ["claude-sonnet-4-20250514", "claude-3-7-sonnet-latest"],
-    "google": ["gemini-2.5-pro", "gemini-2.5-flash"],
-    "xai": ["grok-3", "grok-3-mini"],
-    "other": [],
-}
-DEFAULT_PROVIDER = "local_echo"
-DEFAULT_MODEL = "local_echo"
-
-
-class NewTaskScreen(ModalScreen[dict[str, str] | None]):
-    CSS = """
-    #new-task-modal {
-      width: 84;
-      height: auto;
-      border: round $accent;
-      padding: 1 2;
-      background: $surface;
-      align-horizontal: center;
-      align-vertical: middle;
-    }
-    #new-task-actions {
-      height: auto;
-      layout: horizontal;
-      margin-top: 1;
-    }
-    #new-task-actions Button {
-      margin-right: 1;
-    }
-    #new-task-error {
-      color: $error;
-      height: auto;
-      margin-top: 1;
-    }
-    """
-
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-        ("ctrl+n", "next_model", "Next Model"),
-        ("ctrl+p", "prev_model", "Prev Model"),
-        ("tab", "complete_model", "Complete Model"),
-    ]
-
-    def __init__(
-        self,
-        workspace_name: str | None = None,
-        available_models: list[str] | None = None,
-    ) -> None:
-        super().__init__()
-        self._workspace_name = workspace_name
-        self._available_models = available_models or []
-        self._matching_models: list[str] = list(self._available_models[:10])
-        self._model_cursor = 0
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="new-task-modal"):
-            yield Label("Create Task")
-            yield Label(f"Workspace: {self._workspace_name or 'none'}")
-            yield Input(
-                value=DEFAULT_PROVIDER,
-                placeholder="provider (local_echo|openai|anthropic|google|xai|other)",
-                id="task-provider",
-            )
-            yield Input(
-                value="",
-                placeholder="preferred_model (required)",
-                id="task-model",
-            )
-            if self._available_models:
-                yield Label(
-                    "Available models: " + ", ".join(self._available_models[:12]),
-                    id="task-model-list",
-                )
-            yield Input(value="medium", placeholder="complexity", id="task-complexity")
-            yield Input(placeholder="Task title", id="task-title")
-            yield Input(placeholder="Description (optional)", id="task-description")
-            yield Input(value="implementation", placeholder="task_type", id="task-type")
-            yield Input(
-                value="coder",
-                placeholder="preferred_agent_role",
-                id="task-agent-role",
-            )
-            yield Input(
-                value="false",
-                placeholder="requires_approval (true/false)",
-                id="task-requires-approval",
-            )
-            yield Input(
-                value="true",
-                placeholder="sdlc_enforce (true/false)",
-                id="task-sdlc-enforce",
-            )
-            yield Input(
-                placeholder="execution prompt (optional)",
-                id="task-prompt",
-            )
-            yield Static("", id="new-task-error")
-            with Horizontal(id="new-task-actions"):
-                yield Button("Create", id="new-task-create", variant="success")
-                yield Button("Cancel", id="new-task-cancel")
-
-    def on_mount(self) -> None:
-        self.query_one("#task-provider", Input).focus()
-        self._refresh_model_matches()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_next_model(self) -> None:
-        if not self._matching_models:
-            return
-        self._model_cursor = (self._model_cursor + 1) % len(self._matching_models)
-        self._apply_selected_model()
-
-    def action_prev_model(self) -> None:
-        if not self._matching_models:
-            return
-        self._model_cursor = (self._model_cursor - 1) % len(self._matching_models)
-        self._apply_selected_model()
-
-    def action_complete_model(self) -> None:
-        if not self._matching_models:
-            return
-        self._apply_selected_model()
-        self.query_one("#task-prompt", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "task-prompt":
-            self._submit()
-            return
-        if event.input.id == "task-model":
-            if self._matching_models:
-                self._apply_selected_model()
-            self.query_one("#task-complexity", Input).focus()
-            return
-        if event.input.id == "task-provider":
-            self.query_one("#task-model", Input).focus()
-            return
-        next_field = {
-            "task-complexity": "task-title",
-            "task-title": "task-description",
-            "task-description": "task-type",
-            "task-type": "task-agent-role",
-            "task-agent-role": "task-requires-approval",
-            "task-requires-approval": "task-sdlc-enforce",
-            "task-sdlc-enforce": "task-prompt",
-        }.get(event.input.id or "")
-        if next_field:
-            self.query_one(f"#{next_field}", Input).focus()
-
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "task-model":
-            self._refresh_model_matches()
-        if event.input.id == "task-provider":
-            self._refresh_model_matches()
-
-    def _provider_filtered_models(self) -> list[str]:
-        provider = self.query_one("#task-provider", Input).value.strip().lower()
-        if not provider:
-            provider = DEFAULT_PROVIDER
-        if provider == "other":
-            return list(self._available_models)
-        catalog_models = PROVIDER_MODEL_CATALOG.get(provider, [])
-        if provider == "openai":
-            dynamic_openai = [m for m in self._available_models if m.startswith(("gpt", "o1", "o3", "o4"))]
-            for model in dynamic_openai:
-                if model not in catalog_models:
-                    catalog_models.append(model)
-        return catalog_models if catalog_models else list(self._available_models)
-
-    def _refresh_model_matches(self) -> None:
-        scoped_models = self._provider_filtered_models()
-        if not scoped_models:
-            return
-
-        query = self.query_one("#task-model", Input).value.strip()
-        if not query:
-            self._matching_models = list(scoped_models[:10])
-            self._model_cursor = 0
-            self._render_model_matches()
-            return
-
-        try:
-            pattern = re.compile(query, re.IGNORECASE)
-            matches = [model for model in scoped_models if pattern.search(model)]
-        except re.error:
-            literal = re.escape(query)
-            pattern = re.compile(literal, re.IGNORECASE)
-            matches = [model for model in scoped_models if pattern.search(model)]
-
-        self._matching_models = matches[:10]
-        self._model_cursor = 0
-        self._render_model_matches()
-
-    def _render_model_matches(self) -> None:
-        if not self._available_models:
-            return
-        label = self.query_one("#task-model-list", Label)
-        provider = self.query_one("#task-provider", Input).value.strip().lower() or "all"
-        if not self._matching_models:
-            label.update(f"Model matches ({provider}, regex): no matches")
-            return
-        rendered: list[str] = []
-        for index, model in enumerate(self._matching_models):
-            marker = ">" if index == self._model_cursor else "-"
-            rendered.append(f"{marker} {model}")
-        label.update(f"Model matches ({provider}, regex): " + " | ".join(rendered))
-
-    def _apply_selected_model(self) -> None:
-        if not self._matching_models:
-            return
-        selected = self._matching_models[self._model_cursor]
-        model_input = self.query_one("#task-model", Input)
-        model_input.value = selected
-        self._render_model_matches()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "new-task-cancel":
-            self.dismiss(None)
-            return
-        if event.button.id == "new-task-create":
-            self._submit()
-
-    def _submit(self) -> None:
-        provider = self.query_one("#task-provider", Input).value.strip().lower()
-        title = self.query_one("#task-title", Input).value.strip()
-        description = self.query_one("#task-description", Input).value.strip()
-        task_type = self.query_one("#task-type", Input).value.strip().lower()
-        complexity = self.query_one("#task-complexity", Input).value.strip().lower()
-        agent_role = self.query_one("#task-agent-role", Input).value.strip().lower()
-        requires_approval = (
-            self.query_one("#task-requires-approval", Input).value.strip().lower()
-        )
-        sdlc_enforce = (
-            self.query_one("#task-sdlc-enforce", Input).value.strip().lower()
-        )
-        preferred_model = self.query_one("#task-model", Input).value.strip()
-        prompt = self.query_one("#task-prompt", Input).value.strip()
-
-        if not title:
-            self.query_one("#new-task-error", Static).update("Task title is required.")
-            return
-        if not provider:
-            self.query_one("#new-task-error", Static).update("Provider is required.")
-            return
-        if provider not in MODEL_PROVIDERS:
-            provider = "other"
-        if task_type not in TASK_TYPES:
-            task_type = "implementation"
-        if complexity not in COMPLEXITY_LEVELS:
-            complexity = "medium"
-        if agent_role not in AGENT_ROLES:
-            agent_role = "coder"
-        if not preferred_model:
-            self.query_one("#new-task-error", Static).update("Model is required.")
-            return
-
-        self.dismiss(
-            {
-                "title": title,
-                "description": description,
-                "preferred_provider": provider,
-                "task_type": task_type,
-                "complexity": complexity,
-                "preferred_agent_role": agent_role,
-                "preferred_model": preferred_model,
-                "execution_prompt": prompt,
-                "requires_approval": "true"
-                if requires_approval in {"true", "1", "yes", "on"}
-                else "false",
-                "sdlc_enforce": "true"
-                if sdlc_enforce in {"true", "1", "yes", "on"}
-                else "false",
-            }
-        )
+from .tui_screens import (
+    AGENT_ROLES,
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    MODEL_PROVIDERS,
+    PROVIDER_MODEL_CATALOG,
+    NewTaskScreen,
+    OpenAISignInScreen,
+)
 
 
 class SyncoreTuiApp(App[None]):
@@ -462,8 +184,12 @@ class SyncoreTuiApp(App[None]):
                     self._last_autonomy_processed = processed
             if self.current_view == "diagnostics":
                 self._services = self._safe_request(self._client.services_health, {})
-                self._diag_config = self._safe_request(self._client.diagnostics_config, {})
-                self._diag_routes = self._safe_request(self._client.diagnostics_routes, {})
+                self._diag_config = self._safe_request(
+                    self._client.diagnostics_config, {}
+                )
+                self._diag_routes = self._safe_request(
+                    self._client.diagnostics_routes, {}
+                )
             if self.current_view in {"dashboard", "metrics"}:
                 metrics_fn = getattr(self._client, "context_efficiency_metrics", None)
                 if callable(metrics_fn):
@@ -514,7 +240,9 @@ class SyncoreTuiApp(App[None]):
             return False
 
         left_widget.update(left if left is not None else self._render_left_pane())
-        center_widget.update(center if center is not None else self._render_center_pane())
+        center_widget.update(
+            center if center is not None else self._render_center_pane()
+        )
         right_widget.update(right if right is not None else self._render_right_pane())
         return True
 
@@ -529,7 +257,9 @@ class SyncoreTuiApp(App[None]):
             for index, workspace in enumerate(self._workspaces):
                 if str(workspace.get("id")) == self._selected_workspace_id:
                     self._selected_workspace_index = index
-                    self._selected_workspace_name = str(workspace.get("name", "unknown"))
+                    self._selected_workspace_name = str(
+                        workspace.get("name", "unknown")
+                    )
                     return
 
         self._selected_workspace_index = min(
@@ -615,7 +345,9 @@ class SyncoreTuiApp(App[None]):
         self._task_batons = self._safe_request(
             lambda: self._client.list_task_batons(task_id), []
         )
-        self._task_runs = [run for run in self._runs if str(run.get("task_id")) == task_id]
+        self._task_runs = [
+            run for run in self._runs if str(run.get("task_id")) == task_id
+        ]
         self._latest_task_run = self._latest_by_timestamp(self._task_runs)
         self._task_latest_baton = self._safe_request(
             lambda: self._client.latest_task_baton(task_id), None
@@ -631,7 +363,9 @@ class SyncoreTuiApp(App[None]):
         )
         if self._latest_task_run is not None and self._latest_task_run.get("id"):
             self._latest_run_result = self._safe_request(
-                lambda: self._client.get_agent_run_result(str(self._latest_task_run.get("id"))),
+                lambda: self._client.get_agent_run_result(
+                    str(self._latest_task_run.get("id"))
+                ),
                 None,
             )
         else:
@@ -741,13 +475,12 @@ class SyncoreTuiApp(App[None]):
             "Nav: j/k | Refresh: r | Quit: q",
             actions_hint,
             "OpenAI: i=signin m=models",
-            (
-                f"Autonomy: {'ON' if self._autonomy_enabled else 'OFF'} "
-                "(z=toggle)"
-            ),
+            (f"Autonomy: {'ON' if self._autonomy_enabled else 'OFF'} (z=toggle)"),
         ]
         if self._autonomy_enabled:
-            lines.append(f"Autonomy last scan processed: {self._last_autonomy_processed}")
+            lines.append(
+                f"Autonomy last scan processed: {self._last_autonomy_processed}"
+            )
         if self._task_preferences:
             lines.extend(
                 [
@@ -778,7 +511,11 @@ class SyncoreTuiApp(App[None]):
         return "\n".join(lines)
 
     def _render_dashboard_left(self) -> str:
-        totals = self._context_efficiency.get("totals", {}) if self._context_efficiency else {}
+        totals = (
+            self._context_efficiency.get("totals", {})
+            if self._context_efficiency
+            else {}
+        )
         return "\n".join(
             [
                 "Dashboard",
@@ -816,12 +553,20 @@ class SyncoreTuiApp(App[None]):
         return "\n".join(lines)
 
     def _render_metrics_left(self) -> str:
-        totals = self._context_efficiency.get("totals", {}) if self._context_efficiency else {}
+        totals = (
+            self._context_efficiency.get("totals", {})
+            if self._context_efficiency
+            else {}
+        )
         cost_totals = (
-            self._context_efficiency.get("cost_totals", {}) if self._context_efficiency else {}
+            self._context_efficiency.get("cost_totals", {})
+            if self._context_efficiency
+            else {}
         )
         layering_modes = (
-            self._context_efficiency.get("layering_modes", {}) if self._context_efficiency else {}
+            self._context_efficiency.get("layering_modes", {})
+            if self._context_efficiency
+            else {}
         )
         return "\n".join(
             [
@@ -960,8 +705,12 @@ class SyncoreTuiApp(App[None]):
                     f"run role: {self._latest_task_run.get('role')}",
                 ]
             )
-            output_summary = str(self._latest_task_run.get("output_summary") or "").strip()
-            error_message = str(self._latest_task_run.get("error_message") or "").strip()
+            output_summary = str(
+                self._latest_task_run.get("output_summary") or ""
+            ).strip()
+            error_message = str(
+                self._latest_task_run.get("error_message") or ""
+            ).strip()
             if output_summary:
                 lines.append(f"result: {output_summary}")
             elif error_message:
@@ -972,7 +721,9 @@ class SyncoreTuiApp(App[None]):
             lines.append("latest run: none")
         if self._task_execution_report:
             changed_files = self._task_execution_report.get("changed_files") or []
-            verification_commands = self._task_execution_report.get("verification_commands") or []
+            verification_commands = (
+                self._task_execution_report.get("verification_commands") or []
+            )
             diff_artifacts = self._task_execution_report.get("diff_artifacts") or []
             lines.extend(
                 [
@@ -1021,7 +772,9 @@ class SyncoreTuiApp(App[None]):
                     f"summary: {str(self._latest_run_result.get('output_summary') or '-')[:96]}",
                 ]
             )
-            output_preview = str(self._latest_run_result.get("output_text") or "").strip()
+            output_preview = str(
+                self._latest_run_result.get("output_text") or ""
+            ).strip()
             if output_preview:
                 lines.append(f"output preview: {output_preview[:240]}")
         if self._task_latest_baton:
@@ -1122,9 +875,7 @@ class SyncoreTuiApp(App[None]):
             return "\n".join(lines)
         for index, item in enumerate(self._notifications):
             marker = "*" if index == self._selected_notification_index else "-"
-            lines.append(
-                f"{marker} [{item.get('category')}] {item.get('title')}"
-            )
+            lines.append(f"{marker} [{item.get('category')}] {item.get('title')}")
         return "\n".join(lines)
 
     def _render_notifications_center(self) -> str:
@@ -1208,7 +959,9 @@ class SyncoreTuiApp(App[None]):
             self._selected_workspace_id = str(workspace.get("id"))
             self._selected_workspace_name = str(workspace.get("name", "unknown"))
         elif self.current_view in {"tasks", "task_detail"} and self._tasks:
-            self._selected_task_index = (self._selected_task_index + 1) % len(self._tasks)
+            self._selected_task_index = (self._selected_task_index + 1) % len(
+                self._tasks
+            )
             task = self._tasks[self._selected_task_index]
             self._selected_task_id = str(task.get("id"))
             self._selected_task_title = str(task.get("title", "unknown"))
@@ -1229,7 +982,9 @@ class SyncoreTuiApp(App[None]):
             self._selected_workspace_id = str(workspace.get("id"))
             self._selected_workspace_name = str(workspace.get("name", "unknown"))
         elif self.current_view in {"tasks", "task_detail"} and self._tasks:
-            self._selected_task_index = (self._selected_task_index - 1) % len(self._tasks)
+            self._selected_task_index = (self._selected_task_index - 1) % len(
+                self._tasks
+            )
             task = self._tasks[self._selected_task_index]
             self._selected_task_id = str(task.get("id"))
             self._selected_task_title = str(task.get("title", "unknown"))
@@ -1243,7 +998,9 @@ class SyncoreTuiApp(App[None]):
 
     def action_new_task(self) -> None:
         if self.current_view == "task_detail":
-            self.notify("Task detail view: press b to return before creating a new task.")
+            self.notify(
+                "Task detail view: press b to return before creating a new task."
+            )
             return
         self.push_screen(
             NewTaskScreen(
@@ -1276,9 +1033,15 @@ class SyncoreTuiApp(App[None]):
                     "task_id": task_id,
                     "event_type": "task.preferences",
                     "event_data": {
-                        "preferred_provider": payload.get("preferred_provider", DEFAULT_PROVIDER),
-                        "preferred_model": payload.get("preferred_model", DEFAULT_MODEL),
-                        "preferred_agent_role": payload.get("preferred_agent_role", "coder"),
+                        "preferred_provider": payload.get(
+                            "preferred_provider", DEFAULT_PROVIDER
+                        ),
+                        "preferred_model": payload.get(
+                            "preferred_model", DEFAULT_MODEL
+                        ),
+                        "preferred_agent_role": payload.get(
+                            "preferred_agent_role", "coder"
+                        ),
                         "execution_prompt": payload.get("execution_prompt", ""),
                         "requires_approval": payload.get("requires_approval", "false"),
                         "sdlc_enforce": payload.get("sdlc_enforce", "false"),
@@ -1299,7 +1062,9 @@ class SyncoreTuiApp(App[None]):
         credentials = self._openai_store.load()
         if credentials is None:
             self._load_available_models()
-            self.notify("Loaded local model catalog. Press i to connect OpenAI for account models.")
+            self.notify(
+                "Loaded local model catalog. Press i to connect OpenAI for account models."
+            )
             self.action_refresh()
             return
         try:
@@ -1313,7 +1078,9 @@ class SyncoreTuiApp(App[None]):
         self.action_refresh()
 
     def action_openai_signin(self) -> None:
-        self.push_screen(OpenAISignInScreen(), callback=self._handle_openai_signin_payload)
+        self.push_screen(
+            OpenAISignInScreen(), callback=self._handle_openai_signin_payload
+        )
 
     def _handle_openai_signin_payload(self, payload: dict[str, str] | None) -> None:
         if payload is None:
@@ -1359,7 +1126,9 @@ class SyncoreTuiApp(App[None]):
             return
         task_id = str(task.get("id"))
         try:
-            self._task_digest = self._client.generate_digest({"task_id": task_id, "limit": 50})
+            self._task_digest = self._client.generate_digest(
+                {"task_id": task_id, "limit": 50}
+            )
         except SyncoreApiError as error:
             self.notify(str(error), severity="error")
             return
@@ -1424,10 +1193,14 @@ class SyncoreTuiApp(App[None]):
         if preferred_role not in AGENT_ROLES:
             preferred_role = "coder"
         preferred_model = self._task_preferences.get("preferred_model", DEFAULT_MODEL)
-        preferred_provider = self._task_preferences.get("preferred_provider", DEFAULT_PROVIDER)
+        preferred_provider = self._task_preferences.get(
+            "preferred_provider", DEFAULT_PROVIDER
+        )
         if preferred_provider not in MODEL_PROVIDERS:
             preferred_provider = DEFAULT_PROVIDER
-        prompt = self._task_preferences.get("execution_prompt") or str(task.get("title", ""))
+        prompt = self._task_preferences.get("execution_prompt") or str(
+            task.get("title", "")
+        )
         payload = {
             "task_id": task_id,
             "prompt": prompt,
@@ -1469,7 +1242,9 @@ class SyncoreTuiApp(App[None]):
             return
         task_id = str(task.get("id"))
         try:
-            result = self._client.autonomy_approve_task(task_id, reason="Approved from TUI")
+            result = self._client.autonomy_approve_task(
+                task_id, reason="Approved from TUI"
+            )
         except SyncoreApiError as error:
             self.notify(str(error), severity="error")
             return
@@ -1483,7 +1258,9 @@ class SyncoreTuiApp(App[None]):
             return
         task_id = str(task.get("id"))
         try:
-            result = self._client.autonomy_reject_task(task_id, reason="Rejected from TUI")
+            result = self._client.autonomy_reject_task(
+                task_id, reason="Rejected from TUI"
+            )
         except SyncoreApiError as error:
             self.notify(str(error), severity="error")
             return
@@ -1503,68 +1280,3 @@ class SyncoreTuiApp(App[None]):
             return
         self.notify(f"Acknowledged notification {notification_id}")
         self.action_refresh()
-
-
-class OpenAISignInScreen(ModalScreen[dict[str, str] | None]):
-    CSS = """
-    #openai-login-modal {
-      width: 76;
-      height: auto;
-      border: round $accent;
-      padding: 1 2;
-      background: $surface;
-      align-horizontal: center;
-      align-vertical: middle;
-    }
-    #openai-login-actions {
-      height: auto;
-      layout: horizontal;
-      margin-top: 1;
-    }
-    #openai-login-actions Button {
-      margin-right: 1;
-    }
-    #openai-login-error {
-      color: $error;
-      height: auto;
-      margin-top: 1;
-    }
-    """
-
-    BINDINGS = [("escape", "cancel", "Cancel")]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="openai-login-modal"):
-            yield Label("Connect OpenAI")
-            yield Label(
-                "Paste API key (stored locally at ~/.syncore/openai_credentials.json)"
-            )
-            yield Input(password=True, placeholder="sk-...", id="openai-api-key")
-            yield Static("", id="openai-login-error")
-            with Horizontal(id="openai-login-actions"):
-                yield Button("Connect", id="openai-login-connect", variant="success")
-                yield Button("Cancel", id="openai-login-cancel")
-
-    def on_mount(self) -> None:
-        self.query_one("#openai-api-key", Input).focus()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "openai-api-key":
-            self._submit()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "openai-login-cancel":
-            self.dismiss(None)
-            return
-        if event.button.id == "openai-login-connect":
-            self._submit()
-
-    def _submit(self) -> None:
-        api_key = self.query_one("#openai-api-key", Input).value.strip()
-        if not api_key:
-            self.query_one("#openai-login-error", Static).update("API key is required.")
-            return
-        self.dismiss({"api_key": api_key})
