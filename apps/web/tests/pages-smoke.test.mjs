@@ -8,14 +8,17 @@ function read(rel) {
 
 test("dashboard page has loading/empty/error states", () => {
   const page = read("../pages/index.tsx");
+  const panels = read("../src/components/DashboardPanels.tsx");
   assert.match(page, /Loading dashboard summary/);
-  assert.match(page, /No recent events/);
+  assert.match(panels, /No recent events/);
   assert.match(page, /ErrorState/);
 });
 
 test("workspaces page has empty state", () => {
   const page = read("../pages/workspaces.tsx");
-  assert.match(page, /No workspaces registered yet/);
+  const body = read("../src/components/WorkspaceRegistryBody.tsx");
+  assert.match(page, /WorkspaceRegistryBody/);
+  assert.match(body, /No workspaces registered yet/);
 });
 
 test("tasks page has empty state", () => {
@@ -42,9 +45,13 @@ test("analyst page renders digest controls", () => {
 
 test("task detail page renders model strategy controls", () => {
   const page = read("../pages/tasks/[taskId].tsx");
-  assert.match(page, /Model Strategy/);
-  assert.match(page, /Execution Outcome/);
-  assert.match(page, /Verification Commands/);
-  assert.match(page, /optimization_goal/);
-  assert.match(page, /Save strategy/);
+  const detailBody = read("../src/components/TaskDetailBody.tsx");
+  const executionPanel = read("../src/components/ExecutionOutcomePanel.tsx");
+  const modelStrategyPanel = read("../src/components/ModelStrategyPanel.tsx");
+  assert.match(page, /TaskDetailBody/);
+  assert.match(detailBody, /Model Strategy/);
+  assert.match(detailBody, /Execution Outcome/);
+  assert.match(executionPanel, /Verification Commands/);
+  assert.match(modelStrategyPanel, /optimization_goal/);
+  assert.match(modelStrategyPanel, /Save strategy/);
 });

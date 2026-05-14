@@ -18,13 +18,17 @@ from packages.contracts.python.models import (
     RoutingRequest,
     RunExecutionRequest,
     Task,
-    TaskCreate,
     TaskUpdate,
 )
 from services.analyst.digest import AnalystDigestService
 from services.memory import MemoryStoreProtocol
 
 from app.config import Settings
+from app.services.autonomy_candidates import CandidateStateService
+from app.services.autonomy_failure_policy import FailurePolicy
+from app.services.autonomy_finalizer import TaskFinalizationService
+from app.services.autonomy_subtasks import SubtaskFanoutCoordinator
+from app.services.execute_plan_builder import ExecutePlanBuilder
 from app.services.routing_service import RoutingService
 from app.services.run_execution_service import RunExecutionService
 from app.store_factory import build_memory_store
@@ -106,6 +110,39 @@ class AutonomyService:
         self._low_info_stop_enabled = low_info_stop_enabled
         self._low_info_threshold = max(low_info_threshold, 2)
         self._max_provider_switches = max(max_provider_switches, 0)
+        self._candidate_state = CandidateStateService(
+            store=self._store,
+            parse_uuid=self._parse_uuid,
+        )
+        self._finalizer = TaskFinalizationService(
+            store=self._store,
+            digest_service=self._digest_service,
+        )
+        self._subtask_fanout = SubtaskFanoutCoordinator(
+            store=self._store,
+            default_provider=self._default_provider,
+            default_model=self._default_model,
+            as_bool=_as_bool,
+            parse_positive_int=lambda value: _parse_positive_int(
+                value, default=3, maximum=8
+            ),
+        )
+        self._failure_policy = FailurePolicy(self._store)
+        self._execute_plan_builder = ExecutePlanBuilder(
+            store=self._store,
+            recommendation_context=lambda task, prefs: self._recommended_improvement_prompt_context(
+                task=task,
+                prefs=prefs,
+            ),
+            recommendation_state=self._recommended_improvement_state,
+            extract_paths=self._extract_paths,
+            extract_command_candidates=self._extract_command_candidates,
+            extract_acceptance_checks=self._extract_acceptance_checks,
+            parse_plan_lines=self._parse_plan_lines,
+            strategy_guidance=self._strategy_guidance,
+            string_list=self._string_list,
+            parse_uuid=self._parse_uuid,
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
@@ -1688,95 +1725,7 @@ class AutonomyService:
         return workspace.name.strip().lower() == "syncore"
 
     def _spawn_subtasks_once(self, *, task: Task, prefs: dict[str, str]) -> None:
-        if not _as_bool(prefs.get("auto_spawn")):
-            return
-        existing_events = self._store.list_project_events(task_id=task.id, limit=500)
-        if self._latest_event(existing_events, "autonomy.subtasks.spawned") is not None:
-            return
-
-        count = _parse_positive_int(prefs.get("auto_spawn_count"), default=3, maximum=8)
-        templates = [
-            (
-                "Requirements and design pass",
-                "analysis",
-                "false",
-                (
-                    "Inspect the repository and identify one safe, high-confidence improvement. "
-                    "Do not modify files. Summarize the candidate change, target files, risks, and "
-                    "the verification command the implementation pass should run."
-                ),
-            ),
-            (
-                "Implementation pass",
-                "implementation",
-                prefs.get("workspace_execution_enabled", "true"),
-                prefs.get("execution_prompt", ""),
-            ),
-            (
-                "Verification and release pass",
-                "review",
-                "false",
-                (
-                    "Review the selected improvement and its verification evidence. "
-                    "Do not modify files. State whether the change is safe to ship, "
-                    "what risks remain, and what final check "
-                    "or note should be recorded."
-                ),
-            ),
-            (
-                "Documentation and polish pass",
-                "integration",
-                "false",
-                (
-                    "Review whether any docs or operator notes should be updated for the chosen "
-                    "improvement. Do not modify files unless explicitly required by the task."
-                ),
-            ),
-        ]
-        selected = templates[:count]
-        spawned_ids: list[str] = []
-        for title_suffix, task_type, workspace_enabled, child_execution_prompt in selected:
-            child = self._store.create_task(
-                TaskCreate(
-                    title=f"{task.title} :: {title_suffix}",
-                    task_type=task_type,  # type: ignore[arg-type]
-                    complexity=task.complexity,
-                    workspace_id=task.workspace_id,
-                )
-            )
-            child_event_data: dict[str, str] = dict(prefs)
-            child_event_data.update(
-                {
-                    "parent_task_id": str(task.id),
-                    "preferred_agent_role": prefs.get("preferred_agent_role", "coder"),
-                    "preferred_provider": prefs.get("preferred_provider", self._default_provider),
-                    "preferred_model": prefs.get("preferred_model", self._default_model),
-                    "execution_prompt": child_execution_prompt,
-                    "requires_approval": prefs.get("requires_approval", "false"),
-                    "sdlc_enforce": prefs.get("sdlc_enforce", "false"),
-                    "workspace_execution_enabled": workspace_enabled,
-                    "auto_spawn": "false",
-                }
-            )
-            self._store.save_project_event(
-                ProjectEventCreate(
-                    task_id=child.id,
-                    event_type="task.preferences",
-                    event_data=child_event_data,
-                )
-            )
-            spawned_ids.append(str(child.id))
-
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task.id,
-                event_type="autonomy.subtasks.spawned",
-                event_data={
-                    "count": len(spawned_ids),
-                    "child_task_ids": ",".join(spawned_ids),
-                },
-            )
-        )
+        self._subtask_fanout.spawn_once(task=task, prefs=prefs)
 
     def _select_replan_strategy(
         self,
@@ -1786,68 +1735,18 @@ class AutonomyService:
         cycle: int,
         execute_role: str,
     ) -> str:
-        if cycle <= 1:
-            return "default"
-        recent_fail = self._latest_event(events, "autonomy.quality.failed")
-        reason = str((recent_fail.event_data.get("reason") if recent_fail else "") or "").lower()
-        candidates = [
-            "tighten_scope",
-            "increase_detail",
-            "raise_verification",
-            "switch_execution_role",
-        ]
-        if "short" in reason:
-            candidates = [
-                "increase_detail",
-                "tighten_scope",
-                "raise_verification",
-                "switch_execution_role",
-            ]
-        elif "risk" in reason or stage == "review":
-            candidates = [
-                "raise_verification",
-                "increase_detail",
-                "tighten_scope",
-                "switch_execution_role",
-            ]
-        elif execute_role == "coder":
-            candidates = [
-                "switch_execution_role",
-                "increase_detail",
-                "tighten_scope",
-                "raise_verification",
-            ]
-        return self._best_strategy_from_feedback(candidates)
+        return self._failure_policy.select_replan_strategy(
+            events=events,
+            stage=stage,
+            cycle=cycle,
+            execute_role=execute_role,
+        )
 
     def _best_strategy_from_feedback(self, candidates: list[str]) -> str:
-        feedback = self._store.list_project_events(task_id=None, limit=500)
-        scores: dict[str, int] = {name: 0 for name in AUTONOMY_STRATEGIES}
-        for event in feedback:
-            if event.event_type != "autonomy.feedback":
-                continue
-            strategy = str(event.event_data.get("strategy") or "").strip()
-            outcome = str(event.event_data.get("outcome") or "").strip()
-            if strategy not in scores:
-                continue
-            if outcome == "success":
-                scores[strategy] += 3
-            elif outcome == "quality_failed":
-                scores[strategy] -= 2
-            elif outcome == "failed":
-                scores[strategy] -= 3
-        best = max(candidates, key=lambda item: scores.get(item, 0))
-        return best if best in AUTONOMY_STRATEGIES else "default"
+        return self._failure_policy.best_strategy_from_feedback(candidates)
 
     def _strategy_guidance(self, strategy: str) -> str:
-        if strategy == "tighten_scope":
-            return "Break work into smaller validated increments and avoid broad refactors."
-        if strategy == "increase_detail":
-            return "Increase implementation detail and include explicit step-by-step artifacts."
-        if strategy == "raise_verification":
-            return "Prioritize tests, checks, and explicit verification evidence."
-        if strategy == "switch_execution_role":
-            return "Shift execution perspective to reduce repeated blind spots."
-        return "Deliver concise, actionable, and verifiable output."
+        return self._failure_policy.strategy_guidance(strategy)
 
     def _record_feedback(self, *, task_id: UUID, stage: str, strategy: str, outcome: str) -> None:
         self._store.save_project_event(
@@ -1914,64 +1813,12 @@ class AutonomyService:
         strategy: str,
     ) -> dict[str, object]:
         del cycle
-        recommendation_context = self._recommended_improvement_prompt_context(
+        return self._execute_plan_builder.build(
             task=task,
             prefs=prefs,
+            output_text=output_text,
+            strategy=strategy,
         )
-        target_files = self._extract_paths(output_text)
-        verification_commands = self._extract_command_candidates(output_text)
-        acceptance_checks = self._extract_acceptance_checks(output_text)
-        proposed_actions = self._parse_plan_lines(output_text)[:8]
-        if recommendation_context and not target_files:
-            recommendation_state = self._recommended_improvement_state(
-                self._parse_uuid(prefs.get("parent_task_id")) or task.id
-            )
-            event = recommendation_state.get("event")
-            if isinstance(event, ProjectEvent):
-                target_files = self._string_list(event.event_data.get("target_files"))
-                if not verification_commands:
-                    verification = str(event.event_data.get("verification_command") or "").strip()
-                    if verification:
-                        verification_commands = [verification]
-        if not verification_commands and task.workspace_id is not None:
-            workspace = self._store.get_workspace(task.workspace_id)
-            if workspace is not None:
-                runbook = dict(workspace.metadata.get("workspace_runbook") or {})
-                verification_commands = self._string_list(runbook.get("test_commands"))[:2]
-        if not acceptance_checks:
-            acceptance_checks = [
-                "Produce a concrete artifact or code change.",
-                "Run verification commands and confirm success.",
-            ]
-        if not proposed_actions:
-            proposed_actions = [
-                "Inspect the repo state relevant to the task.",
-                "Apply the smallest safe change required.",
-                "Run verification and summarize the result.",
-            ]
-        risk_level = "medium"
-        lowered = output_text.lower()
-        if any(
-            token in lowered
-            for token in ("migration", "auth", "secret", "credential", "deploy")
-        ):
-            risk_level = "high"
-        elif any(token in lowered for token in ("docs", "config", "test", "yaml", "readme")):
-            risk_level = "low"
-        payload = {
-            "objective": task.title,
-            "target_files": target_files[:12],
-            "proposed_actions": proposed_actions[:8],
-            "verification_commands": verification_commands[:4],
-            "acceptance_checks": acceptance_checks[:8],
-            "fallback_strategy": self._strategy_guidance(strategy),
-            "risk_level": risk_level,
-        }
-        signature = hashlib.sha1(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:16]
-        payload["signature"] = signature
-        return payload
 
     def _latest_execute_plan(self, task_id: UUID) -> dict[str, object] | None:
         events = self._store.list_project_events(task_id=task_id, limit=300)
@@ -2358,42 +2205,10 @@ class AutonomyService:
         task: Task,
         prefs: dict[str, str],
     ) -> str:
-        if task.task_type != "implementation":
-            return ""
-        parent_id = self._parse_uuid(prefs.get("parent_task_id"))
-        if parent_id is None:
-            return ""
-        sibling_state = self._selected_candidate_state(parent_id)
-        if sibling_state["status"] != "ready":
-            return ""
-        event = sibling_state["event"]
-        summary = str(event.event_data.get("summary") or "").strip()
-        action = str(event.event_data.get("action") or "").strip()
-        target_files = str(event.event_data.get("target_files") or "").strip()
-        verification = str(event.event_data.get("verification_command") or "").strip()
-        risks = str(event.event_data.get("risks") or "").strip()
-        confidence = str(event.event_data.get("confidence") or "").strip()
-        candidate_type = str(event.event_data.get("candidate_type") or "").strip()
-        context_lines = ["Selected improvement candidate from analysis child:"]
-        if candidate_type:
-            context_lines.append(f"- Candidate type: {candidate_type}")
-        if summary:
-            context_lines.append(f"- Candidate improvement: {summary}")
-        if action:
-            context_lines.append(f"- Required implementation: {action}")
-        if target_files:
-            context_lines.append(f"- Suggested files: {target_files}")
-        if verification:
-            context_lines.append(f"- Verification command: {verification}")
-        if confidence:
-            context_lines.append(f"- Confidence: {confidence}")
-        if risks:
-            context_lines.append(f"- Risks/constraints: {risks}")
-        context_lines.append(
-            "- Do not re-scope the task. "
-            "Act on this recommendation unless the repo state proves it invalid."
+        return self._candidate_state.selected_candidate_prompt_context(
+            task=task,
+            prefs=prefs,
         )
-        return "\n".join(context_lines)
 
     def _recommended_improvement_prompt_context(
         self,
@@ -2404,82 +2219,13 @@ class AutonomyService:
         return self._selected_candidate_prompt_context(task=task, prefs=prefs)
 
     def _selected_candidate_state(self, parent_id: UUID) -> dict[str, object]:
-        child_ids = self._spawned_child_ids(parent_id)
-        analysis_children: list[Task] = []
-        for child_id in child_ids:
-            child = self._store.get_task(child_id)
-            if child is None or child.task_type != "analysis":
-                continue
-            analysis_children.append(child)
-            child_events = self._store.list_project_events(task_id=child.id, limit=250)
-            selected = self._latest_event(child_events, "autonomy.candidate.selected")
-            if selected is not None:
-                return {"status": "ready", "event": selected, "task": child}
-        return self._recommended_improvement_state(parent_id)
+        return self._candidate_state.selected_candidate_state(parent_id)
 
     def _recommended_improvement_state(self, parent_id: UUID) -> dict[str, object]:
-        child_ids = self._spawned_child_ids(parent_id)
-        analysis_children: list[Task] = []
-        for child_id in child_ids:
-            child = self._store.get_task(child_id)
-            if child is None or child.task_type != "analysis":
-                continue
-            analysis_children.append(child)
-            child_events = self._store.list_project_events(task_id=child.id, limit=200)
-            recommendation = self._latest_event(child_events, "autonomy.recommended_improvement")
-            if recommendation is not None:
-                return {"status": "ready", "event": recommendation, "task": child}
-        if not analysis_children:
-            return {"status": "ready", "note": "No analysis sibling present."}
-        blocked = [child for child in analysis_children if child.status == "blocked"]
-        if blocked:
-            return {
-                "status": "blocked",
-                "note": "Analysis child blocked before producing a recommended improvement baton.",
-            }
-        pending = [child for child in analysis_children if child.status != "completed"]
-        if pending:
-            return {
-                "status": "waiting",
-                "note": "Waiting for analysis child to produce a recommended improvement baton.",
-            }
-        for child in analysis_children:
-            baton = self._store.get_latest_baton_packet(child.id)
-            if baton is not None:
-                summary = baton.summary.strip()
-                action = baton.payload.next_best_action.strip()
-                target_files = ", ".join(baton.payload.relevant_artifacts[:10])
-                event = ProjectEvent(
-                    id=UUID(int=0),
-                    task_id=child.id,
-                    event_type="autonomy.recommended_improvement",
-                    event_data={
-                        "summary": summary[:250],
-                        "action": action[:250],
-                        "target_files": target_files[:250],
-                        "verification_command": "",
-                        "risks": "; ".join(baton.payload.constraints[:6])[:250],
-                    },
-                    created_at=datetime.now(timezone.utc),
-                )
-                return {"status": "ready", "event": event, "task": child}
-        return {
-            "status": "blocked",
-            "note": "Analysis child completed without a concrete recommended improvement baton.",
-        }
+        return self._candidate_state.recommended_improvement_state(parent_id)
 
     def _spawned_child_ids(self, parent_id: UUID) -> list[UUID]:
-        events = self._store.list_project_events(task_id=parent_id, limit=500)
-        spawned = self._latest_event(events, "autonomy.subtasks.spawned")
-        if spawned is None:
-            return []
-        raw_ids = str(spawned.event_data.get("child_task_ids") or "").strip()
-        ids: list[UUID] = []
-        for raw in (item.strip() for item in raw_ids.split(",") if item.strip()):
-            parsed = self._parse_uuid(raw)
-            if parsed is not None:
-                ids.append(parsed)
-        return ids
+        return self._candidate_state.spawned_child_ids(parent_id)
 
     def _extract_recommended_improvement(self, output_text: str) -> dict[str, object]:
         text = (output_text or "").strip()
@@ -2932,20 +2678,7 @@ class AutonomyService:
             return None
 
     def _finalize_task(self, task_id: UUID) -> None:
-        task = self._store.get_task(task_id)
-        if task is not None and task.status != "completed":
-            self._store.update_task(task_id, TaskUpdate(status="completed"))
-        events = self._store.list_project_events(task_id=task_id, limit=500)
-        if self._latest_event(events, "autonomy.completed") is None:
-            latest_run_id = self._latest_stage_completion(events)
-            self._store.save_project_event(
-                ProjectEventCreate(
-                    task_id=task_id,
-                    event_type="autonomy.completed",
-                    event_data={"run_id": str(latest_run_id) if latest_run_id else ""},
-                )
-            )
-        self._generate_digest_event(task_id)
+        self._finalizer.finalize_task(task_id)
 
     def _latest_stage_completion(self, events: list[ProjectEvent]) -> UUID | None:
         for event in reversed(events):
@@ -2969,72 +2702,10 @@ class AutonomyService:
     def _child_gate_status(
         self, *, task: Task, events: list[ProjectEvent]
     ) -> dict[str, str]:
-        spawned = self._latest_event(events, "autonomy.subtasks.spawned")
-        if spawned is None:
-            return {"mode": "none"}
-        raw_ids = str(spawned.event_data.get("child_task_ids") or "").strip()
-        if not raw_ids:
-            return {"mode": "none"}
-        child_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
-        if not child_ids:
-            return {"mode": "none"}
-
-        blocked: list[str] = []
-        completed = 0
-        active = 0
-        for raw in child_ids:
-            try:
-                child_id = UUID(raw)
-            except ValueError:
-                continue
-            child = self._store.get_task(child_id)
-            if child is None:
-                continue
-            if child.status == "completed":
-                completed += 1
-            elif child.status == "blocked":
-                blocked.append(str(child.id))
-            else:
-                active += 1
-
-        if blocked:
-            return {
-                "mode": "children_failed",
-                "note": f"Child tasks blocked: {', '.join(blocked[:5])}.",
-            }
-        if completed >= len(child_ids) and len(child_ids) > 0:
-            if self._latest_event(events, "autonomy.children.completed") is None:
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task.id,
-                        event_type="autonomy.children.completed",
-                        event_data={"count": len(child_ids)},
-                    )
-                )
-            return {"mode": "children_completed", "note": "All child tasks completed."}
-        return {
-            "mode": "awaiting_children",
-            "note": f"Waiting for child tasks: completed={completed}, active={active}.",
-        }
+        return self._finalizer.child_gate_status(task=task, events=events)
 
     def _generate_digest_event(self, task_id: UUID) -> None:
-        events = self._store.list_project_events(task_id=task_id, limit=200)
-        digest = self._digest_service.generate_digest(
-            task_id=task_id,
-            events=events,
-            latest_baton=self._store.get_latest_baton_packet(task_id),
-        )
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="analyst.digest.generated",
-                event_data={
-                    "headline": digest.headline[:250],
-                    "risk_level": digest.risk_level,
-                    "total_events": digest.total_events,
-                },
-            )
-        )
+        self._finalizer.generate_digest_event(task_id)
 
 
 def _normalize_agent_role(candidate: str) -> str:

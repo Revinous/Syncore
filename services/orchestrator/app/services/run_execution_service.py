@@ -26,7 +26,6 @@ from packages.contracts.python.models import (
     RunExecutionRequest,
     RunExecutionResponse,
     RunStreamEvent,
-    WorkspaceUpdate,
 )
 from services.analyst.digest import AnalystDigestService
 from services.memory import MemoryStoreProtocol, create_memory_store
@@ -43,8 +42,9 @@ from app.runs.providers import (
     ProviderCapabilities,
 )
 from app.services.context_service import ContextService
-from app.services.policy_packs import get_policy_pack
-from app.services.workspace_readiness import compute_workspace_readiness
+from app.services.execution_policy import ExecutionPolicyResolver
+from app.services.workspace_learning_service import WorkspaceLearningService
+from app.services.workspace_verification_service import WorkspaceVerificationService
 
 
 class RunExecutionService:
@@ -160,6 +160,14 @@ class RunExecutionService:
         self._max_concurrent_runs_per_task = max(max_concurrent_runs_per_task, 1)
         self._max_concurrent_runs_per_workspace = max(max_concurrent_runs_per_workspace, 1)
         self._digest_service = AnalystDigestService()
+        self._policy_resolver = ExecutionPolicyResolver(self.WORKSPACE_POLICY_PROFILES)
+        self._workspace_learning = WorkspaceLearningService(self._store)
+        self._workspace_verifier = WorkspaceVerificationService(
+            run_command=lambda root, command, policy: self._safe_run_workspace_command(
+                root, command, policy=policy
+            ),
+            normalize_command=self._normalize_workspace_command,
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RunExecutionService":
@@ -1837,36 +1845,14 @@ class RunExecutionService:
         runner: dict[str, object],
         command_results: list[dict[str, object]],
     ) -> None:
-        if workspace_id is None:
-            return
-        workspace = self._store.get_workspace(workspace_id)
-        if workspace is None:
-            return
-        metadata = dict(workspace.metadata)
-        learning = dict(metadata.get("learning") or {})
-        commands_ok = [
-            str(item.get("command"))
-            for item in command_results
-            if str(item.get("status")) == "ok" and item.get("command")
-        ]
-        learning["last_successful_provider"] = provider
-        learning["last_successful_model"] = model
-        learning["last_successful_profile"] = profile
-        learning["last_successful_runner"] = runner.get("name")
-        learning["last_successful_policy_pack"] = policy.get("policy_pack")
-        learning["successful_commands"] = commands_ok[:20]
-        learning["success_count"] = int(learning.get("success_count") or 0) + 1
-        learning["updated_at"] = datetime.now(timezone.utc).isoformat()
-        metadata["learning"] = learning
-        metadata["workspace_readiness"] = compute_workspace_readiness(
-            scan=dict(metadata.get("scan") or {}),
-            contract=dict(metadata.get("syncore_contract") or {}),
-            runner=dict(metadata.get("workspace_runner") or runner),
-            learning=learning,
-        )
-        self._store.update_workspace(
-            workspace_id,
-            WorkspaceUpdate(metadata=metadata),
+        self._workspace_learning.record_success(
+            workspace_id=workspace_id,
+            provider=provider,
+            model=model,
+            profile=profile,
+            policy=policy,
+            runner=runner,
+            command_results=command_results,
         )
 
     def _update_workspace_learning_failure(
@@ -1877,35 +1863,11 @@ class RunExecutionService:
         category: str,
         strategy: str,
     ) -> None:
-        if workspace_id is None:
-            return
-        workspace = self._store.get_workspace(workspace_id)
-        if workspace is None:
-            return
-        metadata = dict(workspace.metadata)
-        learning = dict(metadata.get("learning") or {})
-        failures = list(learning.get("recent_failures") or [])
-        failures.append(
-            {
-                "category": category,
-                "strategy": strategy,
-                "reason": reason[:200],
-                "at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        learning["recent_failures"] = failures[-10:]
-        learning["failure_count"] = int(learning.get("failure_count") or 0) + 1
-        learning["updated_at"] = datetime.now(timezone.utc).isoformat()
-        metadata["learning"] = learning
-        metadata["workspace_readiness"] = compute_workspace_readiness(
-            scan=dict(metadata.get("scan") or {}),
-            contract=dict(metadata.get("syncore_contract") or {}),
-            runner=dict(metadata.get("workspace_runner") or {}),
-            learning=learning,
-        )
-        self._store.update_workspace(
-            workspace_id,
-            WorkspaceUpdate(metadata=metadata),
+        self._workspace_learning.record_failure(
+            workspace_id=workspace_id,
+            reason=reason,
+            category=category,
+            strategy=strategy,
         )
 
     def _workspace_preflight(
@@ -2047,67 +2009,16 @@ class RunExecutionService:
         runner: dict[str, object] | None = None,
         policy: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        acceptance = self._merged_acceptance_criteria(
+        return self._workspace_verifier.verify_workspace_execution(
+            changed_files=changed_files,
+            command_results=command_results,
+            root=root,
             task_preferences=task_preferences,
             contract=contract,
             runbook=runbook,
+            runner=runner,
+            policy=policy,
         )
-        enriched_command_results = list(command_results)
-        behavioral = self._run_behavioral_probes(
-            root=root,
-            acceptance=acceptance,
-            policy=policy or {},
-            command_results=enriched_command_results,
-        )
-        if behavioral["status"] != "ok":
-            return behavioral
-        forbidden_paths = self._string_list(runbook.get("forbidden_paths"))
-        risk_rules = dict(runbook.get("risk_rules") or contract.get("risk_rules") or {})
-        mechanical = self._verify_mechanical_gates(
-            command_results=enriched_command_results,
-            acceptance=acceptance,
-            runner=runner or {},
-        )
-        if mechanical["status"] != "ok":
-            return mechanical
-        diff_risk = self._verify_diff_risk(
-            changed_files=changed_files,
-            forbidden_paths=forbidden_paths,
-            risk_rules=risk_rules,
-        )
-        if diff_risk["status"] != "ok":
-            return diff_risk
-        acceptance_result = self._verify_acceptance_criteria(
-            root=root,
-            changed_files=changed_files,
-            acceptance=acceptance,
-        )
-        if acceptance_result["status"] != "ok":
-            return acceptance_result
-        secret_check = self._verify_secret_safety(root=root, changed_files=changed_files)
-        if secret_check["status"] != "ok":
-            return secret_check
-        failed_cmds = [
-            item
-            for item in enriched_command_results
-            if str(item.get("status")) in {"failed", "blocked"}
-        ]
-        if not changed_files and not enriched_command_results:
-            return {
-                "status": "failed",
-                "reason": "No changes or verification commands were produced.",
-            }
-        if failed_cmds:
-            return {
-                "status": "ok",
-                "reason": "",
-                "warnings": [
-                    "Optional workspace commands failed or were blocked after required "
-                    "verification passed."
-                ],
-                "failed_commands": [str(item.get("command")) for item in failed_cmds[:10]],
-            }
-        return {"status": "ok", "reason": ""}
 
     def _effective_workspace_policy(
         self,
@@ -2116,86 +2027,11 @@ class RunExecutionService:
         workspace_metadata: dict[str, object],
         task_preferences: dict[str, str],
     ) -> dict[str, object]:
-        requested_profile = str(requested_profile or "").strip().lower()
-        explicit_requested = requested_profile in self.WORKSPACE_POLICY_PROFILES
-        profile = requested_profile if explicit_requested else "balanced"
-        base = dict(self.WORKSPACE_POLICY_PROFILES[profile])
-        pack_name = str(
-            task_preferences.get("policy_pack")
-            or workspace_metadata.get("policy_pack")
-            or ""
-        ).strip()
-        pack = get_policy_pack(pack_name)
-        if pack:
-            override_profile = str(pack.get("profile") or "").strip()
-            if not explicit_requested and override_profile in self.WORKSPACE_POLICY_PROFILES:
-                base = dict(self.WORKSPACE_POLICY_PROFILES[override_profile])
-                profile = override_profile
-            pack_commands = tuple(pack.get("allow_commands") or ())
-            if pack_commands:
-                base["allow_commands"] = pack_commands
-            pack_allowed_patterns = tuple(pack.get("allowed_command_patterns") or ())
-            if pack_allowed_patterns:
-                base["allowed_command_patterns"] = pack_allowed_patterns
-            base["verification_required_commands"] = tuple(
-                pack.get("verification_required_commands") or ()
-            )
-            base["allowed_actions"] = tuple(
-                pack.get("allowed_actions") or base.get("allowed_actions") or ()
-            )
-            base["approval_required_paths"] = tuple(
-                pack.get("approval_required_paths") or ()
-            )
-            base["network_policy"] = str(pack.get("network_policy") or "offline")
-        runbook = dict(workspace_metadata.get("workspace_runbook") or {})
-        runner_commands = dict(runbook.get("runner", {}).get("commands") or {})
-        runbook_allowed = tuple(
-            self._string_list(runbook.get("allowed_commands"))
-            + self._string_list(runbook.get("runbook_commands"))
-            + self._string_list(runbook.get("setup_commands"))
-            + self._string_list(runbook.get("build_commands"))
-            + self._string_list(runbook.get("test_commands"))
-            + self._string_list(runbook.get("lint_commands"))
-            + self._string_list(runbook.get("format_commands"))
-            + self._string_list(runner_commands.get("setup"))
-            + self._string_list(runner_commands.get("build"))
-            + self._string_list(runner_commands.get("test"))
-            + self._string_list(runner_commands.get("lint"))
-            + self._string_list(runner_commands.get("format"))
+        return self._policy_resolver.resolve_workspace_policy(
+            requested_profile=requested_profile,
+            workspace_metadata=workspace_metadata,
+            task_preferences=task_preferences,
         )
-        if runbook_allowed:
-            base["allow_commands"] = tuple(
-                dict.fromkeys(tuple(base.get("allow_commands") or ()) + runbook_allowed)
-            )
-        runbook_probe_commands = tuple(self._string_list(runbook.get("probe_commands")))
-        if runbook_probe_commands:
-            base["allow_commands"] = (
-                tuple(
-                    dict.fromkeys(
-                        tuple(base.get("allow_commands") or ()) + runbook_probe_commands
-                    )
-                )
-            )
-        runbook_patterns = tuple(self._string_list(runbook.get("allowed_command_patterns")))
-        if runbook_patterns:
-            base["allowed_command_patterns"] = runbook_patterns
-        base["blocked_commands"] = tuple(self._string_list(runbook.get("blocked_commands")))
-        base["allowed_paths"] = tuple(self._string_list(runbook.get("allowed_paths")))
-        base["forbidden_paths"] = tuple(self._string_list(runbook.get("forbidden_paths")))
-        base["approval_required_paths"] = tuple(
-            self._string_list(runbook.get("approval_required_paths"))
-        ) or tuple(base.get("approval_required_paths") or ())
-        contract = dict(workspace_metadata.get("syncore_contract") or {})
-        capabilities = dict(contract.get("capabilities") or {})
-        allowed_actions = self._string_list(capabilities.get("allow_actions"))
-        if allowed_actions:
-            base["allowed_actions"] = tuple(allowed_actions)
-        denied_actions = self._string_list(capabilities.get("deny_actions"))
-        if denied_actions:
-            base["denied_actions"] = tuple(denied_actions)
-        base["profile"] = profile
-        base["policy_pack"] = pack_name or None
-        return base
 
     def _load_task_preferences(self, task_id: UUID) -> dict[str, str]:
         events = self._store.list_project_events(task_id=task_id, limit=200)
@@ -2217,37 +2053,11 @@ class RunExecutionService:
         contract: dict[str, object],
         runbook: dict[str, object],
     ) -> dict[str, list[str]]:
-        contract_acceptance = contract.get("acceptance")
-        source = (
-            contract_acceptance
-            if isinstance(contract_acceptance, dict)
-            else runbook.get("acceptance")
+        return self._workspace_verifier.merged_acceptance_criteria(
+            task_preferences=task_preferences,
+            contract=contract,
+            runbook=runbook,
         )
-        source_dict = dict(source) if isinstance(source, dict) else {}
-        runner_commands = dict(runbook.get("runner", {}).get("commands") or {})
-        merged = {
-            "must_pass_commands": self._string_list(source_dict.get("must_pass_commands")),
-            "must_modify_paths": self._string_list(source_dict.get("must_modify_paths")),
-            "must_not_modify_paths": self._string_list(source_dict.get("must_not_modify_paths")),
-            "must_include_behavior": self._string_list(source_dict.get("must_include_behavior")),
-            "must_create_paths": self._string_list(source_dict.get("must_create_paths")),
-            "must_observe_output": self._string_list(source_dict.get("must_observe_output")),
-            "probe_commands": self._string_list(source_dict.get("probe_commands")),
-        }
-        if not merged["probe_commands"]:
-            merged["probe_commands"] = (
-                self._string_list(runbook.get("probe_commands"))
-                or self._string_list(runner_commands.get("probe"))
-            )
-        if not merged["must_observe_output"]:
-            merged["must_observe_output"] = self._default_probe_markers(
-                probe_commands=merged["probe_commands"]
-            )
-        for key in tuple(merged.keys()):
-            pref_value = task_preferences.get(key)
-            if pref_value:
-                merged[key] = [item.strip() for item in pref_value.split(",") if item.strip()]
-        return merged
 
     def _verify_mechanical_gates(
         self,
@@ -2256,30 +2066,11 @@ class RunExecutionService:
         acceptance: dict[str, list[str]],
         runner: dict[str, object],
     ) -> dict[str, object]:
-        required = acceptance.get("must_pass_commands", [])
-        if not required:
-            runner_commands = dict(runner.get("commands") or {})
-            required = self._string_list(runner_commands.get("test"))[:1]
-        if required:
-            observed_ok = {
-                str(item.get("command") or "")
-                for item in command_results
-                if str(item.get("status")) == "ok"
-            }
-            missing = [
-                command for command in required
-                if not any(
-                    self._workspace_commands_match(command, observed)
-                    for observed in observed_ok
-                )
-            ]
-            if missing:
-                return {
-                    "status": "failed",
-                    "reason": "Required verification commands did not pass.",
-                    "missing_commands": missing,
-                }
-        return {"status": "ok", "reason": ""}
+        return self._workspace_verifier.verify_mechanical_gates(
+            command_results=command_results,
+            acceptance=acceptance,
+            runner=runner,
+        )
 
     def _ensure_required_verification_commands_run(
         self,
@@ -2290,24 +2081,13 @@ class RunExecutionService:
         runner: dict[str, object],
         policy: dict[str, object],
     ) -> None:
-        required = acceptance.get("must_pass_commands", [])
-        if not required:
-            runner_commands = dict(runner.get("commands") or {})
-            required = self._string_list(runner_commands.get("test"))[:1]
-        if not required:
-            return
-        observed_ok = {
-            str(item.get("command") or "")
-            for item in command_results
-            if str(item.get("status")) == "ok"
-        }
-        for command in required:
-            if any(self._workspace_commands_match(command, existing) for existing in observed_ok):
-                continue
-            result = self._safe_run_workspace_command(root, command, policy=policy)
-            command_results.append(result)
-            if str(result.get("status")) == "ok":
-                observed_ok.add(str(result.get("command") or command))
+        self._workspace_verifier.ensure_required_verification_commands_run(
+            root=root,
+            command_results=command_results,
+            acceptance=acceptance,
+            runner=runner,
+            policy=policy,
+        )
 
     def _run_all_runner_test_commands(
         self,
@@ -2317,33 +2097,15 @@ class RunExecutionService:
         runner: dict[str, object],
         policy: dict[str, object],
     ) -> None:
-        runner_commands = dict(runner.get("commands") or {})
-        candidates = self._string_list(runner_commands.get("test"))
-        if not candidates:
-            return
-        observed_ok = {
-            str(item.get("command") or "")
-            for item in command_results
-            if str(item.get("status")) == "ok"
-        }
-        for command in candidates:
-            if any(self._workspace_commands_match(command, existing) for existing in observed_ok):
-                continue
-            result = self._safe_run_workspace_command(root, command, policy=policy)
-            command_results.append(result)
-            if str(result.get("status")) == "ok":
-                observed_ok.add(str(result.get("command") or command))
+        self._workspace_verifier.run_all_runner_test_commands(
+            root=root,
+            command_results=command_results,
+            runner=runner,
+            policy=policy,
+        )
 
     def _workspace_commands_match(self, expected: str, observed: str) -> bool:
-        normalized_expected = self._normalize_workspace_command(expected).strip()
-        normalized_observed = self._normalize_workspace_command(observed).strip()
-        if not normalized_expected or not normalized_observed:
-            return False
-        return (
-            normalized_expected == normalized_observed
-            or normalized_expected in normalized_observed
-            or normalized_observed in normalized_expected
-        )
+        return self._workspace_verifier.workspace_commands_match(expected, observed)
 
     def _verify_diff_risk(
         self,
@@ -2352,34 +2114,11 @@ class RunExecutionService:
         forbidden_paths: list[str],
         risk_rules: dict[str, object],
     ) -> dict[str, object]:
-        if forbidden_paths:
-            violations = [
-                path
-                for path in changed_files
-                if any(
-                    path == forbidden or path.startswith(forbidden.rstrip("/") + "/")
-                    for forbidden in forbidden_paths
-                )
-            ]
-            if violations:
-                return {
-                    "status": "failed",
-                    "reason": "Workspace changed forbidden paths.",
-                    "violations": violations[:20],
-                }
-        max_changed = risk_rules.get("max_changed_files")
-        if (
-            isinstance(max_changed, int)
-            and max_changed > 0
-            and len(set(changed_files)) > max_changed
-        ):
-            return {
-                "status": "failed",
-                "reason": "Workspace changed too many files for current risk budget.",
-                "changed_files": len(set(changed_files)),
-                "limit": max_changed,
-            }
-        return {"status": "ok", "reason": ""}
+        return self._workspace_verifier.verify_diff_risk(
+            changed_files=changed_files,
+            forbidden_paths=forbidden_paths,
+            risk_rules=risk_rules,
+        )
 
     def _verify_acceptance_criteria(
         self,
@@ -2388,71 +2127,11 @@ class RunExecutionService:
         changed_files: list[str],
         acceptance: dict[str, list[str]],
     ) -> dict[str, object]:
-        must_modify = acceptance.get("must_modify_paths", [])
-        if must_modify:
-            missing_paths = [
-                path
-                for path in must_modify
-                if not any(
-                    changed == path or changed.startswith(path.rstrip("/") + "/")
-                    for changed in changed_files
-                )
-            ]
-            if missing_paths:
-                return {
-                    "status": "failed",
-                    "reason": "Required paths were not modified.",
-                    "missing_paths": missing_paths,
-                }
-        must_not_modify = acceptance.get("must_not_modify_paths", [])
-        if must_not_modify:
-            violated = [
-                path
-                for path in changed_files
-                if any(
-                    path == forbidden or path.startswith(forbidden.rstrip("/") + "/")
-                    for forbidden in must_not_modify
-                )
-            ]
-            if violated:
-                return {
-                    "status": "failed",
-                    "reason": "Disallowed paths were modified.",
-                    "violations": violated[:20],
-                }
-        behaviors = acceptance.get("must_include_behavior", [])
-        if behaviors:
-            corpus: list[str] = []
-            for rel in changed_files[:50]:
-                target = root / rel
-                if target.exists() and target.is_file():
-                    try:
-                        corpus.append(target.read_text(encoding="utf-8", errors="replace"))
-                    except OSError:
-                        continue
-            joined = "\n".join(corpus).lower()
-            missing_behaviors = [
-                item for item in behaviors
-                if item.lower() not in joined
-            ]
-            if missing_behaviors:
-                return {
-                    "status": "failed",
-                    "reason": "Acceptance behavior markers were not found in changed artifacts.",
-                    "missing_behaviors": missing_behaviors,
-                }
-        must_create = acceptance.get("must_create_paths", [])
-        if must_create:
-            missing_create = [
-                path for path in must_create if not (root / path).exists()
-            ]
-            if missing_create:
-                return {
-                    "status": "failed",
-                    "reason": "Required artifacts were not created.",
-                    "missing_paths": missing_create,
-                }
-        return {"status": "ok", "reason": ""}
+        return self._workspace_verifier.verify_acceptance_criteria(
+            root=root,
+            changed_files=changed_files,
+            acceptance=acceptance,
+        )
 
     def _run_behavioral_probes(
         self,
@@ -2462,54 +2141,17 @@ class RunExecutionService:
         policy: dict[str, object],
         command_results: list[dict[str, object]],
     ) -> dict[str, object]:
-        probe_commands = acceptance.get("probe_commands", [])
-        for command in probe_commands:
-            result = self._safe_run_workspace_command(root, command, policy=policy or {})
-            command_results.append(result)
-            if str(result.get("status")) != "ok":
-                return {
-                    "status": "failed",
-                    "reason": "Behavioral probe command failed.",
-                    "failed_command": command,
-                }
-        expected_output = acceptance.get("must_observe_output", [])
-        if expected_output:
-            observed_output = "\n".join(
-                str(item.get("output") or "")
-                for item in command_results
-                if str(item.get("status")) == "ok"
-            ).lower()
-            missing_output = [
-                marker for marker in expected_output if marker.lower() not in observed_output
-            ]
-            if missing_output:
-                return {
-                    "status": "failed",
-                    "reason": "Expected behavioral output markers were not observed.",
-                    "missing_output_markers": missing_output,
-                }
-        return {"status": "ok", "reason": ""}
+        return self._workspace_verifier.run_behavioral_probes(
+            root=root,
+            acceptance=acceptance,
+            policy=policy,
+            command_results=command_results,
+        )
 
     def _default_probe_markers(self, *, probe_commands: list[str]) -> list[str]:
-        markers: list[str] = []
-        for command in probe_commands:
-            if "python-ready" in command:
-                markers.append("python-ready")
-            elif "flask-ready" in command:
-                markers.append("flask-ready")
-            elif "node-ready" in command:
-                markers.append("node-ready")
-            elif "pnpm-ready" in command:
-                markers.append("pnpm-ready")
-            elif "go version" in command:
-                markers.append("go version")
-            elif "cargo --version" in command:
-                markers.append("cargo")
-            elif "java -version" in command:
-                markers.append("version")
-            elif "manage.py check" in command:
-                markers.append("system check")
-        return markers[:10]
+        return self._workspace_verifier.default_probe_markers(
+            probe_commands=probe_commands
+        )
 
     def _string_list(self, value: object) -> list[str]:
         if isinstance(value, list):
