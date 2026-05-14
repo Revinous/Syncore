@@ -20,3 +20,5 @@ All control surfaces use the same API:
 
 - Use **Native mode** for solo development and fast iteration.
 - Use **Docker mode** for parity with enterprise service topology.
+
+- **Internals**: architecture standards and structural guardrails.

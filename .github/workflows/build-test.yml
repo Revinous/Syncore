@@ -25,6 +25,9 @@ jobs:
       - name: Run backend lint
         run: python -m ruff check services/orchestrator services/router services/memory services/analyst packages/contracts/python
 
+      - name: Run structural guardrails
+        run: python scripts/structural_guardrails.py
+
       - name: Run backend tests
         env:
           PYTHONPATH: services/orchestrator:.

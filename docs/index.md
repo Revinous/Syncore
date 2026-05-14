@@ -17,6 +17,11 @@ If you are new to Syncore, begin with:
 
 | Need | Read |
 | --- | --- |
+| Understand repo structure and engineering boundaries | [Architecture Standards](ARCHITECTURE.md) |
+
+
+| Need | Read |
+| --- | --- |
 | Run Syncore locally without containers | [Native Mode](rtd/environments/native.md) |
 | Run the Docker/Postgres/Redis stack | [Docker Mode](rtd/environments/docker.md) |
 | Use terminal commands | [CLI Guide](rtd/interfaces/cli.md) |

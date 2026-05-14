@@ -1,7 +1,7 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
 	install-local db-local-init dev-local bootstrap-local local-test \
 	install-cli cli-status tui web ui-check db-migrate db-revision \
-	docs-install docs-serve docs-build benchmark-local
+	docs-install docs-serve docs-build benchmark-local architecture-check
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -90,6 +90,9 @@ frontend-test:
 demo-local:
 	bash scripts/demo_local_flow.sh
 
-check: lint test
+architecture-check:
+	python3 scripts/structural_guardrails.py
+
+check: lint test architecture-check
 	npm --prefix apps/web run typecheck
 	npm --prefix apps/web run build
