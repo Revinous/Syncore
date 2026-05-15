@@ -30,11 +30,22 @@ import {
   WorkspaceScanResult,
   WorkspaceUpdatePayload,
 } from "./types";
+import {
+  parseContextReference,
+  parseDashboardSummary,
+  parseDiagnosticsOverview,
+  parseHealthResponse,
+  parseServicesHealthResponse,
+  parseTaskDetail,
+  parseTaskExecutionReport
+} from "./api_contracts";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type Parser<T> = (value: unknown) => T;
+
+async function request<T>(path: string, init?: RequestInit, parse?: Parser<T>): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
@@ -71,7 +82,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw error;
   }
 
-  return payload as T;
+  return parse ? parse(payload) : (payload as T);
 }
 
 export function getApiBaseUrl(): string {
@@ -79,15 +90,15 @@ export function getApiBaseUrl(): string {
 }
 
 export function getHealth() {
-  return request<HealthResponse>("/health");
+  return request<HealthResponse>("/health", undefined, parseHealthResponse);
 }
 
 export function getServicesHealth() {
-  return request<ServicesHealthResponse>("/health/services");
+  return request<ServicesHealthResponse>("/health/services", undefined, parseServicesHealthResponse);
 }
 
 export function getDashboardSummary() {
-  return request<DashboardSummary>("/dashboard/summary");
+  return request<DashboardSummary>("/dashboard/summary", undefined, parseDashboardSummary);
 }
 
 export function getContextEfficiencyMetrics(limit = 200) {
@@ -141,7 +152,7 @@ export function createTask(payload: TaskCreatePayload) {
 }
 
 export function getTask(id: string) {
-  return request<TaskDetail>(`/tasks/${id}`);
+  return request<TaskDetail>(`/tasks/${id}`, undefined, parseTaskDetail);
 }
 
 export function getTaskChildren(id: string) {
@@ -149,11 +160,11 @@ export function getTaskChildren(id: string) {
 }
 
 export function getTaskExecutionReport(id: string) {
-  return request<TaskExecutionReport>(`/tasks/${id}/execution-report`);
+  return request<TaskExecutionReport>(`/tasks/${id}/execution-report`, undefined, parseTaskExecutionReport);
 }
 
 export function getContextReference(refId: string) {
-  return request<ContextReference>(`/context/references/${encodeURIComponent(refId)}`);
+  return request<ContextReference>(`/context/references/${encodeURIComponent(refId)}`, undefined, parseContextReference);
 }
 
 export function getTaskModelPolicy(id: string) {
@@ -281,7 +292,7 @@ export function getTaskDigest(taskId: string) {
 }
 
 export function getDiagnostics() {
-  return request<DiagnosticsOverview>("/diagnostics");
+  return request<DiagnosticsOverview>("/diagnostics", undefined, parseDiagnosticsOverview);
 }
 
 export function getDiagnosticsConfig() {

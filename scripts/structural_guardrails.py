@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import ast
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,8 +25,8 @@ MAX_LINES_CLI_ENTRY = 250
 MAX_LINES_WEB_PAGE = 250
 
 RATCHET_BASELINES = {
-    "services/orchestrator/app/services/autonomy_service.py": 2696,
-    "services/orchestrator/app/services/run_execution_service.py": 2164,
+    "services/orchestrator/app/services/autonomy_service.py": 2405,
+    "services/orchestrator/app/services/run_execution_service.py": 1587,
     "apps/cli/syncore_cli/tui.py": 1282,
 }
 
@@ -32,6 +34,16 @@ ROUTE_LINE_ALLOWLIST = {}
 
 WEB_PAGE_ALLOWLIST = {
     "apps/web/pages/tasks/index.tsx": 279,
+}
+
+BROAD_EXCEPTION_ALLOWLIST = {
+    "services/orchestrator/app/api/routes/health.py",
+    "services/orchestrator/app/api/routes/analyst.py",
+    "services/orchestrator/app/lifecycle.py",
+    "services/orchestrator/app/services/autonomy_service.py",
+    "services/orchestrator/app/services/run_execution_service.py",
+    "services/orchestrator/app/services/run_queue_service.py",
+    "services/orchestrator/app/services/metrics_service.py",
 }
 
 
@@ -69,12 +81,7 @@ def check_route_patterns() -> list[Violation]:
                             Violation(rel, f"route allowlist baseline exceeded: {lines} > {allow}")
                         )
                 elif lines > MAX_LINES_ROUTE:
-                    violations.append(
-                        Violation(
-                            rel,
-                            f"route exceeds {MAX_LINES_ROUTE} lines ({lines})",
-                        )
-                    )
+                    violations.append(Violation(rel, f"route exceeds {MAX_LINES_ROUTE} lines ({lines})"))
     return violations
 
 
@@ -86,9 +93,7 @@ def check_ratchet() -> list[Violation]:
             continue
         lines = line_count(path)
         if lines > baseline:
-            violations.append(
-                Violation(relative_path, f"ratchet baseline exceeded: {lines} > {baseline}")
-            )
+            violations.append(Violation(relative_path, f"ratchet baseline exceeded: {lines} > {baseline}"))
     return violations
 
 
@@ -103,9 +108,7 @@ def check_new_service_sizes() -> list[Violation]:
             continue
         lines = line_count(path)
         if lines > MAX_LINES_NEW_SERVICE:
-            violations.append(
-                Violation(rel, f"service exceeds {MAX_LINES_NEW_SERVICE} lines ({lines})")
-            )
+            violations.append(Violation(rel, f"service exceeds {MAX_LINES_NEW_SERVICE} lines ({lines})"))
     return violations
 
 
@@ -133,6 +136,39 @@ def check_web_pages() -> list[Violation]:
     return violations
 
 
+def check_frontend_lint_truthfulness() -> list[Violation]:
+    path = ROOT / "apps/web/package.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    scripts = data.get("scripts", {})
+    lint_script = str(scripts.get("lint") or "")
+    typecheck_script = str(scripts.get("typecheck") or "")
+    violations: list[Violation] = []
+    if "eslint" not in lint_script:
+        violations.append(Violation(str(path.relative_to(ROOT)), "web lint script must run ESLint"))
+    if lint_script == typecheck_script:
+        violations.append(Violation(str(path.relative_to(ROOT)), "web lint and typecheck scripts must be distinct"))
+    return violations
+
+
+def check_broad_exception_usage() -> list[Violation]:
+    violations: list[Violation] = []
+    for path in sorted((ROOT / "services/orchestrator/app").rglob("*.py")):
+        rel = str(path.relative_to(ROOT))
+        if rel in BROAD_EXCEPTION_ALLOWLIST:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            handler_type = node.type
+            if isinstance(handler_type, ast.Name) and handler_type.id == "Exception":
+                violations.append(Violation(rel, f"broad except Exception at line {node.lineno}"))
+    return violations
+
+
 def main() -> int:
     violations = (
         check_route_patterns()
@@ -140,6 +176,8 @@ def main() -> int:
         + check_new_service_sizes()
         + check_cli_entry()
         + check_web_pages()
+        + check_frontend_lint_truthfulness()
+        + check_broad_exception_usage()
     )
     if violations:
         print("Structural guardrail violations detected:")

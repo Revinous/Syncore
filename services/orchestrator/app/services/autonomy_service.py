@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,9 +23,13 @@ from services.memory import MemoryStoreProtocol
 
 from app.config import Settings
 from app.services.autonomy_candidates import CandidateStateService
+from app.services.autonomy_failure_handler import AutonomyFailureHandler
 from app.services.autonomy_failure_policy import FailurePolicy
 from app.services.autonomy_finalizer import TaskFinalizationService
+from app.services.autonomy_quality_gate import AutonomyQualityGate
+from app.services.autonomy_runtime_selector import AutonomyRuntimeSelector
 from app.services.autonomy_subtasks import SubtaskFanoutCoordinator
+from app.services.autonomy_task_gate import AutonomyTaskGate
 from app.services.autonomy_text_utils import (
     extract_acceptance_checks,
     extract_command_candidates,
@@ -137,6 +139,45 @@ class AutonomyService:
             parse_positive_int=lambda value: _parse_positive_int(value, default=3, maximum=8),
         )
         self._failure_policy = FailurePolicy(self._store)
+        self._quality_gate = AutonomyQualityGate(
+            store=self._store,
+            review_pass_keyword=self._review_pass_keyword,
+            plan_min_chars=self._plan_min_chars,
+            execute_min_chars=self._execute_min_chars,
+            review_min_chars=self._review_min_chars,
+            low_info_threshold=self._low_info_threshold,
+            string_list=string_list,
+            latest_execute_plan=self._latest_execute_plan,
+            selected_candidate_state=self._selected_candidate_state,
+            latest_event=self._latest_event,
+        )
+        self._task_gate = AutonomyTaskGate(
+            store=self._store,
+            latest_event=self._latest_event,
+            event_int=_event_int,
+            event_bool=_event_bool,
+        )
+        self._runtime_selector = AutonomyRuntimeSelector(
+            store=self._store,
+            run_execution_service=self._run_execution_service,
+            default_provider=self._default_provider,
+            default_model=self._default_model,
+            max_provider_switches=self._max_provider_switches,
+            parse_positive_int=lambda value, default, maximum: _parse_positive_int(
+                value,
+                default=default,
+                maximum=maximum,
+            ),
+            latest_event=self._latest_event,
+            event_int=_event_int,
+            event_bool=_event_bool,
+        )
+        self._failure_handler = AutonomyFailureHandler(
+            store=self._store,
+            low_info_threshold=self._low_info_threshold,
+            failure_taxonomy_v2_enabled=self._failure_taxonomy_v2_enabled,
+            latest_execute_plan=self._latest_execute_plan,
+        )
         self._execute_plan_builder = ExecutePlanBuilder(
             store=self._store,
             recommendation_context=lambda task, prefs: self._recommended_improvement_prompt_context(
@@ -201,7 +242,10 @@ class AutonomyService:
 
         events = self._store.list_project_events(task_id=task_id, limit=500)
         prefs = self._load_preferences(events)
-        autonomy_mode, autonomy_note = self._resolve_autonomy_mode(task=task, prefs=prefs)
+        autonomy_mode, autonomy_note = self._runtime_selector.resolve_autonomy_mode(
+            task=task,
+            prefs=prefs,
+        )
         if autonomy_note:
             self._store.save_project_event(
                 ProjectEventCreate(
@@ -252,7 +296,7 @@ class AutonomyService:
             )
         enforce_sdlc = self._should_enforce_sdlc(task=task, prefs=prefs)
         now_epoch = datetime.now(timezone.utc).timestamp()
-        total_steps = self._total_step_events(events)
+        total_steps = self._task_gate.total_step_events(events)
         if total_steps >= self._max_total_steps:
             self._store.update_task(task_id, TaskUpdate(status="blocked"))
             self._store.save_project_event(
@@ -272,7 +316,7 @@ class AutonomyService:
         execute_role, cycle = self._bootstrap_if_needed(task=task, events=events)
         events = self._store.list_project_events(task_id=task_id, limit=500)
 
-        next_stage = self._next_stage(events, cycle=cycle)
+        next_stage = self._task_gate.next_stage(events, cycle=cycle, stages=AUTONOMY_STAGES)
         if next_stage is None:
             self._finalize_task(task_id)
             latest = self._latest_stage_completion(events)
@@ -283,13 +327,13 @@ class AutonomyService:
                 note="All autonomy stages completed.",
             )
 
-        approval_gate = self._approval_gate_state(
+        approval_gate = self._task_gate.approval_gate_state(
             events=events,
             stage=next_stage,
             requires_approval=requires_approval,
         )
         if approval_gate == "awaiting":
-            self._ensure_approval_requested(task_id=task_id, events=events)
+            self._task_gate.ensure_approval_requested(task_id=task_id, events=events)
             return AutonomyResult(
                 task_id=task_id,
                 status="awaiting_approval",
@@ -313,7 +357,7 @@ class AutonomyService:
                 note="Approval rejected. Task has been blocked.",
             )
 
-        retry_gate = self._scheduled_retry_epoch(events, stage=next_stage, cycle=cycle)
+        retry_gate = self._task_gate.scheduled_retry_epoch(events, stage=next_stage, cycle=cycle)
         if retry_gate is not None and now_epoch < retry_gate:
             seconds_left = max(int(retry_gate - now_epoch), 0)
             return AutonomyResult(
@@ -340,7 +384,7 @@ class AutonomyService:
         if execute_plan_gate is not None:
             return execute_plan_gate
 
-        if self._stage_inflight(events=events, stage=next_stage, cycle=cycle):
+        if self._task_gate.stage_inflight(events, next_stage, cycle=cycle):
             return AutonomyResult(
                 task_id=task_id,
                 status="in_progress",
@@ -354,16 +398,21 @@ class AutonomyService:
             execute_role=execute_role,
         )
         effective_prefs = dict(prefs)
-        if self._provider_switch_count(events) >= self._resolve_provider_switch_budget(prefs):
+        if (
+            self._provider_switch_count(events)
+            >= self._runtime_selector.resolve_provider_switch_budget(prefs)
+        ):
             effective_prefs["allow_cross_provider_switching"] = "false"
-        previous_provider, previous_model = self._latest_run_provider_model(task.id)
-        provider = self._resolve_provider(
+        previous_provider, previous_model = self._runtime_selector.latest_run_provider_model(
+            task.id
+        )
+        provider = self._runtime_selector.resolve_provider(
             stage=next_stage,
             task=task,
             prefs=effective_prefs,
             previous_provider=previous_provider,
         )
-        model = self._resolve_model(
+        model = self._runtime_selector.resolve_model(
             stage=next_stage,
             task=task,
             provider=provider,
@@ -495,7 +544,7 @@ class AutonomyService:
                 )
             else:
                 run = self._run_execution_service.execute(request)
-            self._record_model_switch_if_needed(
+            self._runtime_selector.record_model_switch_if_needed(
                 task_id=task_id,
                 previous_provider=previous_provider,
                 previous_model=previous_model,
@@ -506,13 +555,16 @@ class AutonomyService:
                 != "false",
                 context_bundle_id=str(getattr(run, "optimized_bundle_id", "") or ""),
             )
-            quality = self._stage_quality_gate(
+            quality = self._quality_gate.stage_quality_gate(
                 stage=next_stage,
                 output_text=run.output_text,
                 strategy=strategy,
                 enforce_sdlc=enforce_sdlc,
+                sdlc_checklist_items=SDLC_CHECKLIST_ITEMS,
+                missing_sdlc_topics=_missing_sdlc_topics,
+                extract_sdlc_checklist_status=_extract_sdlc_checklist_status,
             )
-            local_echo_mode = self._is_local_echo_mode(
+            local_echo_mode = self._runtime_selector.is_local_echo_mode(
                 provider=run.provider,
                 model=run.target_model,
             )
@@ -558,15 +610,18 @@ class AutonomyService:
             )
             if not bool(quality["passed"]):
                 quality_reason = "; ".join(quality["reasons"])
-                quality_signature = self._quality_failure_signature(
+                quality_signature = self._quality_gate.quality_failure_signature(
                     task_id=task_id,
                     stage=next_stage,
                     reason=quality_reason,
                 )
-                if self._low_info_stop_enabled and self._is_low_information_quality_failure(
+                if (
+                    self._low_info_stop_enabled
+                    and self._quality_gate.is_low_information_quality_failure(
                     task_id=task_id,
                     stage=next_stage,
                     signature=quality_signature,
+                    )
                 ):
                     self._store.update_task(task_id, TaskUpdate(status="blocked"))
                     self._store.save_project_event(
@@ -716,10 +771,11 @@ class AutonomyService:
                     strategy=strategy,
                     outcome="success",
                 )
-                self._record_meaningful_change_assessment(
+                self._quality_gate.record_meaningful_change_assessment(
                     task=task,
                     prefs=prefs,
                     review_output=run.output_text,
+                    parse_uuid=parse_uuid,
                 )
                 self._finalize_task(task_id)
                 return AutonomyResult(
@@ -770,14 +826,14 @@ class AutonomyService:
                 note=f"Stage '{next_stage}' completed.",
             )
         except Exception as error:
-            attempt = self._failed_attempts(events, stage=next_stage, cycle=cycle) + 1
-            failure = self._classify_autonomy_failure(
+            attempt = self._task_gate.failed_attempts(events, next_stage, cycle=cycle) + 1
+            failure = self._failure_handler.classify_failure(
                 task_id=task_id,
                 stage=next_stage,
                 cycle=cycle,
                 error=error,
             )
-            if self._low_info_stop_enabled and self._is_low_information_failure(
+            if self._low_info_stop_enabled and self._failure_handler.is_low_information_failure(
                 task_id=task_id,
                 stage=next_stage,
                 failure_signature=str(failure.get("signature") or ""),
@@ -1020,20 +1076,7 @@ class AutonomyService:
         return {}
 
     def _next_stage(self, events: list[ProjectEvent], *, cycle: int) -> str | None:
-        completed: set[str] = set()
-        for event in events:
-            if event.event_type != "autonomy.stage.completed":
-                continue
-            event_cycle = _event_int(event.event_data.get("cycle")) or 1
-            if event_cycle != cycle:
-                continue
-            stage = str(event.event_data.get("stage") or "").strip().lower()
-            if stage in AUTONOMY_STAGES:
-                completed.add(stage)
-        for stage in AUTONOMY_STAGES:
-            if stage not in completed:
-                return stage
-        return None
+        return self._task_gate.next_stage(events, cycle=cycle, stages=AUTONOMY_STAGES)
 
     def _scheduled_retry_epoch(
         self,
@@ -1042,53 +1085,16 @@ class AutonomyService:
         *,
         cycle: int,
     ) -> float | None:
-        for event in reversed(events):
-            if event.event_type != "autonomy.retry.scheduled":
-                continue
-            if str(event.event_data.get("stage") or "").strip().lower() != stage:
-                continue
-            event_cycle = _event_int(event.event_data.get("cycle")) or 1
-            if event_cycle != cycle:
-                continue
-            retry_epoch = event.event_data.get("retry_at_epoch")
-            if isinstance(retry_epoch, (int, float)):
-                return float(retry_epoch)
-            if isinstance(retry_epoch, str):
-                try:
-                    return float(retry_epoch)
-                except ValueError:
-                    return None
-        return None
+        return self._task_gate.scheduled_retry_epoch(events, stage, cycle=cycle)
 
     def _stage_inflight(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> bool:
-        started_at: datetime | None = None
-        terminal_at: datetime | None = None
-        for event in events:
-            event_cycle = _event_int(event.event_data.get("cycle")) or 1
-            if event_cycle != cycle:
-                continue
-            event_stage = str(event.event_data.get("stage") or "").strip().lower()
-            if event_stage != stage:
-                continue
-            if event.event_type == "autonomy.stage.started":
-                started_at = event.created_at
-            elif event.event_type in {"autonomy.stage.completed", "autonomy.stage.failed"}:
-                terminal_at = event.created_at
-        return started_at is not None and (terminal_at is None or terminal_at < started_at)
+        return self._task_gate.stage_inflight(events, stage, cycle=cycle)
 
     def _failed_attempts(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> int:
-        count = 0
-        for event in events:
-            if event.event_type != "autonomy.stage.failed":
-                continue
-            event_cycle = _event_int(event.event_data.get("cycle")) or 1
-            if event_cycle != cycle:
-                continue
-            if str(event.event_data.get("stage") or "").strip().lower() == stage:
-                count += 1
-        return count
+        return self._task_gate.failed_attempts(events, stage, cycle=cycle)
 
     def _resolve_provider(
+
         self,
         *,
         stage: str,
@@ -1096,64 +1102,12 @@ class AutonomyService:
         prefs: dict[str, str],
         previous_provider: str | None = None,
     ) -> str | None:
-        capability_rows = self._run_execution_service.list_provider_capabilities()
-        if not capability_rows:
-            return None
-        available = [item.provider for item in capability_rows]
-        policy = self._model_policy(prefs)
-        explicit_stage = str(prefs.get(f"preferred_provider_{stage}") or "").strip().lower()
-        explicit_default = str(prefs.get("preferred_provider") or "").strip().lower()
-        if not policy["allow_cross_provider_switching"] and previous_provider in available:
-            return previous_provider
-        if explicit_stage and explicit_stage in available:
-            return self._failure_aware_provider_choice(
-                task=task,
-                preferred=explicit_stage,
-                available=available,
-            )
-        if explicit_default and explicit_default in available:
-            return self._failure_aware_provider_choice(
-                task=task,
-                preferred=explicit_default,
-                available=available,
-            )
-        if (
-            self._default_provider
-            and self._default_provider not in available
-            and not explicit_stage
-            and not explicit_default
-        ):
-            return self._default_provider
-        if self._default_provider == "local_echo" and "local_echo" in available:
-            return "local_echo"
-
-        ordered = self._stage_provider_order(
+        return self._runtime_selector.resolve_provider(
             stage=stage,
-            available=available,
+            task=task,
             prefs=prefs,
+            previous_provider=previous_provider,
         )
-        recent_failures = self._recent_provider_failures(task.id)
-        scored: list[tuple[float, str]] = []
-        for item in capability_rows:
-            if item.provider not in ordered:
-                continue
-            score = self._provider_score(
-                stage=stage,
-                task=task,
-                provider=item.provider,
-                capability=item,
-                policy=policy,
-                prefs=prefs,
-                previous_provider=previous_provider,
-                explicit_stage=explicit_stage,
-                explicit_default=explicit_default,
-                recent_failures=recent_failures,
-            )
-            scored.append((score, item.provider))
-        scored.sort(key=lambda entry: entry[0], reverse=True)
-        if not scored:
-            return ordered[0] if ordered else None
-        return scored[0][1]
 
     def _resolve_model(
         self,
@@ -1163,90 +1117,21 @@ class AutonomyService:
         provider: str | None,
         prefs: dict[str, str],
     ) -> str:
-        preferred_model = (
-            prefs.get(f"preferred_model_{stage}")
-            or prefs.get("preferred_model")
-            or self._workspace_learning_value(task=task, key="last_successful_model")
-            or ""
-        ).strip()
-        if preferred_model:
-            return preferred_model
-        if provider == "local_echo" or self._default_provider == "local_echo":
-            return "local_echo"
-        capability_map = {
-            item.provider: item.model_hint
-            for item in self._run_execution_service.list_provider_capabilities()
-        }
-        hinted = str(capability_map.get(provider or "") or "").strip()
-        if stage == "review" and provider == "anthropic" and hinted:
-            return hinted
-        if stage == "plan" and hinted:
-            return hinted
-        if stage == "execute" and task.complexity == "high" and hinted:
-            return hinted
-        return hinted or self._default_model
+        return self._runtime_selector.resolve_model(
+            stage=stage,
+            task=task,
+            provider=provider,
+            prefs=prefs,
+        )
 
     def _model_policy(self, prefs: dict[str, str]) -> dict[str, object]:
-        return {
-            "optimization_goal": str(prefs.get("model_optimization_goal") or "balanced")
-            .strip()
-            .lower(),
-            "allow_cross_provider_switching": str(
-                prefs.get("allow_cross_provider_switching") or "true"
-            )
-            .strip()
-            .lower()
-            != "false",
-            "maintain_context_continuity": str(prefs.get("maintain_context_continuity") or "true")
-            .strip()
-            .lower()
-            != "false",
-            "minimum_context_window": _parse_positive_int(
-                prefs.get("minimum_context_window"),
-                default=0,
-                maximum=2_000_000,
-            ),
-            "max_latency_tier": str(prefs.get("max_latency_tier") or "").strip().lower(),
-            "max_cost_tier": str(prefs.get("max_cost_tier") or "").strip().lower(),
-            "prefer_reviewer_provider": str(prefs.get("prefer_reviewer_provider") or "true")
-            .strip()
-            .lower()
-            != "false",
-        }
+        return self._runtime_selector.model_policy(prefs)
 
     def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> tuple[str, str]:
-        preferred = str(prefs.get("autonomy_mode") or "").strip().lower()
-        requested = preferred or ""
-        if task.workspace_id is None:
-            return (requested or "supervised"), ""
-        workspace = self._store.get_workspace(task.workspace_id)
-        if workspace is None:
-            return (requested or "supervised"), ""
-        readiness = dict(workspace.metadata.get("workspace_readiness") or {})
-        recommended = str(readiness.get("recommended_autonomy_mode") or "").strip().lower()
-        score = int(readiness.get("score") or 0)
-        if not requested:
-            return (recommended or "supervised"), ""
-        if requested == "unattended" and score < 85:
-            fallback = recommended or "supervised"
-            return (
-                fallback,
-                (
-                    "Requested unattended mode was downgraded because workspace readiness "
-                    f"score is {score}."
-                ),
-            )
-        return requested, ""
+        return self._runtime_selector.resolve_autonomy_mode(task=task, prefs=prefs)
 
     def _workspace_learning_value(self, *, task: Task, key: str) -> str:
-        if task.workspace_id is None:
-            return ""
-        workspace = self._store.get_workspace(task.workspace_id)
-        if workspace is None:
-            return ""
-        learning = dict(workspace.metadata.get("learning") or {})
-        value = learning.get(key)
-        return str(value).strip() if value is not None else ""
+        return self._runtime_selector.workspace_learning_value(task=task, key=key)
 
     def _failure_aware_provider_choice(
         self,
@@ -1255,37 +1140,14 @@ class AutonomyService:
         preferred: str,
         available: list[str] | None = None,
     ) -> str:
-        if available is None:
-            capabilities = self._run_execution_service.list_provider_capabilities()
-            available = [item.provider for item in capabilities]
-        if preferred not in available:
-            return available[0] if available else preferred
-        recent_failures = self._recent_provider_failures(task.id)
-        if recent_failures.get(preferred, 0) < 2:
-            return preferred
-        for provider in available:
-            if provider == preferred:
-                continue
-            if recent_failures.get(provider, 0) == 0:
-                return provider
-        return preferred
+        return self._runtime_selector.failure_aware_provider_choice(
+            task=task,
+            preferred=preferred,
+            available=available,
+        )
 
     def _recent_provider_failures(self, task_id: UUID) -> dict[str, int]:
-        failures: dict[str, int] = {}
-        events = self._store.list_project_events(task_id=task_id, limit=100)
-        for event in reversed(events[-30:]):
-            if event.event_type not in {
-                "run.failed",
-                "workspace.execution.preflight.failed",
-                "workspace.execution.verification.failed",
-            }:
-                continue
-            category = str(event.event_data.get("failure_category") or "")
-            if event.event_type == "run.failed" or category == "provider_failure":
-                provider = str(event.event_data.get("provider") or "").strip().lower()
-                if provider:
-                    failures[provider] = failures.get(provider, 0) + 1
-        return failures
+        return self._runtime_selector.recent_provider_failures(task_id)
 
     def _provider_score(
         self,
@@ -1301,74 +1163,18 @@ class AutonomyService:
         explicit_default: str,
         recent_failures: dict[str, int],
     ) -> float:
-        score = 0.0
-        optimization_goal = str(policy["optimization_goal"] or "balanced")
-        minimum_context_window = int(policy["minimum_context_window"] or 0)
-        max_latency_tier = str(policy["max_latency_tier"] or "")
-        max_cost_tier = str(policy["max_cost_tier"] or "")
-        if capability.max_context_tokens < minimum_context_window:
-            return -10_000.0
-        if max_latency_tier and capability.speed_tier < _latency_floor(max_latency_tier):
-            return -5_000.0
-        if max_cost_tier and capability.cost_tier > _cost_ceiling(max_cost_tier):
-            return -5_000.0
-
-        if explicit_stage and provider == explicit_stage:
-            score += 200
-        elif explicit_default and provider == explicit_default:
-            score += 120
-
-        if (
-            previous_provider
-            and provider == previous_provider
-            and bool(policy["maintain_context_continuity"])
-        ):
-            score += 40
-        if (
-            previous_provider
-            and provider != previous_provider
-            and not bool(policy["allow_cross_provider_switching"])
-        ):
-            score -= 200
-        if provider == self._workspace_learning_value(task=task, key="last_successful_provider"):
-            score += 24
-        complexity = str(getattr(task, "complexity", "") or "").strip().lower()
-        task_type = str(getattr(task, "task_type", "") or "").strip().lower()
-        if complexity == "high":
-            score += capability.quality_tier * 6
-        elif complexity == "low":
-            score += capability.speed_tier * 4
-        if task_type in {"research", "analysis"}:
-            score += capability.max_context_tokens / 100_000
-        if (
-            stage == "review"
-            and bool(policy["prefer_reviewer_provider"])
-            and provider == "anthropic"
-        ):
-            score += 35
-
-        if optimization_goal == "quality":
-            score += capability.quality_tier * 14
-        elif optimization_goal == "speed":
-            score += capability.speed_tier * 14
-        elif optimization_goal == "cost":
-            score += (6 - capability.cost_tier) * 14
-        elif optimization_goal == "context":
-            score += capability.max_context_tokens / 10_000
-        else:
-            score += capability.quality_tier * 6
-            score += capability.speed_tier * 4
-            score += (6 - capability.cost_tier) * 3
-            score += min(capability.max_context_tokens, 256_000) / 64_000
-
-        stage_affinity = {
-            "plan": {"openai": 12, "gemini": 8, "anthropic": 6},
-            "execute": {"openai": 14, "anthropic": 8, "gemini": 6},
-            "review": {"anthropic": 16, "openai": 8, "gemini": 6},
-        }
-        score += stage_affinity.get(stage, {}).get(provider, 0)
-        score -= recent_failures.get(provider, 0) * 40
-        return score
+        return self._runtime_selector.provider_score(
+            stage=stage,
+            task=task,
+            provider=provider,
+            capability=capability,
+            policy=policy,
+            prefs=prefs,
+            previous_provider=previous_provider,
+            explicit_stage=explicit_stage,
+            explicit_default=explicit_default,
+            recent_failures=recent_failures,
+        )
 
     def _stage_provider_order(
         self,
@@ -1377,48 +1183,14 @@ class AutonomyService:
         available: list[str],
         prefs: dict[str, str] | None = None,
     ) -> list[str]:
-        default_provider = (self._default_provider or "").strip().lower()
-        prefs = prefs or {}
-        preferred = {
-            "plan": ["openai", "anthropic", "gemini", "local_echo"],
-            "execute": ["openai", "anthropic", "gemini", "local_echo"],
-            "review": ["anthropic", "openai", "gemini", "local_echo"],
-        }.get(stage, ["openai", "anthropic", "gemini", "local_echo"])
-        fallback_override = [
-            item.strip().lower()
-            for item in str(prefs.get("provider_fallback_order") or "").split(",")
-            if item.strip()
-        ]
-        if fallback_override:
-            preferred = fallback_override + [
-                provider for provider in preferred if provider not in fallback_override
-            ]
-        if default_provider and default_provider in available:
-            preferred = [default_provider] + [
-                provider for provider in preferred if provider != default_provider
-            ]
-        ordered = [provider for provider in preferred if provider in available]
-        for provider in available:
-            if provider not in ordered:
-                ordered.append(provider)
-        return ordered
+        return self._runtime_selector.stage_provider_order(
+            stage=stage,
+            available=available,
+            prefs=prefs,
+        )
 
     def _latest_run_provider_model(self, task_id: UUID) -> tuple[str | None, str | None]:
-        events = self._store.list_project_events(task_id=task_id, limit=100)
-        for event in reversed(events):
-            if event.event_type not in {"run.completed", "model.switch.completed"}:
-                continue
-            provider = (
-                str(event.event_data.get("provider") or event.event_data.get("to_provider") or "")
-                .strip()
-                .lower()
-            )
-            model = str(
-                event.event_data.get("target_model") or event.event_data.get("to_model") or ""
-            ).strip()
-            if provider and model:
-                return provider, model
-        return None, None
+        return self._runtime_selector.latest_run_provider_model(task_id)
 
     def _record_model_switch_if_needed(
         self,
@@ -1432,35 +1204,22 @@ class AutonomyService:
         continuity_enabled: bool,
         context_bundle_id: str,
     ) -> None:
-        if previous_provider == next_provider and previous_model == next_model:
-            return
-        continuity_status = "preserved" if continuity_enabled else "best_effort"
-        if previous_provider and previous_provider != next_provider:
-            continuity_status = (
-                "cross_provider_preserved" if continuity_enabled else "cross_provider_best_effort"
-            )
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="model.switch.completed",
-                event_data={
-                    "from_provider": previous_provider or "",
-                    "from_model": previous_model or "",
-                    "to_provider": next_provider,
-                    "to_model": next_model,
-                    "target_agent": stage_role,
-                    "context_bundle_id": context_bundle_id,
-                    "continuity_status": continuity_status,
-                },
-            )
+        self._runtime_selector.record_model_switch_if_needed(
+            task_id=task_id,
+            previous_provider=previous_provider,
+            previous_model=previous_model,
+            next_provider=next_provider,
+            next_model=next_model,
+            stage_role=stage_role,
+            continuity_enabled=continuity_enabled,
+            context_bundle_id=context_bundle_id,
         )
 
     def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
-        provider_norm = (provider or "").strip().lower()
-        model_norm = (model or "").strip().lower()
-        return provider_norm == "local_echo" or model_norm == "local_echo"
+        return self._runtime_selector.is_local_echo_mode(provider=provider, model=model)
 
-    def _resolve_max_retries(self, prefs: dict[str, str]) -> int:
+    def _resolve_max_retries(
+self, prefs: dict[str, str]) -> int:
         raw = prefs.get("autonomy_max_retries")
         if raw is None:
             return self._default_max_retries
@@ -1471,29 +1230,16 @@ class AutonomyService:
         return max(parsed, 0)
 
     def _resolve_provider_switch_budget(self, prefs: dict[str, str]) -> int:
-        raw = prefs.get("autonomy_max_provider_switches")
-        if raw is None:
-            return self._max_provider_switches
-        try:
-            parsed = int(raw)
-        except ValueError:
-            return self._max_provider_switches
-        return max(parsed, 0)
+        return self._runtime_selector.resolve_provider_switch_budget(prefs)
 
     def _current_cycle(self, events: list[ProjectEvent]) -> int:
-        for event in reversed(events):
-            if event.event_type != "autonomy.cycle.started":
-                continue
-            cycle = _event_int(event.event_data.get("cycle"))
-            if cycle is not None and cycle >= 1:
-                return cycle
-        return 1
+        return self._task_gate.current_cycle(events)
 
     def _total_step_events(self, events: list[ProjectEvent]) -> int:
-        tracked = {"autonomy.stage.completed", "autonomy.stage.failed"}
-        return sum(1 for event in events if event.event_type in tracked)
+        return self._task_gate.total_step_events(events)
 
-    def _provider_switch_count(self, events: list[ProjectEvent]) -> int:
+    def _provider_switch_count(
+self, events: list[ProjectEvent]) -> int:
         count = 0
         for event in events:
             if event.event_type != "model.switch.completed":
@@ -1511,29 +1257,17 @@ class AutonomyService:
         stage: str,
         requires_approval: bool,
     ) -> str:
-        if not requires_approval:
-            return "not_required"
-        if stage != "execute":
-            return "not_required"
-
-        approval = self._latest_event(events, "autonomy.approval")
-        if approval is None:
-            return "awaiting"
-        approved = _event_bool(approval.event_data.get("approved"))
-        return "approved" if approved else "rejected"
-
-    def _ensure_approval_requested(self, *, task_id: UUID, events: list[ProjectEvent]) -> None:
-        if self._latest_event(events, "autonomy.approval.requested") is not None:
-            return
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="autonomy.approval.requested",
-                event_data={"stage": "execute"},
-            )
+        return self._task_gate.approval_gate_state(
+            events=events,
+            stage=stage,
+            requires_approval=requires_approval,
         )
 
+    def _ensure_approval_requested(self, *, task_id: UUID, events: list[ProjectEvent]) -> None:
+        self._task_gate.ensure_approval_requested(task_id=task_id, events=events)
+
     def _prompt_for_stage(
+
         self,
         *,
         stage: str,
@@ -2438,131 +2172,12 @@ class AutonomyService:
         cycle: int,
         error: Exception,
     ) -> dict[str, object]:
-        reason = str(error).strip() or f"{stage} failure"
-        category = "stage_failure"
-        strategy = "replan"
-        retry_allowed = True
-        should_replan = False
-        events = self._store.list_project_events(task_id=task_id, limit=300)
-        for event in reversed(events):
-            event_cycle = _event_int(event.event_data.get("cycle")) or cycle
-            if event_cycle != cycle:
-                continue
-            if event.event_type in {
-                "workspace.execution.preflight.failed",
-                "workspace.execution.verification.failed",
-            }:
-                category = str(event.event_data.get("failure_category") or category)
-                strategy = str(event.event_data.get("recommended_strategy") or strategy)
-                reason = str(event.event_data.get("reason") or reason)
-                break
-            if event.event_type == "run.failed":
-                category = "provider_failure"
-                strategy = "switch_model_or_provider"
-                reason = str(event.event_data.get("error") or reason)
-                break
-        lowered = reason.lower()
-        if category == "environment_failure":
-            retry_allowed = False
-        elif category == "provider_failure":
-            retry_allowed = True
-            should_replan = False
-        elif category in {"policy_block", "risk_guardrail"}:
-            retry_allowed = False
-            should_replan = False
-        elif category == "verification_failure":
-            retry_allowed = False
-            should_replan = True
-        elif category == "acceptance_failure":
-            retry_allowed = False
-            should_replan = True
-        elif "no changes or verification commands were produced" in lowered:
-            category = "no_artifact_change"
-            strategy = "tighten_implementation_scope"
-            retry_allowed = False
-            should_replan = True
-        elif "required verification commands did not pass" in lowered:
-            category = "verification_failure"
-            strategy = "raise_verification"
-            retry_allowed = False
-            should_replan = True
-        elif "provider" in lowered:
-            category = "provider_failure"
-            strategy = "switch_model_or_provider"
-            retry_allowed = True
-        elif "approval" in lowered:
-            category = "policy_block"
-            strategy = "request_approval"
-            retry_allowed = False
-        plan = self._latest_execute_plan(task_id)
-        signature_payload = {
-            "stage": stage,
-            "category": category,
-            "reason": lowered[:160],
-            "plan_signature": str((plan or {}).get("signature") or ""),
-        }
-        signature = hashlib.sha1(
-            json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:16]
-        return {
-            "category": category,
-            "strategy": strategy,
-            "retry_allowed": retry_allowed if self._failure_taxonomy_v2_enabled else True,
-            "should_replan": should_replan if self._failure_taxonomy_v2_enabled else False,
-            "reason": reason,
-            "signature": signature,
-        }
-
-    def _is_low_information_failure(
-        self,
-        *,
-        task_id: UUID,
-        stage: str,
-        failure_signature: str,
-    ) -> bool:
-        if not failure_signature:
-            return False
-        events = self._store.list_project_events(task_id=task_id, limit=200)
-        count = 0
-        for event in reversed(events):
-            if event.event_type != "autonomy.stage.failed":
-                continue
-            if str(event.event_data.get("stage") or "").strip().lower() != stage:
-                break
-            if str(event.event_data.get("signature") or "").strip() == failure_signature:
-                count += 1
-            else:
-                break
-        return count >= (self._low_info_threshold - 1)
-
-    def _quality_failure_signature(self, *, task_id: UUID, stage: str, reason: str) -> str:
-        plan = self._latest_execute_plan(task_id)
-        payload = {
-            "stage": stage,
-            "reason": reason.lower()[:160],
-            "plan_signature": str((plan or {}).get("signature") or ""),
-        }
-        return hashlib.sha1(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:16]
-
-    def _is_low_information_quality_failure(
-        self, *, task_id: UUID, stage: str, signature: str
-    ) -> bool:
-        if not signature:
-            return False
-        events = self._store.list_project_events(task_id=task_id, limit=200)
-        count = 0
-        for event in reversed(events):
-            if event.event_type != "autonomy.quality.failed":
-                continue
-            if str(event.event_data.get("stage") or "").strip().lower() != stage:
-                break
-            if str(event.event_data.get("signature") or "").strip() == signature:
-                count += 1
-            else:
-                break
-        return count >= (self._low_info_threshold - 1)
+        return self._failure_handler.classify_failure(
+            task_id=task_id,
+            stage=stage,
+            cycle=cycle,
+            error=error,
+        )
 
     def _finalize_task(self, task_id: UUID) -> None:
         self._finalizer.finalize_task(task_id)

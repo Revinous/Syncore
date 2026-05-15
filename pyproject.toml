@@ -1,0 +1,16 @@
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+check_untyped_defs = true
+no_implicit_optional = true
+pretty = true
+
+[tool.bandit]
+exclude_dirs = ["services/orchestrator/tests", "apps/web", ".venv", "node_modules"]
+skips = ["B404"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=services/orchestrator/app --cov=services/router --cov=services/memory --cov=services/analyst --cov-report=term-missing --cov-fail-under=68"

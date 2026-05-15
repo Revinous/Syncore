@@ -25,10 +25,26 @@ jobs:
       - name: Run backend lint
         run: python -m ruff check services/orchestrator services/router services/memory services/analyst packages/contracts/python
 
+      - name: Run Python static analysis
+        run: |
+          python -m mypy --follow-imports=skip \
+            services/orchestrator/app/services/autonomy_runtime_selector.py \
+            services/orchestrator/app/services/autonomy_task_gate.py \
+            services/orchestrator/app/services/autonomy_quality_gate.py \
+            services/orchestrator/app/services/autonomy_failure_handler.py \
+            services/orchestrator/app/services/workspace_planner.py \
+            services/orchestrator/app/services/workspace_preflight_service.py \
+            services/orchestrator/app/services/workspace_action_dispatcher.py \
+            services/orchestrator/app/services/workspace_execution_finalizer.py \
+            services/orchestrator/app/runs/provider_transport.py
+
+      - name: Run security scan
+        run: python -m bandit -q -c pyproject.toml -r services/orchestrator/app/runs services/orchestrator/app/api services/orchestrator/app/services
+
       - name: Run structural guardrails
         run: python scripts/structural_guardrails.py
 
-      - name: Run backend tests
+      - name: Run backend tests with coverage
         env:
           PYTHONPATH: services/orchestrator:.
         run: |

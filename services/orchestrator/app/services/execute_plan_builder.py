@@ -89,7 +89,7 @@ class ExecutePlanBuilder:
             "fallback_strategy": self.strategy_guidance(strategy),
             "risk_level": risk_level,
         }
-        signature = hashlib.sha1(
+        signature = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
         payload["signature"] = signature

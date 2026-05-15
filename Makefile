@@ -1,7 +1,8 @@
 .PHONY: bootstrap up down logs format lint test check backend-test frontend-test demo-local \
 	install-local db-local-init dev-local bootstrap-local local-test \
 	install-cli cli-status tui web ui-check db-migrate db-revision \
-	docs-install docs-serve docs-build benchmark-local architecture-check
+	docs-install docs-serve docs-build benchmark-local architecture-check \
+	python-static python-security coverage-check
 
 bootstrap:
 	bash scripts/bootstrap.sh
@@ -44,6 +45,7 @@ web:
 
 ui-check:
 	npm --prefix apps/web run lint
+	npm --prefix apps/web run typecheck
 	cd apps/cli && ../../.venv/bin/python -m pytest -q
 
 benchmark-local:
@@ -74,6 +76,21 @@ lint:
 	python3 -m ruff check services/orchestrator services/router services/memory services/analyst packages/contracts/python
 	npm --prefix apps/web run lint
 
+python-static:
+	python3 -m mypy --follow-imports=skip \
+		services/orchestrator/app/services/autonomy_runtime_selector.py \
+		services/orchestrator/app/services/autonomy_task_gate.py \
+		services/orchestrator/app/services/autonomy_quality_gate.py \
+		services/orchestrator/app/services/autonomy_failure_handler.py \
+		services/orchestrator/app/services/workspace_planner.py \
+		services/orchestrator/app/services/workspace_preflight_service.py \
+		services/orchestrator/app/services/workspace_action_dispatcher.py \
+		services/orchestrator/app/services/workspace_execution_finalizer.py \
+		services/orchestrator/app/runs/provider_transport.py
+
+python-security:
+	python3 -m bandit -q -c pyproject.toml -r services/orchestrator/app/runs services/orchestrator/app/api services/orchestrator/app/services
+
 test: backend-test frontend-test
 
 backend-test:
@@ -93,6 +110,14 @@ demo-local:
 architecture-check:
 	python3 scripts/structural_guardrails.py
 
-check: lint test architecture-check
+coverage-check:
+	PYTHONPATH=services/orchestrator:. python3 -m pytest \
+		services/orchestrator/tests \
+		services/router/tests \
+		services/memory/tests \
+		services/analyst/tests \
+		packages/contracts/python/test_models.py
+
+check: lint python-static python-security test architecture-check coverage-check
 	npm --prefix apps/web run typecheck
 	npm --prefix apps/web run build

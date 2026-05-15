@@ -5,9 +5,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
-    "test:smoke": "node --test pages/*.test.mjs tests/*.test.mjs"
+    "test:smoke": "node --test pages/*.test.mjs tests/*.test.mjs",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "next": "16.2.4",

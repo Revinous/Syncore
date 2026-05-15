@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -19,8 +17,6 @@ from uuid import UUID
 from packages.contracts.python.models import (
     AgentRunCreate,
     AgentRunUpdate,
-    BatonPacketCreate,
-    BatonPayload,
     ProjectEventCreate,
     RunExecutionRequest,
     RunExecutionResponse,
@@ -43,18 +39,21 @@ from app.runs.providers import (
 from app.services.context_service import ContextService
 from app.services.execution_policy import ExecutionPolicyResolver
 from app.services.workspace_acceptance_service import string_list
+from app.services.workspace_action_dispatcher import WorkspaceActionDispatcher, WorkspaceLoopState
+from app.services.workspace_execution_finalizer import WorkspaceExecutionFinalizer
 from app.services.workspace_execution_utils import (
-    binary_install_suggestions,
     check_action_allowed,
     classify_workspace_issue,
     command_allowed,
     needs_dependency_bootstrap,
     normalize_workspace_command,
-    preflight_failure,
     resolve_workspace_path,
     runner_default_command,
 )
+from app.services.workspace_files import WorkspaceFilesService
 from app.services.workspace_learning_service import WorkspaceLearningService
+from app.services.workspace_planner import WorkspacePlanner
+from app.services.workspace_preflight_service import WorkspacePreflightService
 from app.services.workspace_verification_service import WorkspaceVerificationService
 
 
@@ -174,6 +173,30 @@ class RunExecutionService:
         self._digest_service = AnalystDigestService()
         self._policy_resolver = ExecutionPolicyResolver(self.WORKSPACE_POLICY_PROFILES)
         self._workspace_learning = WorkspaceLearningService(self._store)
+        self._workspace_planner = WorkspacePlanner()
+        self._workspace_preflight_service = WorkspacePreflightService(
+            providers=self._providers,
+            default_provider=self._default_provider,
+            setup_command_resolver=runner_default_command,
+        )
+        self._workspace_dispatcher = WorkspaceActionDispatcher(
+            check_action_allowed=check_action_allowed,
+            write_with_diff=self._safe_write_with_diff,
+            patch_with_diff=self._safe_patch_with_diff,
+            delete_with_diff=self._safe_delete_with_diff,
+            move_with_diff=self._safe_move_with_diff,
+            read_file=self._safe_read_file,
+            search_code=self._safe_search_code,
+            store_text_reference=self._store_text_reference,
+            run_workspace_command=self._safe_run_workspace_command,
+            runner_default_command=runner_default_command,
+        )
+        self._workspace_finalizer = WorkspaceExecutionFinalizer(
+            store=self._store,
+            digest_service=self._digest_service,
+            workspace_learning=self._workspace_learning,
+            parse_uuid=_parse_uuid,
+        )
         self._workspace_verifier = WorkspaceVerificationService(
             run_command=lambda root, command, policy: self._safe_run_workspace_command(
                 root, command, policy=policy
@@ -390,7 +413,7 @@ class RunExecutionService:
         )
         profile = str(policy.get("profile") or "balanced")
 
-        preflight = self._workspace_preflight(
+        preflight = self._workspace_preflight_service.verify(
             root=root,
             provider_hint=payload.provider,
             required_env=string_list(runbook.get("required_env")),
@@ -409,7 +432,7 @@ class RunExecutionService:
                 policy=policy,
             )
             if repaired:
-                preflight = self._workspace_preflight(
+                preflight = self._workspace_preflight_service.verify(
                     root=root,
                     provider_hint=payload.provider,
                     required_env=string_list(runbook.get("required_env")),
@@ -424,7 +447,7 @@ class RunExecutionService:
                 stage="preflight",
                 reason=str(preflight.get("reason") or "unknown"),
             )
-            self._update_workspace_learning_failure(
+            self._workspace_finalizer.record_learning_failure(
                 workspace_id=task.workspace_id,
                 reason=str(preflight.get("reason") or "unknown"),
                 category=classification["category"],
@@ -447,13 +470,7 @@ class RunExecutionService:
             )
             raise ValueError(str(preflight.get("reason") or "Workspace preflight failed"))
 
-        changed_files: list[str] = []
-        diff_refs: list[str] = []
-        command_results: list[dict[str, object]] = []
-        read_refs: list[str] = []
-        completed_work: list[str] = []
-        next_action = "Run the repo's verification checks for the changed files."
-        finish_summary = ""
+        state = WorkspaceLoopState()
         planned_actions: list[str] = []
 
         provider_name, provider = self._resolve_provider(payload.provider)
@@ -464,7 +481,7 @@ class RunExecutionService:
             event_type="workspace.execution.state.changed",
             event_data={"state": "planned", "profile": profile, "dry_run": dry_run},
         )
-        plan_prompt = self._build_workspace_planner_prompt(
+        plan_prompt = self._workspace_planner.build_planner_prompt(
             base_prompt=payload.prompt,
             workspace_runbook=runbook,
             profile=profile,
@@ -476,7 +493,7 @@ class RunExecutionService:
             max_output_tokens=max(256, min(payload.max_output_tokens, 800)),
             temperature=0.1,
         )
-        planned_actions = self._parse_plan_lines(plan_result.output_text)
+        planned_actions = self._workspace_planner.parse_plan_lines(plan_result.output_text)
         if require_approval:
             self._record_event(
                 task_id=payload.task_id,
@@ -509,8 +526,8 @@ class RunExecutionService:
         )
 
         for step in range(1, max_steps + 1):
-            file_snapshot = self._workspace_snapshot(root)
-            worker_prompt = self._build_workspace_worker_prompt(
+            file_snapshot = self._workspace_planner.workspace_snapshot(root)
+            worker_prompt = self._workspace_planner.build_worker_prompt(
                 base_prompt=payload.prompt,
                 file_snapshot=file_snapshot,
                 step=step,
@@ -526,202 +543,25 @@ class RunExecutionService:
                 max_output_tokens=payload.max_output_tokens,
                 temperature=payload.temperature,
             )
-            actions = self._parse_worker_actions(result.output_text)
+            actions = self._workspace_planner.parse_worker_actions(result.output_text)
             if not actions:
                 continue
 
-            for action in actions:
-                action_type = str(action.get("type", "")).strip().lower()
-                action_gate = check_action_allowed(
-                    action_type=action_type,
-                    policy=policy,
-                    relative_path=str(action.get("path", "")).strip() or None,
-                    command=str(action.get("command", "")).strip() or None,
-                )
-                if action_gate["status"] != "ok":
-                    command_results.append(
-                        {
-                            "command": str(action.get("command") or action_type),
-                            "status": "blocked",
-                            "output": str(action_gate.get("reason") or "Action blocked"),
-                        }
-                    )
-                    continue
-                if action_type == "write_file":
-                    rel = str(action.get("path", "")).strip()
-                    content = str(action.get("content", ""))
-                    if not rel:
-                        continue
-                    ref_id = self._safe_write_with_diff(
-                        task_id=payload.task_id,
-                        root=root,
-                        relative_path=rel,
-                        content=content,
-                    )
-                    changed_files.append(rel)
-                    diff_refs.append(ref_id)
-                    completed_work.append(f"Updated {rel}")
-                elif action_type == "create_file":
-                    rel = str(action.get("path", "")).strip()
-                    content = str(action.get("content", ""))
-                    if not rel:
-                        continue
-                    ref_id = self._safe_write_with_diff(
-                        task_id=payload.task_id,
-                        root=root,
-                        relative_path=rel,
-                        content=content,
-                    )
-                    changed_files.append(rel)
-                    diff_refs.append(ref_id)
-                    completed_work.append(f"Created {rel}")
-                elif action_type == "patch_file":
-                    rel = str(action.get("path", "")).strip()
-                    before = str(action.get("before", ""))
-                    after = str(action.get("after", ""))
-                    if not rel or not before:
-                        continue
-                    ref_id = self._safe_patch_with_diff(
-                        task_id=payload.task_id,
-                        root=root,
-                        relative_path=rel,
-                        before_text=before,
-                        after_text=after,
-                    )
-                    changed_files.append(rel)
-                    diff_refs.append(ref_id)
-                    completed_work.append(f"Patched {rel}")
-                elif action_type == "delete_file":
-                    rel = str(action.get("path", "")).strip()
-                    if not rel:
-                        continue
-                    ref_id = self._safe_delete_with_diff(
-                        task_id=payload.task_id,
-                        root=root,
-                        relative_path=rel,
-                    )
-                    changed_files.append(rel)
-                    diff_refs.append(ref_id)
-                    completed_work.append(f"Deleted {rel}")
-                elif action_type == "move_file":
-                    rel = str(action.get("path", "")).strip()
-                    destination = str(action.get("destination", "")).strip()
-                    if not rel or not destination:
-                        continue
-                    ref_id = self._safe_move_with_diff(
-                        task_id=payload.task_id,
-                        root=root,
-                        source_path=rel,
-                        destination_path=destination,
-                    )
-                    changed_files.extend([rel, destination])
-                    diff_refs.append(ref_id)
-                    completed_work.append(f"Moved {rel} to {destination}")
-                elif action_type == "read_file":
-                    rel = str(action.get("path", "")).strip()
-                    if not rel:
-                        continue
-                    read = self._safe_read_file(root=root, relative_path=rel)
-                    if read:
-                        read_refs.append(
-                            self._store_text_reference(
-                                task_id=payload.task_id,
-                                content_type="workspace_read",
-                                content_text=read,
-                                retrieval_hint=f"Read snapshot for {rel}",
-                            )
-                        )
-                elif action_type == "search_code":
-                    pattern = str(action.get("pattern", "")).strip()
-                    if not pattern:
-                        continue
-                    hits = self._safe_search_code(root=root, pattern=pattern)
-                    if hits:
-                        read_refs.append(
-                            self._store_text_reference(
-                                task_id=payload.task_id,
-                                content_type="workspace_search",
-                                content_text="\n".join(hits),
-                                retrieval_hint=f"Search hits for pattern '{pattern}'",
-                            )
-                        )
-                elif action_type == "run_command":
-                    command = str(action.get("command", "")).strip()
-                    if not command:
-                        continue
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "run_test":
-                    command = str(
-                        action.get("command")
-                        or runner_default_command(runner, "test", "pytest -q")
-                    ).strip()
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "run_build":
-                    command = str(
-                        action.get("command")
-                        or runner_default_command(runner, "build", "npm run build")
-                    ).strip()
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "run_lint":
-                    command = str(
-                        action.get("command") or runner_default_command(runner, "lint", "")
-                    ).strip()
-                    if not command:
-                        continue
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "run_format":
-                    command = str(
-                        action.get("command") or runner_default_command(runner, "format", "")
-                    ).strip()
-                    if not command:
-                        continue
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "run_targeted_test":
-                    command = str(
-                        action.get("command")
-                        or runner_default_command(runner, "test", "pytest -q")
-                    ).strip()
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "install_deps":
-                    command = str(
-                        action.get("command") or runner_default_command(runner, "setup", "")
-                    ).strip()
-                    if not command:
-                        continue
-                    command_results.append(
-                        self._safe_run_workspace_command(root, command, policy=policy)
-                    )
-                elif action_type == "complete_work":
-                    text = str(action.get("text", "")).strip()
-                    if text:
-                        completed_work.append(text)
-                elif action_type == "next_action":
-                    text = str(action.get("text", "")).strip()
-                    if text:
-                        next_action = text
-                elif action_type == "finish":
-                    finish_summary = str(action.get("summary", "")).strip()
-                    if not finish_summary:
-                        finish_summary = "Workspace execution loop completed."
-                    step = max_steps
-                    break
+            finished = self._workspace_dispatcher.dispatch_actions(
+                task_id=payload.task_id,
+                root=root,
+                actions=actions,
+                policy=policy,
+                runner=runner,
+                state=state,
+            )
+            if finished:
+                step = max_steps
 
-            if changed_files or command_results:
+            if state.state.changed_files or state.state.command_results:
                 self._workspace_verifier.ensure_required_verification_commands_run(
                     root=root,
-                    command_results=command_results,
+                    command_results=state.command_results,
                     acceptance=self._workspace_verifier.merged_acceptance_criteria(
                         task_preferences=task_preferences,
                         contract=contract,
@@ -731,8 +571,8 @@ class RunExecutionService:
                     policy=policy,
                 )
                 step_verification = self._workspace_verifier.verify_workspace_execution(
-                    changed_files=changed_files,
-                    command_results=list(command_results),
+                    changed_files=state.changed_files,
+                    command_results=list(state.command_results),
                     root=root,
                     task_preferences=task_preferences,
                     contract=contract,
@@ -741,8 +581,8 @@ class RunExecutionService:
                     policy=policy,
                 )
                 if step_verification["status"] == "ok":
-                    if not finish_summary:
-                        finish_summary = (
+                    if not state.finish_summary:
+                        state.finish_summary = (
                             "Workspace execution loop completed after verification passed."
                         )
                     break
@@ -754,7 +594,7 @@ class RunExecutionService:
         )
         self._workspace_verifier.ensure_required_verification_commands_run(
             root=root,
-            command_results=command_results,
+            command_results=state.command_results,
             acceptance=self._workspace_verifier.merged_acceptance_criteria(
                 task_preferences=task_preferences,
                 contract=contract,
@@ -764,8 +604,8 @@ class RunExecutionService:
             policy=policy,
         )
         verification = self._workspace_verifier.verify_workspace_execution(
-            changed_files=changed_files,
-            command_results=command_results,
+            changed_files=state.changed_files,
+            command_results=state.command_results,
             root=root,
             task_preferences=task_preferences,
             contract=contract,
@@ -776,13 +616,13 @@ class RunExecutionService:
         if str(verification.get("reason") or "") == "Required verification commands did not pass.":
             self._workspace_verifier.run_all_runner_test_commands(
                 root=root,
-                command_results=command_results,
+                command_results=state.command_results,
                 runner=runner,
                 policy=policy,
             )
             verification = self._workspace_verifier.verify_workspace_execution(
-                changed_files=changed_files,
-                command_results=command_results,
+                changed_files=state.changed_files,
+                command_results=state.command_results,
                 root=root,
                 task_preferences=task_preferences,
                 contract=contract,
@@ -800,7 +640,7 @@ class RunExecutionService:
                 "status": "ok",
                 "reason": "local_echo_noop_execution_accepted",
             }
-            completed_work.append(
+            state.completed_work.append(
                 "No-op local echo execution accepted for autonomy dry progression."
             )
         if verification["status"] != "ok":
@@ -808,20 +648,20 @@ class RunExecutionService:
                 stage="verification",
                 reason=str(verification.get("reason") or "verification failed"),
             )
-            report_ref_id = self._store_workspace_execution_report(
+            report_ref_id = self._workspace_finalizer.store_report(
                 task_id=payload.task_id,
                 status="failed",
                 summary_reason=str(verification.get("reason") or "verification failed"),
                 provider=provider_name,
                 target_model=payload.target_model,
                 profile=profile,
-                changed_files=changed_files,
-                diff_refs=diff_refs,
+                changed_files=state.changed_files,
+                diff_refs=state.diff_refs,
                 planned_actions=planned_actions,
-                command_results=command_results,
+                command_results=state.command_results,
                 verification=verification,
             )
-            self._update_workspace_learning_failure(
+            self._workspace_finalizer.record_learning_failure(
                 workspace_id=task.workspace_id,
                 reason=str(verification.get("reason") or "verification failed"),
                 category=classification["category"],
@@ -840,17 +680,17 @@ class RunExecutionService:
             )
             raise RuntimeError(str(verification.get("reason") or "Workspace verification failed"))
 
-        candidate_validation = self._validate_meaningful_candidate_change(
+        candidate_validation = self._workspace_finalizer.validate_meaningful_candidate_change(
             task_id=payload.task_id,
             task_preferences=task_preferences,
-            changed_files=changed_files,
+            changed_files=state.changed_files,
         )
         if candidate_validation["status"] != "ok":
             classification = classify_workspace_issue(
                 stage="verification",
                 reason=str(candidate_validation.get("reason") or "candidate validation failed"),
             )
-            report_ref_id = self._store_workspace_execution_report(
+            report_ref_id = self._workspace_finalizer.store_report(
                 task_id=payload.task_id,
                 status="failed",
                 summary_reason=str(
@@ -859,10 +699,10 @@ class RunExecutionService:
                 provider=provider_name,
                 target_model=payload.target_model,
                 profile=profile,
-                changed_files=changed_files,
-                diff_refs=diff_refs,
+                changed_files=state.changed_files,
+                diff_refs=state.diff_refs,
                 planned_actions=planned_actions,
-                command_results=command_results,
+                command_results=state.command_results,
                 verification={
                     **verification,
                     "candidate_validation": candidate_validation,
@@ -883,92 +723,26 @@ class RunExecutionService:
                 str(candidate_validation.get("reason") or "Meaningful change gate failed")
             )
 
-        report_ref_id = self._store_workspace_execution_report(
+        return self._workspace_finalizer.finalize_success(
             task_id=payload.task_id,
-            status="completed",
-            summary_reason=str(verification.get("reason") or "Workspace verification passed."),
+            workspace_id=task.workspace_id,
+            from_agent=payload.target_agent,
+            objective=payload.prompt,
             provider=provider_name,
             target_model=payload.target_model,
             profile=profile,
-            changed_files=changed_files,
-            diff_refs=diff_refs,
+            changed_files=state.changed_files,
+            diff_refs=state.diff_refs,
+            read_refs=state.read_refs,
             planned_actions=planned_actions,
-            command_results=command_results,
+            command_results=state.command_results,
             verification=verification,
-        )
-        self._record_event(
-            task_id=payload.task_id,
-            event_type="workspace.execution.completed",
-            event_data={
-                "provider": provider_name,
-                "model": payload.target_model,
-                "changed_files": len(changed_files),
-                "diff_refs": len(diff_refs),
-                "read_refs": len([item for item in read_refs if item]),
-                "profile": profile,
-                "meaningful_change": "true",
-                "report_ref_id": report_ref_id,
-            },
-        )
-
-        baton = self._store.save_baton_packet(
-            BatonPacketCreate(
-                task_id=payload.task_id,
-                from_agent=payload.target_agent,
-                to_agent="analyst",
-                summary=finish_summary or "Workspace implementation batch completed",
-                payload=BatonPayload(
-                    objective=payload.prompt,
-                    completed_work=completed_work[:20],
-                    constraints=[],
-                    open_questions=[],
-                    next_best_action=next_action,
-                    relevant_artifacts=changed_files[:20],
-                ),
-            )
-        )
-
-        events = self._store.list_project_events(task_id=payload.task_id, limit=200)
-        digest = self._digest_service.generate_digest(
-            task_id=payload.task_id,
-            events=events,
-            latest_baton=baton,
-        )
-        self._record_event(
-            task_id=payload.task_id,
-            event_type="analyst.digest.generated",
-            event_data={
-                "headline": digest.headline[:250],
-                "risk_level": digest.risk_level,
-                "total_events": digest.total_events,
-            },
-        )
-        self._update_workspace_learning(
-            workspace_id=task.workspace_id,
-            provider=provider_name,
-            model=payload.target_model,
-            profile=profile,
+            finish_summary=state.finish_summary,
+            completed_work=state.completed_work,
+            next_action=state.next_action,
             policy=policy,
             runner=runner,
-            command_results=command_results,
         )
-
-        return {
-            "task_id": str(payload.task_id),
-            "workspace_id": str(task.workspace_id),
-            "provider": provider_name,
-            "target_model": payload.target_model,
-            "profile": profile,
-            "changed_files": changed_files,
-            "diff_ref_ids": diff_refs,
-            "read_ref_ids": [item for item in read_refs if item],
-            "planned_actions": planned_actions[:40],
-            "commands": command_results,
-            "baton_id": str(baton.id),
-            "verification": verification,
-            "report_ref_id": report_ref_id,
-            "digest": digest.model_dump(mode="json"),
-        }
 
     def stream_execute(self, payload: RunExecutionRequest) -> Iterator[RunStreamEvent]:
         duplicate = self._maybe_get_idempotent_response(payload)
@@ -1261,92 +1035,6 @@ class RunExecutionService:
         ]
         return "\n".join(prompt_parts).strip()
 
-    def _build_workspace_worker_prompt(
-        self,
-        *,
-        base_prompt: str,
-        file_snapshot: str,
-        step: int,
-        max_steps: int,
-        contract: dict[str, object],
-        runner: dict[str, object],
-        policy: dict[str, object],
-    ) -> str:
-        return (
-            "You are Syncore workspace coder.\n"
-            f"Step {step}/{max_steps}.\n"
-            "Return ONLY JSON with schema: "
-            '{"actions":[{"type":"read_file|search_code|write_file|create_file|patch_file|move_file|delete_file|run_command|run_test|run_build|run_lint|run_format|run_targeted_test|install_deps|complete_work|next_action|finish",'
-            '"path":"...","destination":"...","content":"...","before":"...","after":"...","pattern":"...","command":"...","text":"...","summary":"..."}]}\n'
-            "Prefer write_file with full file content for deterministic updates.\n"
-            "Use commands only when needed for verification.\n\n"
-            "Task:\n"
-            f"{base_prompt}\n\n"
-            "Workspace contract:\n"
-            f"{contract}\n\n"
-            "Selected runner:\n"
-            f"{runner}\n\n"
-            "Execution policy:\n"
-            f"{policy}\n\n"
-            "Workspace snapshot:\n"
-            f"{file_snapshot}"
-        )
-
-    def _build_workspace_planner_prompt(
-        self,
-        *,
-        base_prompt: str,
-        workspace_runbook: object,
-        profile: str,
-    ) -> str:
-        return (
-            "You are planning safe workspace actions for an autonomous coding loop.\n"
-            f"Policy profile: {profile}.\n"
-            "Return concise numbered steps, no markdown table.\n"
-            "Prefer test/build verification and minimal file mutations.\n\n"
-            f"Task:\n{base_prompt}\n\n"
-            f"Workspace runbook metadata:\n{workspace_runbook}\n"
-        )
-
-    def _parse_plan_lines(self, output_text: str) -> list[str]:
-        lines = [line.strip(" -\t") for line in output_text.splitlines() if line.strip()]
-        return [line[:240] for line in lines[:60]]
-
-    def _workspace_snapshot(self, root: Path) -> str:
-        entries: list[str] = []
-        for path in root.rglob("*"):
-            if len(entries) >= 200:
-                break
-            if path.is_dir():
-                continue
-            rel = path.relative_to(root).as_posix()
-            blocked_parts = {".git", "node_modules", ".venv", "__pycache__", ".next"}
-            rel_parts = path.relative_to(root).parts
-            if any(part in blocked_parts for part in rel_parts):
-                continue
-            entries.append(rel)
-        if not entries:
-            return "(empty workspace)"
-        return "\n".join(f"- {item}" for item in entries)
-
-    def _parse_worker_actions(self, output_text: str) -> list[dict[str, object]]:
-        candidate = output_text.strip()
-        fenced = re.search(r"```json\s*(\{.*?\})\s*```", candidate, re.DOTALL)
-        if fenced:
-            candidate = fenced.group(1)
-        try:
-            payload = json.loads(candidate)
-        except json.JSONDecodeError:
-            return []
-        actions = payload.get("actions", [])
-        if not isinstance(actions, list):
-            return []
-        parsed: list[dict[str, object]] = []
-        for action in actions:
-            if isinstance(action, dict):
-                parsed.append(action)
-        return parsed
-
     def _safe_write_with_diff(
         self,
         *,
@@ -1499,8 +1187,7 @@ class RunExecutionService:
         timeout = int(policy.get("timeout_seconds", 120))
         max_output = int(policy.get("max_output_chars", 4000))
         completed = subprocess.run(
-            command,
-            shell=True,
+            ["/bin/bash", "-lc", command],  # nosec B603
             cwd=root,
             text=True,
             capture_output=True,
@@ -1513,6 +1200,27 @@ class RunExecutionService:
             "exit_code": completed.returncode,
             "output": output[:max_output],
         }
+
+    def _safe_read_file(self, *, root: Path, relative_path: str) -> str:
+        service = WorkspaceFilesService()
+        return service.read_file(str(root), relative_path)
+
+    def _safe_search_code(self, *, root: Path, pattern: str) -> list[str]:
+        service = WorkspaceFilesService()
+        files = service.list_files(str(root), ".", limit=500)
+        hits: list[str] = []
+        lowered_pattern = pattern.lower()
+        for rel in files:
+            try:
+                content = service.read_file(str(root), rel)
+            except (FileNotFoundError, PermissionError, ValueError):
+                continue
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                if lowered_pattern in line.lower():
+                    hits.append(f"{rel}:{line_no}: {line[:240]}")
+                    if len(hits) >= 100:
+                        return hits
+        return hits
 
     def _attempt_workspace_auto_repair(
         self,
@@ -1634,48 +1342,6 @@ class RunExecutionService:
             policy=policy,
         )
 
-    def _verify_secret_safety(
-        self,
-        *,
-        root: Path,
-        changed_files: list[str],
-    ) -> dict[str, object]:
-        secret_markers = ("api_key", "secret_key", "sk-proj-", "BEGIN PRIVATE KEY")
-        for rel in changed_files[:50]:
-            target = root / rel
-            if not target.exists() or not target.is_file():
-                continue
-            try:
-                content = target.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            lowered = content.lower()
-            if any(marker.lower() in lowered for marker in secret_markers):
-                return {
-                    "status": "failed",
-                    "reason": "Potential secret material detected in changed files.",
-                    "path": rel,
-                }
-        return {"status": "ok", "reason": ""}
-
-    def _classify_workspace_issue(self, *, stage: str, reason: str) -> dict[str, str]:
-        lowered = reason.lower()
-        if "env var" in lowered or "binary" in lowered or "os" in lowered:
-            return {"category": "environment_failure", "strategy": "repair_environment"}
-        if "provider" in lowered:
-            return {"category": "provider_failure", "strategy": "switch_model_or_provider"}
-        if "command" in lowered and "allowed" in lowered:
-            return {"category": "policy_block", "strategy": "relax_policy_or_request_approval"}
-        if "forbidden" in lowered or "approval" in lowered:
-            return {"category": "risk_guardrail", "strategy": "reduce_scope_or_request_approval"}
-        if "candidate" in lowered or "meaningful" in lowered:
-            return {"category": "candidate_mismatch", "strategy": "tighten_implementation_scope"}
-        if "artifact" in lowered or "behavior" in lowered:
-            return {"category": "acceptance_failure", "strategy": "tighten_implementation_scope"}
-        if "verification" in lowered or "required" in lowered:
-            return {"category": "verification_failure", "strategy": "raise_verification"}
-        return {"category": f"{stage}_failure", "strategy": "replan"}
-
     def _validate_meaningful_candidate_change(
         self,
         *,
@@ -1721,66 +1387,7 @@ class RunExecutionService:
         return string_list(value)
 
     def _selected_candidate_for_parent(self, parent_id: UUID) -> dict[str, object] | None:
-        parent_events = self._store.list_project_events(task_id=parent_id, limit=500)
-        child_ids: list[UUID] = []
-        for event in reversed(parent_events):
-            if event.event_type != "autonomy.subtasks.spawned":
-                continue
-            raw_ids = str(event.event_data.get("child_task_ids") or "").strip()
-            for raw in (item.strip() for item in raw_ids.split(",") if item.strip()):
-                parsed = _parse_uuid(raw)
-                if parsed is not None:
-                    child_ids.append(parsed)
-            break
-        for child_id in child_ids:
-            child = self._store.get_task(child_id)
-            if child is None or child.task_type != "analysis":
-                continue
-            child_events = self._store.list_project_events(task_id=child_id, limit=250)
-            for event in reversed(child_events):
-                if event.event_type == "autonomy.candidate.selected":
-                    return {
-                        "candidate_id": event.event_data.get("candidate_id"),
-                        "target_files": event.event_data.get("target_files"),
-                        "verification_command": event.event_data.get("verification_command"),
-                    }
-        return None
-
-    def _update_workspace_learning(
-        self,
-        *,
-        workspace_id: UUID | None,
-        provider: str,
-        model: str,
-        profile: str,
-        policy: dict[str, object],
-        runner: dict[str, object],
-        command_results: list[dict[str, object]],
-    ) -> None:
-        self._workspace_learning.record_success(
-            workspace_id=workspace_id,
-            provider=provider,
-            model=model,
-            profile=profile,
-            policy=policy,
-            runner=runner,
-            command_results=command_results,
-        )
-
-    def _update_workspace_learning_failure(
-        self,
-        *,
-        workspace_id: UUID | None,
-        reason: str,
-        category: str,
-        strategy: str,
-    ) -> None:
-        self._workspace_learning.record_failure(
-            workspace_id=workspace_id,
-            reason=reason,
-            category=category,
-            strategy=strategy,
-        )
+        return self._workspace_finalizer._selected_candidate_for_parent(parent_id)
 
     def _workspace_preflight(
         self,
@@ -1793,86 +1400,15 @@ class RunExecutionService:
         supported_os: list[str] | None = None,
         runner: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        if not root.exists() or not root.is_dir():
-            return preflight_failure(
-                reason="workspace root missing",
-                suggestions=["Ensure the workspace path exists before running Syncore."],
-            )
-        if not os.access(root, os.R_OK | os.W_OK):
-            return preflight_failure(
-                reason="workspace root not writable/readable",
-                suggestions=[
-                    "Check filesystem permissions for the workspace directory.",
-                    "Ensure the current user can read and write under the workspace root.",
-                ],
-            )
-        provider_name = (provider_hint or self._default_provider or "local_echo").strip().lower()
-        if provider_name and provider_name not in self._providers:
-            return preflight_failure(
-                reason=f"provider '{provider_name}' is not configured",
-                suggestions=[
-                    f"Configure credentials for provider '{provider_name}' in .env.",
-                    "Use a configured provider or fall back to local_echo for dry runs.",
-                ],
-            )
-        for env_name in required_env or []:
-            if env_name and not os.getenv(env_name):
-                return preflight_failure(
-                    reason=f"required env var '{env_name}' is missing",
-                    suggestions=[
-                        f"Export {env_name}=... in the shell before starting Syncore.",
-                        f"Add {env_name} to the workspace .env contract documentation.",
-                    ],
-                    missing_env=[env_name],
-                )
-        current_os = platform.system().lower()
-        supported = [item.lower() for item in (supported_os or []) if item]
-        if supported and current_os not in supported:
-            return preflight_failure(
-                reason=f"workspace contract does not support current os '{current_os}'",
-                suggestions=[
-                    "Run the workspace on a supported OS or update syncore.yaml environment.os.",
-                ],
-            )
-        for binary in required_binaries or []:
-            if binary and not self._binary_available(binary):
-                return preflight_failure(
-                    reason=f"required binary '{binary}' is missing from PATH",
-                    suggestions=binary_install_suggestions(binary),
-                    missing_binaries=[binary],
-                )
-        if runner:
-            runner_expected = string_list(runner.get("expected_files"))
-            if runner_expected and not any((root / rel).exists() for rel in runner_expected):
-                return preflight_failure(
-                    reason="workspace does not match the expected runner file layout",
-                    suggestions=[
-                        "Rescan the workspace and confirm the selected policy pack/runner.",
-                        "Add an explicit runner to syncore.yaml if auto-detection is wrong.",
-                    ],
-                    missing_files=runner_expected,
-                )
-            commands = dict(runner.get("commands") or {})
-            setup_commands = string_list(commands.get("setup"))
-            for command in setup_commands[:1]:
-                binary = command.split()[0] if command.split() else ""
-                if binary and not self._binary_available(binary):
-                    return preflight_failure(
-                        reason=f"runner setup binary '{binary}' is missing from PATH",
-                        suggestions=binary_install_suggestions(binary),
-                        missing_binaries=[binary],
-                    )
-        for rel in required_files or []:
-            if rel and not (root / rel).exists():
-                return preflight_failure(
-                    reason=f"required file '{rel}' is missing",
-                    suggestions=[
-                        f"Create or restore '{rel}' before autonomous execution.",
-                        "Update syncore.yaml if the contract no longer reflects the repo layout.",
-                    ],
-                    missing_files=[rel],
-                )
-        return {"status": "ok", "reason": "", "suggestions": []}
+        return self._workspace_preflight_service.verify(
+            root=root,
+            provider_hint=provider_hint,
+            required_env=required_env,
+            required_binaries=required_binaries,
+            required_files=required_files,
+            supported_os=supported_os,
+            runner=runner,
+        )
 
     def _binary_available(self, binary: str) -> bool:
         return self._resolve_binary(binary) is not None

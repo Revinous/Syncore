@@ -4,7 +4,9 @@ import json
 from dataclasses import dataclass
 from textwrap import shorten
 from typing import Iterator, Protocol
-from urllib import error, request
+from urllib import request
+
+from app.runs.provider_transport import ProviderHttpTransport
 
 
 @dataclass
@@ -119,7 +121,10 @@ class OpenAIChatCompletionsProvider:
     def __init__(self, *, api_key: str, base_url: str, timeout_seconds: int = 60) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._timeout_seconds = timeout_seconds
+        self._transport = ProviderHttpTransport(
+            provider="OpenAI",
+            timeout_seconds=timeout_seconds,
+        )
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -153,17 +158,16 @@ class OpenAIChatCompletionsProvider:
             temperature=temperature,
             stream=False,
         )
-        response = self._request_json(payload)
+        response = self._transport.request_json(self._request(payload))
         try:
-            choice = response["choices"][0]
-            message = choice["message"]["content"]
-        except (KeyError, IndexError, TypeError) as error_exc:
-            raise RuntimeError("Malformed OpenAI response payload") from error_exc
-
+            choices = response["choices"]
+            choice = choices[0] if isinstance(choices, list) else None
+            message = choice["message"]["content"] if isinstance(choice, dict) else None
+        except (KeyError, TypeError, IndexError) as exc:
+            raise RuntimeError("Malformed OpenAI response payload") from exc
         if not isinstance(message, str):
             message = str(message)
-
-        finish_reason = choice.get("finish_reason")
+        finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else None
         return ProviderResult(output_text=message, finish_reason=finish_reason)
 
     def stream(
@@ -183,39 +187,7 @@ class OpenAIChatCompletionsProvider:
             temperature=temperature,
             stream=True,
         )
-        req = request.Request(
-            url=f"{self._base_url}/v1/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-
-        try:
-            with request.urlopen(req, timeout=self._timeout_seconds) as response:
-                for raw_line in response:
-                    line = raw_line.decode("utf-8").strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    payload_line = line[6:]
-                    if payload_line == "[DONE]":
-                        break
-                    try:
-                        event = json.loads(payload_line)
-                        delta = event["choices"][0]["delta"].get("content")
-                    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-                        continue
-                    if delta:
-                        yield delta
-        except error.HTTPError as http_error:
-            body = http_error.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI provider HTTP {http_error.code}: {body}") from http_error
-        except error.URLError as url_error:
-            raise RuntimeError(
-                f"OpenAI provider connection failed: {url_error.reason}"
-            ) from url_error
+        yield from self._transport.stream_sse_json(self._request(payload), _openai_stream_chunk)
 
     def _build_payload(
         self,
@@ -239,8 +211,8 @@ class OpenAIChatCompletionsProvider:
             "stream": stream,
         }
 
-    def _request_json(self, payload: dict[str, object]) -> dict[str, object]:
-        req = request.Request(
+    def _request(self, payload: dict[str, object]) -> request.Request:
+        return request.Request(
             url=f"{self._base_url}/v1/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             headers={
@@ -249,20 +221,6 @@ class OpenAIChatCompletionsProvider:
             },
             method="POST",
         )
-        try:
-            with request.urlopen(req, timeout=self._timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
-                parsed = json.loads(raw)
-                if not isinstance(parsed, dict):
-                    raise RuntimeError("OpenAI response payload is not an object")
-                return parsed
-        except error.HTTPError as http_error:
-            body = http_error.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI provider HTTP {http_error.code}: {body}") from http_error
-        except error.URLError as url_error:
-            raise RuntimeError(
-                f"OpenAI provider connection failed: {url_error.reason}"
-            ) from url_error
 
 
 class AnthropicMessagesProvider:
@@ -279,7 +237,10 @@ class AnthropicMessagesProvider:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._api_version = api_version
-        self._timeout_seconds = timeout_seconds
+        self._transport = ProviderHttpTransport(
+            provider="Anthropic",
+            timeout_seconds=timeout_seconds,
+        )
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -313,25 +274,25 @@ class AnthropicMessagesProvider:
         }
         if system_prompt:
             payload["system"] = system_prompt
-
-        req = request.Request(
-            url=f"{self._base_url}/v1/messages",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "x-api-key": self._api_key,
-                "anthropic-version": self._api_version,
-                "content-type": "application/json",
-            },
-            method="POST",
+        parsed = self._transport.request_json(
+            request.Request(
+                url=f"{self._base_url}/v1/messages",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "x-api-key": self._api_key,
+                    "anthropic-version": self._api_version,
+                    "content-type": "application/json",
+                },
+                method="POST",
+            )
         )
-        parsed = _request_json(req, self._timeout_seconds, "Anthropic")
         try:
             content = parsed["content"]
-            text_parts = [p.get("text", "") for p in content if isinstance(p, dict)]
+            text_parts = [part.get("text", "") for part in content if isinstance(part, dict)]
             output = "\n".join([part for part in text_parts if part])
             finish_reason = parsed.get("stop_reason")
-        except (KeyError, TypeError) as error_exc:
-            raise RuntimeError("Malformed Anthropic response payload") from error_exc
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError("Malformed Anthropic response payload") from exc
         return ProviderResult(output_text=output, finish_reason=finish_reason)
 
     def stream(
@@ -359,7 +320,10 @@ class GeminiGenerateContentProvider:
     def __init__(self, *, api_key: str, base_url: str, timeout_seconds: int = 60) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
-        self._timeout_seconds = timeout_seconds
+        self._transport = ProviderHttpTransport(
+            provider="Gemini",
+            timeout_seconds=timeout_seconds,
+        )
 
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
@@ -385,9 +349,7 @@ class GeminiGenerateContentProvider:
         max_output_tokens: int,
         temperature: float,
     ) -> ProviderResult:
-        user_prompt = prompt
-        if system_prompt:
-            user_prompt = f"{system_prompt}\n\n{prompt}"
+        user_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
         payload: dict[str, object] = {
             "contents": [{"parts": [{"text": user_prompt}]}],
             "generationConfig": {
@@ -395,25 +357,22 @@ class GeminiGenerateContentProvider:
                 "maxOutputTokens": max_output_tokens,
             },
         }
-        req = request.Request(
-            url=(
-                f"{self._base_url}/v1beta/models/{model}:generateContent"
-                f"?key={self._api_key}"
-            ),
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"content-type": "application/json"},
-            method="POST",
+        parsed = self._transport.request_json(
+            request.Request(
+                url=f"{self._base_url}/v1beta/models/{model}:generateContent?key={self._api_key}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"content-type": "application/json"},
+                method="POST",
+            )
         )
-        parsed = _request_json(req, self._timeout_seconds, "Gemini")
         try:
             candidates = parsed["candidates"]
-            content = candidates[0]["content"]["parts"]
-            output = "\n".join(
-                [part.get("text", "") for part in content if isinstance(part, dict)]
-            )
-            finish_reason = candidates[0].get("finishReason")
-        except (KeyError, IndexError, TypeError) as error_exc:
-            raise RuntimeError("Malformed Gemini response payload") from error_exc
+            candidate = candidates[0] if isinstance(candidates, list) else None
+            content = candidate["content"]["parts"] if isinstance(candidate, dict) else []
+            output = "\n".join([part.get("text", "") for part in content if isinstance(part, dict)])
+            finish_reason = candidate.get("finishReason") if isinstance(candidate, dict) else None
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Malformed Gemini response payload") from exc
         return ProviderResult(output_text=output, finish_reason=finish_reason)
 
     def stream(
@@ -435,16 +394,18 @@ class GeminiGenerateContentProvider:
         yield result.output_text
 
 
-def _request_json(req: request.Request, timeout_seconds: int, label: str) -> dict[str, object]:
+def _openai_stream_chunk(event: dict[str, object]) -> str | None:
     try:
-        with request.urlopen(req, timeout=timeout_seconds) as response:
-            raw = response.read().decode("utf-8")
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
-                raise RuntimeError(f"{label} response payload is not an object")
-            return parsed
-    except error.HTTPError as http_error:
-        body = http_error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{label} provider HTTP {http_error.code}: {body}") from http_error
-    except error.URLError as url_error:
-        raise RuntimeError(f"{label} provider connection failed: {url_error.reason}") from url_error
+        choices = event["choices"]
+        if not isinstance(choices, list) or not choices:
+            return None
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            return None
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            return None
+        content = delta.get("content")
+        return content if isinstance(content, str) and content else None
+    except (KeyError, TypeError):
+        return None
