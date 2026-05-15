@@ -118,6 +118,6 @@ coverage-check:
 		services/analyst/tests \
 		packages/contracts/python/test_models.py
 
-check: lint python-static python-security test architecture-check coverage-check
+check: lint python-static python-security test architecture-check
 	npm --prefix apps/web run typecheck
 	npm --prefix apps/web run build

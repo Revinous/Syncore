@@ -3,10 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from textwrap import shorten
-from types import SimpleNamespace
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from packages.contracts.python.models import (
     BatonPacketCreate,
@@ -14,7 +11,6 @@ from packages.contracts.python.models import (
     ProjectEvent,
     ProjectEventCreate,
     RoutingRequest,
-    RunExecutionRequest,
     Task,
     TaskUpdate,
 )
@@ -26,8 +22,11 @@ from app.services.autonomy_candidates import CandidateStateService
 from app.services.autonomy_failure_handler import AutonomyFailureHandler
 from app.services.autonomy_failure_policy import FailurePolicy
 from app.services.autonomy_finalizer import TaskFinalizationService
+from app.services.autonomy_prompt_service import AutonomyPromptService
 from app.services.autonomy_quality_gate import AutonomyQualityGate
+from app.services.autonomy_recommendation_service import AutonomyRecommendationService
 from app.services.autonomy_runtime_selector import AutonomyRuntimeSelector
+from app.services.autonomy_stage_processor import AutonomyStageContext, AutonomyStageProcessor
 from app.services.autonomy_subtasks import SubtaskFanoutCoordinator
 from app.services.autonomy_task_gate import AutonomyTaskGate
 from app.services.autonomy_text_utils import (
@@ -139,6 +138,15 @@ class AutonomyService:
             parse_positive_int=lambda value: _parse_positive_int(value, default=3, maximum=8),
         )
         self._failure_policy = FailurePolicy(self._store)
+        self._recommendations = AutonomyRecommendationService(
+            store=self._store,
+            candidate_state=self._candidate_state,
+            parse_uuid=parse_uuid,
+            extract_first_match=extract_first_match,
+            extract_paths=extract_paths,
+            extract_list_items=extract_list_items,
+            string_list=string_list,
+        )
         self._quality_gate = AutonomyQualityGate(
             store=self._store,
             review_pass_keyword=self._review_pass_keyword,
@@ -148,7 +156,7 @@ class AutonomyService:
             low_info_threshold=self._low_info_threshold,
             string_list=string_list,
             latest_execute_plan=self._latest_execute_plan,
-            selected_candidate_state=self._selected_candidate_state,
+            selected_candidate_state=self._recommendations.selected_candidate_state,
             latest_event=self._latest_event,
         )
         self._task_gate = AutonomyTaskGate(
@@ -178,13 +186,23 @@ class AutonomyService:
             failure_taxonomy_v2_enabled=self._failure_taxonomy_v2_enabled,
             latest_execute_plan=self._latest_execute_plan,
         )
+        self._prompt_service = AutonomyPromptService(
+            store=self._store,
+            review_pass_keyword=self._review_pass_keyword,
+            strategy_guidance=self._strategy_guidance,
+            latest_execute_plan=self._latest_execute_plan,
+            recommendation_service=self._recommendations,
+            string_list=string_list,
+        )
         self._execute_plan_builder = ExecutePlanBuilder(
             store=self._store,
-            recommendation_context=lambda task, prefs: self._recommended_improvement_prompt_context(
-                task=task,
-                prefs=prefs,
+            recommendation_context=(
+                lambda task, prefs: self._recommendations.recommended_improvement_prompt_context(
+                    task=task,
+                    prefs=prefs,
+                )
             ),
-            recommendation_state=self._recommended_improvement_state,
+            recommendation_state=self._recommendations.recommended_improvement_state,
             extract_paths=extract_paths,
             extract_command_candidates=extract_command_candidates,
             extract_acceptance_checks=extract_acceptance_checks,
@@ -192,6 +210,39 @@ class AutonomyService:
             strategy_guidance=self._strategy_guidance,
             string_list=string_list,
             parse_uuid=parse_uuid,
+        )
+        self._stage_processor = AutonomyStageProcessor(
+            store=self._store,
+            run_execution_service=self._run_execution_service,
+            runtime_selector=self._runtime_selector,
+            quality_gate=self._quality_gate,
+            failure_handler=self._failure_handler,
+            task_gate=self._task_gate,
+            workspace_execution_enabled=self._workspace_execution_enabled,
+            workspace_execution_profile=self._workspace_execution_profile,
+            workspace_max_steps=self._workspace_max_steps,
+            retry_base_seconds=self._retry_base_seconds,
+            review_pass_keyword=self._review_pass_keyword,
+            low_info_stop_enabled=self._low_info_stop_enabled,
+            parse_positive_int=lambda value, default, maximum: _parse_positive_int(
+                value,
+                default=default,
+                maximum=maximum,
+            ),
+            parse_uuid=parse_uuid,
+            role_for_stage=self._prompt_service.role_for_stage,
+            prompt_for_stage=self._prompt_service.prompt_for_stage,
+            select_replan_strategy=self._select_replan_strategy,
+            save_snapshot=self._save_snapshot,
+            record_feedback=self._record_feedback,
+            persist_execute_plan=self._persist_execute_plan,
+            persist_stage_handoff_artifacts=self._persist_stage_handoff_artifacts,
+            spawn_subtasks_once=self._spawn_subtasks_once,
+            child_gate_status=self._child_gate_status,
+            finalize_task=self._finalize_task,
+            record_mutation_intent=self._record_mutation_intent,
+            missing_sdlc_topics=_missing_sdlc_topics,
+            extract_sdlc_checklist_status=_extract_sdlc_checklist_status,
         )
 
     @classmethod
@@ -391,589 +442,36 @@ class AutonomyService:
                 note=f"Stage '{next_stage}' is already running.",
             )
 
-        strategy = self._select_replan_strategy(
-            events=events,
-            stage=next_stage,
-            cycle=cycle,
-            execute_role=execute_role,
-        )
-        effective_prefs = dict(prefs)
-        if (
-            self._provider_switch_count(events)
-            >= self._runtime_selector.resolve_provider_switch_budget(prefs)
-        ):
-            effective_prefs["allow_cross_provider_switching"] = "false"
-        previous_provider, previous_model = self._runtime_selector.latest_run_provider_model(
-            task.id
-        )
-        provider = self._runtime_selector.resolve_provider(
-            stage=next_stage,
-            task=task,
-            prefs=effective_prefs,
-            previous_provider=previous_provider,
-        )
-        model = self._runtime_selector.resolve_model(
-            stage=next_stage,
-            task=task,
-            provider=provider,
-            prefs=effective_prefs,
-        )
         max_retries = self._resolve_max_retries(prefs)
-        prompt = self._prompt_for_stage(
-            stage=next_stage,
+        context = AutonomyStageContext(
             task=task,
-            prefs=effective_prefs,
-            cycle=cycle,
-            strategy=strategy,
-            enforce_sdlc=enforce_sdlc,
-        )
-        stage_role = self._role_for_stage(
+            prefs=prefs,
             stage=next_stage,
+            cycle=cycle,
             execute_role=execute_role,
-            strategy=strategy,
+            autonomy_mode=autonomy_mode,
+            requires_approval=requires_approval,
+            enforce_sdlc=enforce_sdlc,
+            max_cycles=self._max_cycles,
+            max_retries=max_retries,
         )
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="autonomy.stage.started",
-                event_data={
-                    "stage": next_stage,
-                    "cycle": cycle,
-                    "strategy": strategy,
-                },
-            )
-        )
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="autonomy.strategy.selected",
-                event_data={
-                    "stage": next_stage,
-                    "cycle": cycle,
-                    "strategy": strategy,
-                },
-            )
-        )
-        self._save_snapshot(
-            task_id=task_id,
-            cycle=cycle,
-            stage=next_stage,
-            state="started",
-            strategy=strategy,
-            quality_score=0,
-            details={
-                "role": stage_role,
-                "provider": provider or "",
-                "model": model,
-                "previous_provider": previous_provider or "",
-                "previous_model": previous_model or "",
-            },
-        )
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task_id,
-                event_type="model.routing.selected",
-                event_data={
-                    "stage": next_stage,
-                    "provider": provider or "",
-                    "target_model": model,
-                    "previous_provider": previous_provider or "",
-                    "previous_model": previous_model or "",
-                    "continuity_mode": prefs.get("maintain_context_continuity") or "true",
-                    "optimization_goal": prefs.get("model_optimization_goal") or "balanced",
-                },
-            )
-        )
-        if next_stage == "execute":
-            self._record_mutation_intent(task=task, prefs=prefs)
-
-        request = RunExecutionRequest(
-            task_id=task_id,
-            prompt=prompt,
-            target_agent=stage_role,
-            target_model=model,
-            provider=provider,
-            agent_role=stage_role,
-            token_budget=8_000,
-            max_output_tokens=1_200,
-            temperature=0.2,
-        )
-
         try:
-            if (
-                next_stage == "execute"
-                and task.workspace_id is not None
-                and self._workspace_execution_enabled
-                and (
-                    prefs.get("workspace_execution_enabled") is None
-                    or _as_bool(prefs.get("workspace_execution_enabled"))
-                )
-            ):
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.execution.mode",
-                        event_data={
-                            "mode": "workspace",
-                            "profile": str(
-                                prefs.get("workspace_policy_profile")
-                                or self._workspace_execution_profile
-                            ),
-                            "autonomy_mode": autonomy_mode,
-                        },
-                    )
-                )
-                workspace_result = self._run_execution_service.execute_workspace_loop(
-                    request,
-                    max_steps=_parse_positive_int(
-                        prefs.get("workspace_max_steps"),
-                        default=self._workspace_max_steps,
-                        maximum=8,
-                    ),
-                    policy_profile=str(
-                        prefs.get("workspace_policy_profile") or self._workspace_execution_profile
-                    ),
-                    require_approval=requires_approval,
-                    dry_run=autonomy_mode == "observe",
-                )
-                run = SimpleNamespace(
-                    run_id=None,
-                    provider=str(workspace_result.get("provider") or (provider or "")),
-                    target_model=str(workspace_result.get("target_model") or model),
-                    output_text=str(workspace_result.get("digest") or workspace_result),
-                )
-            else:
-                run = self._run_execution_service.execute(request)
-            self._runtime_selector.record_model_switch_if_needed(
-                task_id=task_id,
-                previous_provider=previous_provider,
-                previous_model=previous_model,
-                next_provider=run.provider,
-                next_model=run.target_model,
-                stage_role=stage_role,
-                continuity_enabled=(prefs.get("maintain_context_continuity") or "true").lower()
-                != "false",
-                context_bundle_id=str(getattr(run, "optimized_bundle_id", "") or ""),
+            stage_result = self._stage_processor.process(
+                context=context,
+                events=events,
             )
-            quality = self._quality_gate.stage_quality_gate(
-                stage=next_stage,
-                output_text=run.output_text,
-                strategy=strategy,
-                enforce_sdlc=enforce_sdlc,
-                sdlc_checklist_items=SDLC_CHECKLIST_ITEMS,
-                missing_sdlc_topics=_missing_sdlc_topics,
-                extract_sdlc_checklist_status=_extract_sdlc_checklist_status,
-            )
-            local_echo_mode = self._runtime_selector.is_local_echo_mode(
-                provider=run.provider,
-                model=run.target_model,
-            )
-            if (
-                local_echo_mode
-                and next_stage in {"execute", "review"}
-                and not bool(quality["passed"])
-            ):
-                quality = {
-                    "passed": True,
-                    "score": max(int(quality.get("score") or 0), 75),
-                    "reasons": ["local_echo_relaxed_gate"],
-                }
-            checklist_status = _extract_sdlc_checklist_status(run.output_text)
-            self._store.save_project_event(
-                ProjectEventCreate(
-                    task_id=task_id,
-                    event_type="autonomy.stage.completed",
-                    event_data={
-                        "stage": next_stage,
-                        "cycle": cycle,
-                        "run_id": str(run.run_id),
-                        "provider": run.provider,
-                        "target_model": run.target_model,
-                        "strategy": strategy,
-                    },
-                )
-            )
-            self._save_snapshot(
-                task_id=task_id,
-                cycle=cycle,
-                stage=next_stage,
-                state="completed",
-                strategy=strategy,
-                quality_score=quality["score"],
-                details={
-                    "quality_passed": quality["passed"],
-                    "quality_reasons": "; ".join(quality["reasons"]),
-                    "run_id": str(run.run_id),
-                    "sdlc_enforced": enforce_sdlc,
-                    "sdlc_checked_count": sum(1 for v in checklist_status.values() if v),
-                },
-            )
-            if not bool(quality["passed"]):
-                quality_reason = "; ".join(quality["reasons"])
-                quality_signature = self._quality_gate.quality_failure_signature(
-                    task_id=task_id,
-                    stage=next_stage,
-                    reason=quality_reason,
-                )
-                if (
-                    self._low_info_stop_enabled
-                    and self._quality_gate.is_low_information_quality_failure(
-                    task_id=task_id,
-                    stage=next_stage,
-                    signature=quality_signature,
-                    )
-                ):
-                    self._store.update_task(task_id, TaskUpdate(status="blocked"))
-                    self._store.save_project_event(
-                        ProjectEventCreate(
-                            task_id=task_id,
-                            event_type="autonomy.low_information_gain.detected",
-                            event_data={
-                                "stage": next_stage,
-                                "cycle": cycle,
-                                "failure_category": "quality_gate_failure",
-                                "signature": quality_signature,
-                            },
-                        )
-                    )
-                    self._store.save_project_event(
-                        ProjectEventCreate(
-                            task_id=task_id,
-                            event_type="autonomy.stopped.low_information_gain",
-                            event_data={
-                                "stage": next_stage,
-                                "cycle": cycle,
-                                "reason": quality_reason[:250],
-                            },
-                        )
-                    )
-                    return AutonomyResult(
-                        task_id=task_id,
-                        status="failed",
-                        run_id=run.run_id,
-                        note=(
-                            f"Stopped '{next_stage}' after repeated "
-                            "low-information quality failures."
-                        ),
-                    )
-                if cycle >= self._max_cycles:
-                    self._store.update_task(task_id, TaskUpdate(status="blocked"))
-                    self._store.save_project_event(
-                        ProjectEventCreate(
-                            task_id=task_id,
-                            event_type="autonomy.failed",
-                            event_data={
-                                "stage": next_stage,
-                                "cycle": cycle,
-                                "error": quality_reason,
-                            },
-                        )
-                    )
-                    return AutonomyResult(
-                        task_id=task_id,
-                        status="failed",
-                        run_id=run.run_id,
-                        note=f"Quality gate failed at '{next_stage}' and max cycles reached.",
-                    )
-                next_cycle = cycle + 1
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.quality.failed",
-                        event_data={
-                            "stage": next_stage,
-                            "cycle": cycle,
-                            "reason": quality_reason[:250],
-                            "next_cycle": next_cycle,
-                            "strategy": strategy,
-                            "quality_score": int(quality["score"]),
-                            "signature": quality_signature,
-                        },
-                    )
-                )
-                self._record_feedback(
-                    task_id=task_id,
-                    stage=next_stage,
-                    strategy=strategy,
-                    outcome="quality_failed",
-                )
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.cycle.started",
-                        event_data={"cycle": next_cycle, "mode": "replan"},
-                    )
-                )
-                return AutonomyResult(
-                    task_id=task_id,
-                    status="replanning",
-                    run_id=run.run_id,
-                    note=f"Quality gate failed at '{next_stage}'; moved to cycle {next_cycle}.",
-                )
-
-            if next_stage == "review":
-                review_failed = (
-                    self._review_pass_keyword
-                    and self._review_pass_keyword.upper() not in run.output_text.upper()
-                )
-                if local_echo_mode:
-                    review_failed = False
-                if review_failed:
-                    if cycle >= self._max_cycles:
-                        self._store.update_task(task_id, TaskUpdate(status="blocked"))
-                        self._store.save_project_event(
-                            ProjectEventCreate(
-                                task_id=task_id,
-                                event_type="autonomy.failed",
-                                event_data={
-                                    "stage": "review",
-                                    "cycle": cycle,
-                                    "error": (
-                                        "Review did not satisfy pass gate; max cycles reached."
-                                    ),
-                                },
-                            )
-                        )
-                        return AutonomyResult(
-                            task_id=task_id,
-                            status="failed",
-                            run_id=run.run_id,
-                            note="Review gate failed and max cycles reached.",
-                        )
-                    next_cycle = cycle + 1
-                    self._store.save_project_event(
-                        ProjectEventCreate(
-                            task_id=task_id,
-                            event_type="autonomy.review.failed",
-                            event_data={
-                                "cycle": cycle,
-                                "required_keyword": self._review_pass_keyword,
-                                "next_cycle": next_cycle,
-                            },
-                        )
-                    )
-                    self._store.save_project_event(
-                        ProjectEventCreate(
-                            task_id=task_id,
-                            event_type="autonomy.cycle.started",
-                            event_data={"cycle": next_cycle, "mode": "replan"},
-                        )
-                    )
-                    return AutonomyResult(
-                        task_id=task_id,
-                        status="replanning",
-                        run_id=run.run_id,
-                        note=f"Review gate failed; moved to cycle {next_cycle}.",
-                    )
-                self._record_feedback(
-                    task_id=task_id,
-                    stage=next_stage,
-                    strategy=strategy,
-                    outcome="success",
-                )
-                self._quality_gate.record_meaningful_change_assessment(
-                    task=task,
-                    prefs=prefs,
-                    review_output=run.output_text,
-                    parse_uuid=parse_uuid,
-                )
-                self._finalize_task(task_id)
-                return AutonomyResult(
-                    task_id=task_id,
-                    status="completed",
-                    run_id=run.run_id,
-                    note="Autonomy review passed and task finalized.",
-                )
-
-            self._record_feedback(
-                task_id=task_id,
-                stage=next_stage,
-                strategy=strategy,
-                outcome="success",
-            )
-            if next_stage == "plan":
-                self._persist_execute_plan(
-                    task=task,
-                    prefs=prefs,
-                    output_text=run.output_text,
-                    cycle=cycle,
-                    strategy=strategy,
-                )
-            self._persist_stage_handoff_artifacts(
-                task=task,
-                prefs=prefs,
-                stage=next_stage,
-                output_text=run.output_text,
-            )
-            if next_stage == "plan":
-                self._spawn_subtasks_once(task=task, prefs=prefs)
-                post_spawn_events = self._store.list_project_events(task_id=task.id, limit=500)
-                post_spawn_gate = self._child_gate_status(task=task, events=post_spawn_events)
-                if post_spawn_gate["mode"] == "awaiting_children":
-                    return AutonomyResult(
-                        task_id=task_id,
-                        status="in_progress",
-                        run_id=run.run_id,
-                        note=str(
-                            post_spawn_gate.get("note")
-                            or "Plan complete; child tasks spawned and running."
-                        ),
-                    )
-            return AutonomyResult(
-                task_id=task_id,
-                status="in_progress",
-                run_id=run.run_id,
-                note=f"Stage '{next_stage}' completed.",
-            )
-        except Exception as error:
-            attempt = self._task_gate.failed_attempts(events, next_stage, cycle=cycle) + 1
-            failure = self._failure_handler.classify_failure(
-                task_id=task_id,
-                stage=next_stage,
-                cycle=cycle,
+        except (LookupError, OSError, RuntimeError, ValueError) as error:
+            stage_result = self._stage_processor.handle_failure(
+                context=context,
+                events=events,
                 error=error,
             )
-            if self._low_info_stop_enabled and self._failure_handler.is_low_information_failure(
-                task_id=task_id,
-                stage=next_stage,
-                failure_signature=str(failure.get("signature") or ""),
-            ):
-                self._store.update_task(task_id, TaskUpdate(status="blocked"))
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.low_information_gain.detected",
-                        event_data={
-                            "stage": next_stage,
-                            "cycle": cycle,
-                            "failure_category": str(failure.get("category") or ""),
-                            "signature": str(failure.get("signature") or "")[:250],
-                        },
-                    )
-                )
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.stopped.low_information_gain",
-                        event_data={
-                            "stage": next_stage,
-                            "cycle": cycle,
-                            "reason": str(failure.get("reason") or str(error))[:250],
-                        },
-                    )
-                )
-                return AutonomyResult(
-                    task_id=task_id,
-                    status="failed",
-                    note=f"Stopped '{next_stage}' after repeated equivalent failures.",
-                )
-            self._store.save_project_event(
-                ProjectEventCreate(
-                    task_id=task_id,
-                    event_type="autonomy.stage.failed",
-                    event_data={
-                        "stage": next_stage,
-                        "cycle": cycle,
-                        "attempt": attempt,
-                        "error": str(error)[:250],
-                        "strategy": strategy,
-                        "failure_category": str(failure.get("category") or ""),
-                        "retry_allowed": bool(failure.get("retry_allowed")),
-                        "should_replan": bool(failure.get("should_replan")),
-                        "recommended_strategy": str(failure.get("strategy") or "")[:120],
-                        "signature": str(failure.get("signature") or "")[:250],
-                    },
-                )
-            )
-            self._save_snapshot(
-                task_id=task_id,
-                cycle=cycle,
-                stage=next_stage,
-                state="failed",
-                strategy=strategy,
-                quality_score=0,
-                details={
-                    "attempt": attempt,
-                    "error": str(error)[:250],
-                    "failure_category": str(failure.get("category") or ""),
-                    "recommended_strategy": str(failure.get("strategy") or ""),
-                    "signature": str(failure.get("signature") or "")[:250],
-                },
-            )
-
-            if bool(failure.get("retry_allowed")) and attempt <= max_retries:
-                delay_seconds = self._retry_base_seconds * (2 ** (attempt - 1))
-                retry_at = now_epoch + delay_seconds
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.retry.scheduled",
-                        event_data={
-                            "stage": next_stage,
-                            "cycle": cycle,
-                            "attempt": attempt,
-                            "retry_at_epoch": retry_at,
-                            "failure_category": str(failure.get("category") or ""),
-                        },
-                    )
-                )
-                return AutonomyResult(
-                    task_id=task_id,
-                    status="retry_scheduled",
-                    note=(
-                        f"Stage '{next_stage}' failed (attempt {attempt}/{max_retries}); "
-                        f"retry scheduled in {round(delay_seconds, 2)}s."
-                    ),
-                )
-            if bool(failure.get("should_replan")) and cycle < self._max_cycles:
-                next_cycle = cycle + 1
-                self._record_feedback(
-                    task_id=task_id,
-                    stage=next_stage,
-                    strategy=strategy,
-                    outcome="replan_required",
-                )
-                self._store.save_project_event(
-                    ProjectEventCreate(
-                        task_id=task_id,
-                        event_type="autonomy.cycle.started",
-                        event_data={
-                            "cycle": next_cycle,
-                            "mode": "replan",
-                            "failure_category": str(failure.get("category") or ""),
-                        },
-                    )
-                )
-                return AutonomyResult(
-                    task_id=task_id,
-                    status="replanning",
-                    note=f"Stage '{next_stage}' failed; replan started for cycle {next_cycle}.",
-                )
-            self._record_feedback(
-                task_id=task_id,
-                stage=next_stage,
-                strategy=strategy,
-                outcome="failed",
-            )
-
-            self._store.update_task(task_id, TaskUpdate(status="blocked"))
-            self._store.save_project_event(
-                ProjectEventCreate(
-                    task_id=task_id,
-                    event_type="autonomy.failed",
-                    event_data={
-                        "stage": next_stage,
-                        "cycle": cycle,
-                        "attempt": attempt,
-                        "error": str(error)[:250],
-                    },
-                )
-            )
-            return AutonomyResult(
-                task_id=task_id,
-                status="failed",
-                note=f"Stage '{next_stage}' exceeded retry budget and blocked the task.",
-            )
+        return AutonomyResult(
+            task_id=task_id,
+            status=str(stage_result.get("status") or "failed"),
+            run_id=stage_result.get("run_id"),
+            note=str(stage_result.get("note") or ""),
+        )
 
     def set_approval(
         self,
@@ -1075,26 +573,7 @@ class AutonomyService:
             return merged
         return {}
 
-    def _next_stage(self, events: list[ProjectEvent], *, cycle: int) -> str | None:
-        return self._task_gate.next_stage(events, cycle=cycle, stages=AUTONOMY_STAGES)
-
-    def _scheduled_retry_epoch(
-        self,
-        events: list[ProjectEvent],
-        stage: str,
-        *,
-        cycle: int,
-    ) -> float | None:
-        return self._task_gate.scheduled_retry_epoch(events, stage, cycle=cycle)
-
-    def _stage_inflight(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> bool:
-        return self._task_gate.stage_inflight(events, stage, cycle=cycle)
-
-    def _failed_attempts(self, events: list[ProjectEvent], stage: str, *, cycle: int) -> int:
-        return self._task_gate.failed_attempts(events, stage, cycle=cycle)
-
     def _resolve_provider(
-
         self,
         *,
         stage: str,
@@ -1109,115 +588,6 @@ class AutonomyService:
             previous_provider=previous_provider,
         )
 
-    def _resolve_model(
-        self,
-        *,
-        stage: str,
-        task: Task,
-        provider: str | None,
-        prefs: dict[str, str],
-    ) -> str:
-        return self._runtime_selector.resolve_model(
-            stage=stage,
-            task=task,
-            provider=provider,
-            prefs=prefs,
-        )
-
-    def _model_policy(self, prefs: dict[str, str]) -> dict[str, object]:
-        return self._runtime_selector.model_policy(prefs)
-
-    def _resolve_autonomy_mode(self, *, task: Task, prefs: dict[str, str]) -> tuple[str, str]:
-        return self._runtime_selector.resolve_autonomy_mode(task=task, prefs=prefs)
-
-    def _workspace_learning_value(self, *, task: Task, key: str) -> str:
-        return self._runtime_selector.workspace_learning_value(task=task, key=key)
-
-    def _failure_aware_provider_choice(
-        self,
-        *,
-        task: Task,
-        preferred: str,
-        available: list[str] | None = None,
-    ) -> str:
-        return self._runtime_selector.failure_aware_provider_choice(
-            task=task,
-            preferred=preferred,
-            available=available,
-        )
-
-    def _recent_provider_failures(self, task_id: UUID) -> dict[str, int]:
-        return self._runtime_selector.recent_provider_failures(task_id)
-
-    def _provider_score(
-        self,
-        *,
-        stage: str,
-        task: Task,
-        provider: str,
-        capability,
-        policy: dict[str, object],
-        prefs: dict[str, str],
-        previous_provider: str | None,
-        explicit_stage: str,
-        explicit_default: str,
-        recent_failures: dict[str, int],
-    ) -> float:
-        return self._runtime_selector.provider_score(
-            stage=stage,
-            task=task,
-            provider=provider,
-            capability=capability,
-            policy=policy,
-            prefs=prefs,
-            previous_provider=previous_provider,
-            explicit_stage=explicit_stage,
-            explicit_default=explicit_default,
-            recent_failures=recent_failures,
-        )
-
-    def _stage_provider_order(
-        self,
-        *,
-        stage: str,
-        available: list[str],
-        prefs: dict[str, str] | None = None,
-    ) -> list[str]:
-        return self._runtime_selector.stage_provider_order(
-            stage=stage,
-            available=available,
-            prefs=prefs,
-        )
-
-    def _latest_run_provider_model(self, task_id: UUID) -> tuple[str | None, str | None]:
-        return self._runtime_selector.latest_run_provider_model(task_id)
-
-    def _record_model_switch_if_needed(
-        self,
-        *,
-        task_id: UUID,
-        previous_provider: str | None,
-        previous_model: str | None,
-        next_provider: str,
-        next_model: str,
-        stage_role: str,
-        continuity_enabled: bool,
-        context_bundle_id: str,
-    ) -> None:
-        self._runtime_selector.record_model_switch_if_needed(
-            task_id=task_id,
-            previous_provider=previous_provider,
-            previous_model=previous_model,
-            next_provider=next_provider,
-            next_model=next_model,
-            stage_role=stage_role,
-            continuity_enabled=continuity_enabled,
-            context_bundle_id=context_bundle_id,
-        )
-
-    def _is_local_echo_mode(self, *, provider: str | None, model: str | None) -> bool:
-        return self._runtime_selector.is_local_echo_mode(provider=provider, model=model)
-
     def _resolve_max_retries(
 self, prefs: dict[str, str]) -> int:
         raw = prefs.get("autonomy_max_retries")
@@ -1229,228 +599,8 @@ self, prefs: dict[str, str]) -> int:
             return self._default_max_retries
         return max(parsed, 0)
 
-    def _resolve_provider_switch_budget(self, prefs: dict[str, str]) -> int:
-        return self._runtime_selector.resolve_provider_switch_budget(prefs)
-
     def _current_cycle(self, events: list[ProjectEvent]) -> int:
         return self._task_gate.current_cycle(events)
-
-    def _total_step_events(self, events: list[ProjectEvent]) -> int:
-        return self._task_gate.total_step_events(events)
-
-    def _provider_switch_count(
-self, events: list[ProjectEvent]) -> int:
-        count = 0
-        for event in events:
-            if event.event_type != "model.switch.completed":
-                continue
-            from_provider = str(event.event_data.get("from_provider") or "").strip().lower()
-            to_provider = str(event.event_data.get("to_provider") or "").strip().lower()
-            if from_provider and to_provider and from_provider != to_provider:
-                count += 1
-        return count
-
-    def _approval_gate_state(
-        self,
-        *,
-        events: list[ProjectEvent],
-        stage: str,
-        requires_approval: bool,
-    ) -> str:
-        return self._task_gate.approval_gate_state(
-            events=events,
-            stage=stage,
-            requires_approval=requires_approval,
-        )
-
-    def _ensure_approval_requested(self, *, task_id: UUID, events: list[ProjectEvent]) -> None:
-        self._task_gate.ensure_approval_requested(task_id=task_id, events=events)
-
-    def _prompt_for_stage(
-
-        self,
-        *,
-        stage: str,
-        task: Task,
-        prefs: dict[str, str],
-        cycle: int,
-        strategy: str,
-        enforce_sdlc: bool,
-    ) -> str:
-        guidance = self._strategy_guidance(strategy)
-        sdlc_instruction = ""
-        if enforce_sdlc:
-            sdlc_instruction = (
-                "\nSDLC enforcement is ON. Use this exact checklist and mark status explicitly:\n"
-                "- [ ] requirements\n"
-                "- [ ] design\n"
-                "- [ ] implementation\n"
-                "- [ ] tests\n"
-                "- [ ] docs\n"
-                "- [ ] release\n"
-                "Use [x] only when done with concrete evidence."
-            )
-        if stage == "plan":
-            mode = "Replan" if cycle > 1 else "Plan"
-            return (
-                f"You are Syncore planner ({mode}).\n"
-                f"Task title: {task.title}\n"
-                f"Task type: {task.task_type}\n"
-                f"Complexity: {task.complexity}\n"
-                f"Strategy: {strategy}.\n"
-                f"Guidance: {guidance}\n"
-                f"{sdlc_instruction}\n"
-                "Produce a short implementation plan with clear first action, risks, checkpoints, "
-                "target files, verification commands, acceptance checks, and fallback strategy."
-            )
-        if stage == "execute":
-            preferred = prefs.get("execution_prompt", "").strip()
-            recommendation_context = self._selected_candidate_prompt_context(
-                task=task,
-                prefs=prefs,
-            )
-            execute_plan_context = self._execute_plan_prompt_context(task)
-            analysis_context = self._workspace_analysis_prompt_context(task)
-            if preferred:
-                suffix_parts = []
-                if analysis_context:
-                    suffix_parts.append(analysis_context)
-                if execute_plan_context:
-                    suffix_parts.append(execute_plan_context)
-                if recommendation_context:
-                    suffix_parts.append(recommendation_context)
-                suffix_parts.append(f"Strategy: {strategy}. Guidance: {guidance}")
-                return f"{preferred}\n\n" + "\n\n".join(suffix_parts)
-            if recommendation_context:
-                return (
-                    "You are the Syncore implementation worker.\n"
-                    f"Task title: {task.title}\n"
-                    f"Task type: {task.task_type}\n"
-                    f"Complexity: {task.complexity}\n"
-                    f"{execute_plan_context}\n\n"
-                    f"{recommendation_context}\n\n"
-                    f"Strategy: {strategy}. Guidance: {guidance}\n"
-                    "Apply the recommended improvement directly. Make the smallest safe change, "
-                    "then verify it with the recommended command or the repo runbook."
-                )
-            if execute_plan_context:
-                return (
-                    "You are the Syncore implementation worker.\n"
-                    f"Task title: {task.title}\n"
-                    f"Task type: {task.task_type}\n"
-                    f"Complexity: {task.complexity}\n"
-                    f"{execute_plan_context}\n\n"
-                    f"Strategy: {strategy}. Guidance: {guidance}\n"
-                    "Execute only against this plan. Do not broaden scope. If the plan is invalid, "
-                    "return the precise blocker and stop."
-                )
-            if analysis_context:
-                return (
-                    "You are the Syncore repository analyst.\n"
-                    f"Task title: {task.title}\n"
-                    f"Task type: {task.task_type}\n"
-                    f"Complexity: {task.complexity}\n"
-                    f"{analysis_context}\n\n"
-                    f"Strategy: {strategy}. Guidance: {guidance}\n"
-                    "Choose exactly one safe, high-confidence improvement. "
-                    "Return: candidate improvement, required implementation, target files, "
-                    "risks, and verification command."
-                )
-            return _default_prompt(task, strategy=strategy, guidance=guidance)
-        return (
-            "You are Syncore reviewer.\n"
-            f"Review task outcome for: {task.title}\n"
-            f"Strategy used: {strategy}. Guidance: {guidance}\n"
-            f"{sdlc_instruction}\n"
-            f"If acceptable, include exact token: {self._review_pass_keyword}\n"
-            "Return pass/fail with key risks, coverage notes, next verification step, and "
-            "include exact marker `meaningful_change=true` or `meaningful_change=false`."
-        )
-
-    def _role_for_stage(self, *, stage: str, execute_role: str, strategy: str) -> str:
-        if stage == "plan":
-            return "planner"
-        if stage == "execute":
-            if strategy == "switch_execution_role":
-                return "analyst" if execute_role == "coder" else "coder"
-            return _normalize_agent_role(execute_role)
-        return "reviewer"
-
-    def _stage_quality_gate(
-        self,
-        *,
-        stage: str,
-        output_text: str,
-        strategy: str,
-        enforce_sdlc: bool,
-    ) -> dict[str, object]:
-        text = (output_text or "").strip()
-        minimum = self._execute_min_chars
-        if stage == "plan":
-            minimum = self._plan_min_chars
-        elif stage == "review":
-            minimum = self._review_min_chars
-
-        reasons: list[str] = []
-        score = 100
-        if len(text) < minimum:
-            reasons.append(f"Too short ({len(text)} < {minimum}).")
-            score -= 45
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if stage == "plan":
-            has_step_shape = any(
-                line.startswith(("-", "*")) or line[:2].isdigit() for line in lines
-            )
-            if not has_step_shape:
-                reasons.append("Plan missing explicit step list.")
-                score -= 20
-            if "risk" not in text.lower():
-                reasons.append("Plan missing risk notes.")
-                score -= 10
-            if enforce_sdlc:
-                missing = _missing_sdlc_topics(text)
-                if missing:
-                    reasons.append(f"Plan missing SDLC coverage for: {', '.join(missing)}.")
-                    score -= min(10 + (len(missing) * 5), 35)
-        if stage == "execute":
-            has_actionable = (
-                ("```" in text) or ("$ " in text) or ("def " in text) or ("class " in text)
-            )
-            if not has_actionable:
-                reasons.append("Execute output missing concrete code/command artifacts.")
-                score -= 25
-            if enforce_sdlc and "test" not in text.lower() and "verify" not in text.lower():
-                reasons.append("Execute output missing test/verification evidence.")
-                score -= 20
-        if stage == "review":
-            lowered = text.lower()
-            if "pass" not in lowered and "fail" not in lowered:
-                reasons.append("Review missing explicit pass/fail.")
-                score -= 20
-            if "risk" not in lowered:
-                reasons.append("Review missing risk analysis.")
-                score -= 10
-            if "meaningful_change=true" not in lowered and "meaningful_change=false" not in lowered:
-                reasons.append("Review missing meaningful_change marker.")
-                score -= 10
-            if self._review_pass_keyword and self._review_pass_keyword.upper() not in text.upper():
-                reasons.append(f"Missing review pass keyword '{self._review_pass_keyword}'.")
-                score -= 40
-            if enforce_sdlc:
-                checklist_status = _extract_sdlc_checklist_status(text)
-                missing_checks = [
-                    item for item in SDLC_CHECKLIST_ITEMS if not checklist_status.get(item, False)
-                ]
-                if missing_checks:
-                    reasons.append(f"Review checklist incomplete: {', '.join(missing_checks)}.")
-                    score -= min(12 + (len(missing_checks) * 4), 45)
-        if strategy == "raise_verification":
-            if "test" not in text.lower() and "verify" not in text.lower():
-                reasons.append("Verification-focused strategy requires tests/verification notes.")
-                score -= 15
-
-        score = max(score, 0)
-        return {"passed": score >= 70, "score": score, "reasons": reasons}
 
     def _should_enforce_sdlc(self, *, task: Task, prefs: dict[str, str]) -> bool:
         if _as_bool(prefs.get("sdlc_enforce")):
@@ -1480,11 +630,89 @@ self, events: list[ProjectEvent]) -> int:
             execute_role=execute_role,
         )
 
-    def _best_strategy_from_feedback(self, candidates: list[str]) -> str:
-        return self._failure_policy.best_strategy_from_feedback(candidates)
-
     def _strategy_guidance(self, strategy: str) -> str:
         return self._failure_policy.strategy_guidance(strategy)
+
+    # Compatibility wrappers kept for tests and narrow internal seams while the
+    # orchestration services are being decomposed.
+    def _role_for_stage(self, *, stage: str, execute_role: str, strategy: str) -> str:
+        return self._prompt_service.role_for_stage(
+            stage=stage,
+            execute_role=execute_role,
+            strategy=strategy,
+        )
+
+    def _prompt_for_stage(
+        self,
+        *,
+        stage: str,
+        task: Task,
+        prefs: dict[str, str],
+        cycle: int,
+        strategy: str,
+        enforce_sdlc: bool,
+    ) -> str:
+        return self._prompt_service.prompt_for_stage(
+            stage=stage,
+            task=task,
+            prefs=prefs,
+            cycle=cycle,
+            strategy=strategy,
+            enforce_sdlc=enforce_sdlc,
+        )
+
+    def _selected_candidate_prompt_context(self, *, task: Task, prefs: dict[str, str]) -> str:
+        return self._recommendations.selected_candidate_prompt_context(task=task, prefs=prefs)
+
+    def _recommended_improvement_prompt_context(
+        self,
+        *,
+        task: Task,
+        prefs: dict[str, str],
+    ) -> str:
+        return self._recommendations.recommended_improvement_prompt_context(
+            task=task,
+            prefs=prefs,
+        )
+
+    def _selected_candidate_state(self, parent_id: UUID) -> dict[str, object]:
+        return self._recommendations.selected_candidate_state(parent_id)
+
+    def _recommended_improvement_state(self, parent_id: UUID) -> dict[str, object]:
+        return self._recommendations.recommended_improvement_state(parent_id)
+
+    def _extract_recommended_improvement(self, output_text: str) -> dict[str, object]:
+        return self._recommendations.extract_recommended_improvement(output_text)
+
+    def _build_candidate_artifact(
+        self,
+        *,
+        task: Task,
+        recommendation: dict[str, object],
+    ) -> dict[str, object]:
+        return self._recommendations.build_candidate_artifact(
+            task=task,
+            recommendation=recommendation,
+        )
+
+    def _recommendation_needs_workspace_fallback(
+        self,
+        recommendation: dict[str, object],
+    ) -> bool:
+        return self._recommendations.recommendation_needs_workspace_fallback(recommendation)
+
+    def _fallback_recommended_improvement(
+        self,
+        task: Task,
+        recommendation: dict[str, object],
+    ) -> dict[str, object]:
+        return self._recommendations.fallback_recommended_improvement(
+            task,
+            recommendation,
+        )
+
+    def _workspace_analysis_prompt_context(self, task: Task) -> str:
+        return self._recommendations.workspace_analysis_prompt_context(task)
 
     def _record_feedback(self, *, task_id: UUID, stage: str, strategy: str, outcome: str) -> None:
         self._store.save_project_event(
@@ -1643,45 +871,9 @@ self, events: list[ProjectEvent]) -> int:
         objective = str(plan.get("objective") or "").strip()
         return bool(objective and (verification_commands or target_files or actions))
 
-    def _execute_plan_prompt_context(self, task: Task) -> str:
-        plan = self._latest_execute_plan(task.id)
-        if plan is None:
-            return ""
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task.id,
-                event_type="autonomy.execute_plan.reused",
-                event_data={
-                    "cycle": int(plan.get("cycle") or 1),
-                    "signature": str(plan.get("signature") or "")[:120],
-                },
-            )
-        )
-        lines = ["Execute plan:"]
-        lines.append(f"- Objective: {str(plan.get('objective') or '').strip()}")
-        target_files = string_list(plan.get("target_files"))
-        actions = string_list(plan.get("actions"))
-        if actions:
-            lines.append(f"- Actions: {'; '.join(actions[:6])}")
-        if target_files:
-            lines.append(f"- Target files: {', '.join(target_files[:12])}")
-        verification_commands = string_list(plan.get("verification_commands"))
-        if verification_commands:
-            lines.append(f"- Verification commands: {', '.join(verification_commands[:6])}")
-        acceptance_checks = string_list(plan.get("acceptance_checks"))
-        if acceptance_checks:
-            lines.append(f"- Acceptance checks: {'; '.join(acceptance_checks[:6])}")
-        fallback = str(plan.get("fallback_strategy") or "").strip()
-        if fallback:
-            lines.append(f"- Fallback strategy: {fallback}")
-        risk_level = str(plan.get("risk_level") or "").strip()
-        if risk_level:
-            lines.append(f"- Risk level: {risk_level}")
-        return "\n".join(lines)
-
     def _record_mutation_intent(self, *, task: Task, prefs: dict[str, str]) -> None:
         plan = self._latest_execute_plan(task.id) or {}
-        candidate_state = self._selected_candidate_state(
+        candidate_state = self._recommendations.selected_candidate_state(
             parse_uuid(prefs.get("parent_task_id")) or task.id
         )
         target_files = string_list(plan.get("target_files"))
@@ -1706,35 +898,6 @@ self, events: list[ProjectEvent]) -> int:
                     "target_files": ", ".join(target_files[:10])[:250],
                     "verification_commands": ", ".join(verification_commands[:6])[:250],
                 },
-            )
-        )
-
-    def _record_meaningful_change_assessment(
-        self,
-        *,
-        task: Task,
-        prefs: dict[str, str],
-        review_output: str,
-    ) -> None:
-        lowered = review_output.lower()
-        marker = "unknown"
-        if "meaningful_change=true" in lowered:
-            marker = "true"
-        elif "meaningful_change=false" in lowered:
-            marker = "false"
-        evidence = "review_output"
-        if marker == "unknown":
-            parent_id = parse_uuid(prefs.get("parent_task_id"))
-            if parent_id is not None:
-                candidate_state = self._selected_candidate_state(parent_id)
-                if candidate_state.get("status") == "ready":
-                    marker = "true"
-                    evidence = "selected_candidate"
-        self._store.save_project_event(
-            ProjectEventCreate(
-                task_id=task.id,
-                event_type="autonomy.meaningful_change.assessed",
-                event_data={"meaningful_change": marker, "evidence": evidence},
             )
         )
 
@@ -1792,12 +955,15 @@ self, events: list[ProjectEvent]) -> int:
             return
         if task.task_type != "analysis":
             return
-        recommendation = self._extract_recommended_improvement(output_text)
-        if self._recommendation_needs_workspace_fallback(recommendation):
-            recommendation = self._fallback_recommended_improvement(task, recommendation)
+        recommendation = self._recommendations.extract_recommended_improvement(output_text)
+        if self._recommendations.recommendation_needs_workspace_fallback(recommendation):
+            recommendation = self._recommendations.fallback_recommended_improvement(
+                task,
+                recommendation,
+            )
         if not recommendation["summary"] and not recommendation["action"]:
             return
-        candidate = self._build_candidate_artifact(
+        candidate = self._recommendations.build_candidate_artifact(
             task=task,
             recommendation=recommendation,
         )
@@ -1895,7 +1061,7 @@ self, events: list[ProjectEvent]) -> int:
         parent_id = parse_uuid(prefs.get("parent_task_id"))
         if parent_id is None:
             return None
-        sibling_state = self._recommended_improvement_state(parent_id)
+        sibling_state = self._recommendations.recommended_improvement_state(parent_id)
         self._store.save_project_event(
             ProjectEventCreate(
                 task_id=task.id,
@@ -1936,249 +1102,6 @@ self, events: list[ProjectEvent]) -> int:
             )
         return None
 
-    def _selected_candidate_prompt_context(
-        self,
-        *,
-        task: Task,
-        prefs: dict[str, str],
-    ) -> str:
-        return self._candidate_state.selected_candidate_prompt_context(
-            task=task,
-            prefs=prefs,
-        )
-
-    def _recommended_improvement_prompt_context(
-        self,
-        *,
-        task: Task,
-        prefs: dict[str, str],
-    ) -> str:
-        return self._selected_candidate_prompt_context(task=task, prefs=prefs)
-
-    def _selected_candidate_state(self, parent_id: UUID) -> dict[str, object]:
-        return self._candidate_state.selected_candidate_state(parent_id)
-
-    def _recommended_improvement_state(self, parent_id: UUID) -> dict[str, object]:
-        return self._candidate_state.recommended_improvement_state(parent_id)
-
-    def _spawned_child_ids(self, parent_id: UUID) -> list[UUID]:
-        return self._candidate_state.spawned_child_ids(parent_id)
-
-    def _extract_recommended_improvement(self, output_text: str) -> dict[str, object]:
-        text = (output_text or "").strip()
-        summary = extract_first_match(
-            text,
-            [
-                r"(?im)^(?:candidate improvement|recommended improvement|improvement)\s*:\s*(.+)$",
-                r"(?im)^(?:summary|change summary)\s*:\s*(.+)$",
-            ],
-        )
-        action = extract_first_match(
-            text,
-            [
-                r"(?im)^(?:next best action|required implementation|implementation)\s*:\s*(.+)$",
-                r"(?im)^(?:action|do this)\s*:\s*(.+)$",
-            ],
-        )
-        verification = extract_first_match(
-            text,
-            [
-                r"(?im)^(?:verification command|verify(?: with)?|test command)\s*:\s*(.+)$",
-            ],
-        )
-        target_files = extract_paths(text)
-        risks = extract_list_items(
-            text,
-            headers=("risk", "risks", "constraints"),
-        )
-        if not summary:
-            summary = shorten(" ".join(text.split()), width=220, placeholder=" ...")
-        if not action:
-            action = summary
-        return {
-            "summary": summary.strip(),
-            "action": action.strip(),
-            "verification": verification.strip(),
-            "target_files": target_files,
-            "risks": risks,
-        }
-
-    def _build_candidate_artifact(
-        self,
-        *,
-        task: Task,
-        recommendation: dict[str, object],
-    ) -> dict[str, object]:
-        summary = str(recommendation.get("summary") or "").strip().lower()
-        target_files = string_list(recommendation.get("target_files"))
-        verification = str(recommendation.get("verification") or "").strip()
-        candidate_type = "config_contract"
-        if any(path.endswith((".py", ".ts", ".tsx", ".js", ".rs", ".go")) for path in target_files):
-            candidate_type = "code_fix"
-        elif any("test" in path.lower() for path in target_files):
-            candidate_type = "test_hardening"
-        elif any("readme" in path.lower() or path.endswith(".md") for path in target_files):
-            candidate_type = "docs"
-        if "syncore.yaml" in summary:
-            candidate_type = "config_contract"
-        evidence_kind = "repo_scan"
-        if verification:
-            evidence_kind = "repo_scan+verification"
-        impact = 3 if candidate_type in {"code_fix", "test_hardening"} else 2
-        effort = 1 if len(target_files) <= 2 else 2
-        confidence = 4 if verification else 3
-        risk_level = "low"
-        if candidate_type == "code_fix":
-            risk_level = "medium"
-        return {
-            "candidate_id": uuid4(),
-            "candidate_type": candidate_type,
-            "confidence": confidence,
-            "impact": impact,
-            "effort": effort,
-            "risk_level": risk_level,
-            "evidence_kind": evidence_kind,
-            "task_type": task.task_type,
-        }
-
-    def _recommendation_needs_workspace_fallback(self, recommendation: dict[str, object]) -> bool:
-        text = " ".join(
-            [
-                str(recommendation.get("summary") or ""),
-                str(recommendation.get("action") or ""),
-            ]
-        ).lower()
-        generic_markers = (
-            "don't yet have repository contents",
-            "do not have repository contents",
-            "please provide",
-            "need more context",
-            "artifact/context reference",
-        )
-        return any(marker in text for marker in generic_markers)
-
-    def _fallback_recommended_improvement(
-        self,
-        task: Task,
-        recommendation: dict[str, object],
-    ) -> dict[str, object]:
-        if task.workspace_id is None:
-            return recommendation
-        workspace = self._store.get_workspace(task.workspace_id)
-        if workspace is None:
-            return recommendation
-        metadata = dict(workspace.metadata or {})
-        runbook = dict(metadata.get("workspace_runbook") or {})
-        root = Path(workspace.root_path).resolve()
-        verification = (
-            string_list(runbook.get("test_commands"))[:1]
-            or string_list(runbook.get("runbook_commands"))[:1]
-        )
-        verify_cmd = verification[0] if verification else ""
-        syncore_contract = root / "syncore.yaml"
-        if not syncore_contract.exists():
-            return {
-                "summary": "Add a repo-specific syncore.yaml contract for this repository.",
-                "action": (
-                    "Create syncore.yaml with the detected test, build, and lint commands so "
-                    "future Syncore runs can inspect and verify this repo deterministically."
-                ),
-                "verification": verify_cmd,
-                "target_files": ["syncore.yaml"],
-                "risks": ["Keep the contract additive and match real repo commands exactly."],
-            }
-        return {
-            "summary": (
-                "Tighten the existing syncore.yaml contract using the current workspace scan."
-            ),
-            "action": (
-                "Update syncore.yaml so the recorded commands and important files match the repo's "
-                "actual test and verification flow."
-            ),
-            "verification": verify_cmd,
-            "target_files": ["syncore.yaml"],
-            "risks": ["Keep edits limited to syncore.yaml and preserve working repo commands."],
-        }
-
-    def _workspace_analysis_prompt_context(self, task: Task) -> str:
-        if task.task_type != "analysis" or task.workspace_id is None:
-            return ""
-        workspace = self._store.get_workspace(task.workspace_id)
-        if workspace is None:
-            return ""
-        metadata = dict(workspace.metadata or {})
-        runbook = dict(metadata.get("workspace_runbook") or {})
-        root = Path(workspace.root_path).resolve()
-        summary_lines = ["Workspace scan summary:"]
-        for label, key in [
-            ("Languages", "languages"),
-            ("Frameworks", "frameworks"),
-            ("Package managers", "package_managers"),
-            ("Important files", "important_files"),
-            ("Docs", "docs"),
-        ]:
-            values = string_list(metadata.get(key))
-            if values:
-                summary_lines.append(f"- {label}: {', '.join(values[:8])}")
-        test_commands = string_list(runbook.get("test_commands"))
-        if test_commands:
-            summary_lines.append(f"- Test commands: {', '.join(test_commands[:4])}")
-        root_files = self._workspace_root_files(root)
-        if root_files:
-            summary_lines.append(f"- Root files: {', '.join(root_files[:12])}")
-        previews = self._workspace_file_previews(root, root_files)
-        if previews:
-            summary_lines.append("Key file previews:")
-            summary_lines.extend(previews)
-        if not (root / "syncore.yaml").exists():
-            summary_lines.append("- syncore.yaml is currently missing from the repo root.")
-        return "\n".join(summary_lines)
-
-    def _workspace_root_files(self, root: Path) -> list[str]:
-        try:
-            items = sorted(path.name for path in root.iterdir() if path.is_file())
-        except OSError:
-            return []
-        return items[:20]
-
-    def _workspace_file_previews(self, root: Path, root_files: list[str]) -> list[str]:
-        preview_targets = [
-            "README.md",
-            "pyproject.toml",
-            "package.json",
-            "requirements.txt",
-            "setup.cfg",
-            "Cargo.toml",
-            "go.mod",
-        ]
-        previews: list[str] = []
-        for name in preview_targets:
-            if name not in root_files:
-                continue
-            path = root / name
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            compact = shorten(" ".join(text.split()), width=220, placeholder=" ...")
-            previews.append(f"- {name}: {compact}")
-        return previews[:6]
-
-    def _classify_autonomy_failure(
-        self,
-        *,
-        task_id: UUID,
-        stage: str,
-        cycle: int,
-        error: Exception,
-    ) -> dict[str, object]:
-        return self._failure_handler.classify_failure(
-            task_id=task_id,
-            stage=stage,
-            cycle=cycle,
-            error=error,
-        )
-
     def _finalize_task(self, task_id: UUID) -> None:
         self._finalizer.finalize_task(task_id)
 
@@ -2203,9 +1126,6 @@ self, events: list[ProjectEvent]) -> int:
 
     def _child_gate_status(self, *, task: Task, events: list[ProjectEvent]) -> dict[str, str]:
         return self._finalizer.child_gate_status(task=task, events=events)
-
-    def _generate_digest_event(self, task_id: UUID) -> None:
-        self._finalizer.generate_digest_event(task_id)
 
 
 def _normalize_agent_role(candidate: str) -> str:

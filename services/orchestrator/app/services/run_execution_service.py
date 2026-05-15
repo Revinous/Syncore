@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from difflib import unified_diff
 from pathlib import Path
 from textwrap import shorten
 from typing import Iterator
@@ -39,114 +37,26 @@ from app.runs.providers import (
 from app.services.context_service import ContextService
 from app.services.execution_policy import ExecutionPolicyResolver
 from app.services.workspace_acceptance_service import string_list
-from app.services.workspace_action_dispatcher import WorkspaceActionDispatcher, WorkspaceLoopState
+from app.services.workspace_action_dispatcher import WorkspaceActionDispatcher
+from app.services.workspace_execution_coordinator import WorkspaceExecutionCoordinator
+from app.services.workspace_execution_failures import WorkspaceExecutionFailureHandler
 from app.services.workspace_execution_finalizer import WorkspaceExecutionFinalizer
 from app.services.workspace_execution_utils import (
     check_action_allowed,
-    classify_workspace_issue,
-    command_allowed,
-    needs_dependency_bootstrap,
     normalize_workspace_command,
     resolve_workspace_path,
     runner_default_command,
 )
-from app.services.workspace_files import WorkspaceFilesService
 from app.services.workspace_learning_service import WorkspaceLearningService
+from app.services.workspace_operations_service import WorkspaceOperationsService
 from app.services.workspace_planner import WorkspacePlanner
+from app.services.workspace_policy_profiles import WORKSPACE_POLICY_PROFILES
 from app.services.workspace_preflight_service import WorkspacePreflightService
 from app.services.workspace_verification_service import WorkspaceVerificationService
 
 
 class RunExecutionService:
-    WORKSPACE_POLICY_PROFILES: dict[str, dict[str, object]] = {
-        "strict": {
-            "allow_write": True,
-            "allow_patch": True,
-            "allow_read": True,
-            "allow_search": True,
-            "allow_delete": False,
-            "allow_move": False,
-            "allow_commands": ("pytest", "python -m pytest"),
-            "allowed_actions": (
-                "read_file",
-                "search_code",
-                "write_file",
-                "patch_file",
-                "run_command",
-                "run_test",
-                "complete_work",
-                "next_action",
-                "finish",
-            ),
-            "timeout_seconds": 90,
-            "max_output_chars": 3000,
-        },
-        "balanced": {
-            "allow_write": True,
-            "allow_patch": True,
-            "allow_read": True,
-            "allow_search": True,
-            "allow_delete": False,
-            "allow_move": True,
-            "allow_commands": ("pytest", "python -m pytest", "npm test", "npm run test"),
-            "allowed_actions": (
-                "read_file",
-                "search_code",
-                "write_file",
-                "patch_file",
-                "move_file",
-                "run_command",
-                "run_test",
-                "run_build",
-                "run_lint",
-                "run_format",
-                "complete_work",
-                "next_action",
-                "finish",
-            ),
-            "timeout_seconds": 120,
-            "max_output_chars": 6000,
-        },
-        "full-dev": {
-            "allow_write": True,
-            "allow_patch": True,
-            "allow_read": True,
-            "allow_search": True,
-            "allow_delete": True,
-            "allow_move": True,
-            "allow_commands": (
-                "pytest",
-                "python -m pytest",
-                "npm test",
-                "npm run test",
-                "npm run lint",
-                "npm run build",
-                "uv run pytest",
-                "go test",
-                "cargo test",
-            ),
-            "allowed_actions": (
-                "read_file",
-                "search_code",
-                "write_file",
-                "patch_file",
-                "move_file",
-                "delete_file",
-                "run_command",
-                "run_test",
-                "run_build",
-                "run_lint",
-                "run_format",
-                "run_targeted_test",
-                "install_deps",
-                "complete_work",
-                "next_action",
-                "finish",
-            ),
-            "timeout_seconds": 180,
-            "max_output_chars": 10000,
-        },
-    }
+    WORKSPACE_POLICY_PROFILES = WORKSPACE_POLICY_PROFILES
 
     def __init__(
         self,
@@ -179,16 +89,21 @@ class RunExecutionService:
             default_provider=self._default_provider,
             setup_command_resolver=runner_default_command,
         )
+        self._workspace_operations = WorkspaceOperationsService(
+            store=self._store,
+            record_event=self._record_event,
+            binary_available=self._binary_available,
+        )
         self._workspace_dispatcher = WorkspaceActionDispatcher(
             check_action_allowed=check_action_allowed,
-            write_with_diff=self._safe_write_with_diff,
-            patch_with_diff=self._safe_patch_with_diff,
-            delete_with_diff=self._safe_delete_with_diff,
-            move_with_diff=self._safe_move_with_diff,
-            read_file=self._safe_read_file,
-            search_code=self._safe_search_code,
+            write_with_diff=self._workspace_operations.write_with_diff,
+            patch_with_diff=self._workspace_operations.patch_with_diff,
+            delete_with_diff=self._workspace_operations.delete_with_diff,
+            move_with_diff=self._workspace_operations.move_with_diff,
+            read_file=self._workspace_operations.read_file,
+            search_code=self._workspace_operations.search_code,
             store_text_reference=self._store_text_reference,
-            run_workspace_command=self._safe_run_workspace_command,
+            run_workspace_command=self._workspace_operations.run_workspace_command,
             runner_default_command=runner_default_command,
         )
         self._workspace_finalizer = WorkspaceExecutionFinalizer(
@@ -197,11 +112,31 @@ class RunExecutionService:
             workspace_learning=self._workspace_learning,
             parse_uuid=_parse_uuid,
         )
+        def _workspace_run_command(root: Path, command: str, policy: dict[str, object]):
+            return self._safe_run_workspace_command(root, command, policy=policy)
+
         self._workspace_verifier = WorkspaceVerificationService(
-            run_command=lambda root, command, policy: self._safe_run_workspace_command(
-                root, command, policy=policy
-            ),
+            run_command=_workspace_run_command,
             normalize_command=self._normalize_workspace_command,
+        )
+        self._workspace_failures = WorkspaceExecutionFailureHandler(
+            finalizer=self._workspace_finalizer,
+            record_event=self._record_event,
+        )
+        self._workspace_execution = WorkspaceExecutionCoordinator(
+            store=self._store,
+            default_provider=self._default_provider,
+            policy_resolver=self._policy_resolver,
+            planner=self._workspace_planner,
+            preflight_service=self._workspace_preflight_service,
+            dispatcher=self._workspace_dispatcher,
+            verifier=self._workspace_verifier,
+            finalizer=self._workspace_finalizer,
+            resolve_provider=self._resolve_provider,
+            task_preferences=self._task_preferences,
+            attempt_auto_repair=self._workspace_operations.attempt_auto_repair,
+            record_event=self._record_event,
+            failure_handler=self._workspace_failures,
         )
 
     @classmethod
@@ -389,359 +324,12 @@ class RunExecutionService:
         dry_run: bool = False,
         require_approval: bool = False,
     ) -> dict[str, object]:
-        task = self._store.get_task(payload.task_id)
-        if task is None:
-            raise LookupError("Task not found")
-        if task.workspace_id is None:
-            raise ValueError("Task does not have a workspace_id")
-        workspace = self._store.get_workspace(task.workspace_id)
-        if workspace is None:
-            raise LookupError("Workspace not found")
-
-        root = Path(workspace.root_path).resolve()
-        if not root.exists() or not root.is_dir():
-            raise ValueError(f"Workspace path not found: {root}")
-        profile = str(policy_profile or "balanced").strip().lower()
-        task_preferences = self._task_preferences(payload.task_id)
-        contract = dict(workspace.metadata.get("syncore_contract") or {})
-        runbook = dict(workspace.metadata.get("workspace_runbook") or {})
-        runner = dict(workspace.metadata.get("workspace_runner") or runbook.get("runner") or {})
-        policy = self._policy_resolver.resolve_workspace_policy(
-            requested_profile=profile,
-            workspace_metadata=workspace.metadata,
-            task_preferences=task_preferences,
-        )
-        profile = str(policy.get("profile") or "balanced")
-
-        preflight = self._workspace_preflight_service.verify(
-            root=root,
-            provider_hint=payload.provider,
-            required_env=string_list(runbook.get("required_env")),
-            required_binaries=string_list(runbook.get("required_binaries"))
-            or string_list(runner.get("required_binaries")),
-            required_files=string_list(runbook.get("required_files")),
-            supported_os=string_list(runner.get("supported_os")),
-            runner=runner,
-        )
-        if preflight["status"] != "ok":
-            repaired = self._attempt_workspace_auto_repair(
-                task_id=payload.task_id,
-                root=root,
-                runner=runner,
-                runbook=runbook,
-                policy=policy,
-            )
-            if repaired:
-                preflight = self._workspace_preflight_service.verify(
-                    root=root,
-                    provider_hint=payload.provider,
-                    required_env=string_list(runbook.get("required_env")),
-                    required_binaries=string_list(runbook.get("required_binaries"))
-                    or string_list(runner.get("required_binaries")),
-                    required_files=string_list(runbook.get("required_files")),
-                    supported_os=string_list(runner.get("supported_os")),
-                    runner=runner,
-                )
-        if preflight["status"] != "ok":
-            classification = classify_workspace_issue(
-                stage="preflight",
-                reason=str(preflight.get("reason") or "unknown"),
-            )
-            self._workspace_finalizer.record_learning_failure(
-                workspace_id=task.workspace_id,
-                reason=str(preflight.get("reason") or "unknown"),
-                category=classification["category"],
-                strategy=classification["strategy"],
-            )
-            self._record_event(
-                task_id=payload.task_id,
-                event_type="workspace.execution.preflight.failed",
-                event_data={
-                    "reason": str(preflight.get("reason") or "unknown"),
-                    "failure_category": classification["category"],
-                    "recommended_strategy": classification["strategy"],
-                    "provider": str(payload.provider or self._default_provider),
-                    "suggestions": shorten(
-                        " | ".join(str(item) for item in preflight.get("suggestions", [])),
-                        width=250,
-                        placeholder=" ...",
-                    ),
-                },
-            )
-            raise ValueError(str(preflight.get("reason") or "Workspace preflight failed"))
-
-        state = WorkspaceLoopState()
-        planned_actions: list[str] = []
-
-        provider_name, provider = self._resolve_provider(payload.provider)
-        max_steps = max(1, min(max_steps, 8))
-
-        self._record_event(
-            task_id=payload.task_id,
-            event_type="workspace.execution.state.changed",
-            event_data={"state": "planned", "profile": profile, "dry_run": dry_run},
-        )
-        plan_prompt = self._workspace_planner.build_planner_prompt(
-            base_prompt=payload.prompt,
-            workspace_runbook=runbook,
-            profile=profile,
-        )
-        plan_result = provider.complete(
-            model=payload.target_model,
-            prompt=plan_prompt,
-            system_prompt=payload.system_prompt,
-            max_output_tokens=max(256, min(payload.max_output_tokens, 800)),
-            temperature=0.1,
-        )
-        planned_actions = self._workspace_planner.parse_plan_lines(plan_result.output_text)
-        if require_approval:
-            self._record_event(
-                task_id=payload.task_id,
-                event_type="workspace.execution.awaiting_approval",
-                event_data={"planned_actions": len(planned_actions)},
-            )
-            raise ValueError("Workspace execution requires approval before applying actions.")
-
-        if dry_run:
-            self._record_event(
-                task_id=payload.task_id,
-                event_type="workspace.execution.dry_run",
-                event_data={"planned_actions": len(planned_actions)},
-            )
-            return {
-                "task_id": str(payload.task_id),
-                "workspace_id": str(task.workspace_id),
-                "provider": provider_name,
-                "target_model": payload.target_model,
-                "profile": profile,
-                "state": "planned",
-                "dry_run": True,
-                "planned_actions": planned_actions[:40],
-            }
-
-        self._record_event(
-            task_id=payload.task_id,
-            event_type="workspace.execution.state.changed",
-            event_data={"state": "executing", "profile": profile},
-        )
-
-        for step in range(1, max_steps + 1):
-            file_snapshot = self._workspace_planner.workspace_snapshot(root)
-            worker_prompt = self._workspace_planner.build_worker_prompt(
-                base_prompt=payload.prompt,
-                file_snapshot=file_snapshot,
-                step=step,
-                max_steps=max_steps,
-                contract=contract,
-                runner=runner,
-                policy=policy,
-            )
-            result = provider.complete(
-                model=payload.target_model,
-                prompt=worker_prompt,
-                system_prompt=payload.system_prompt,
-                max_output_tokens=payload.max_output_tokens,
-                temperature=payload.temperature,
-            )
-            actions = self._workspace_planner.parse_worker_actions(result.output_text)
-            if not actions:
-                continue
-
-            finished = self._workspace_dispatcher.dispatch_actions(
-                task_id=payload.task_id,
-                root=root,
-                actions=actions,
-                policy=policy,
-                runner=runner,
-                state=state,
-            )
-            if finished:
-                step = max_steps
-
-            if state.state.changed_files or state.state.command_results:
-                self._workspace_verifier.ensure_required_verification_commands_run(
-                    root=root,
-                    command_results=state.command_results,
-                    acceptance=self._workspace_verifier.merged_acceptance_criteria(
-                        task_preferences=task_preferences,
-                        contract=contract,
-                        runbook=runbook,
-                    ),
-                    runner=runner,
-                    policy=policy,
-                )
-                step_verification = self._workspace_verifier.verify_workspace_execution(
-                    changed_files=state.changed_files,
-                    command_results=list(state.command_results),
-                    root=root,
-                    task_preferences=task_preferences,
-                    contract=contract,
-                    runbook=runbook,
-                    runner=runner,
-                    policy=policy,
-                )
-                if step_verification["status"] == "ok":
-                    if not state.finish_summary:
-                        state.finish_summary = (
-                            "Workspace execution loop completed after verification passed."
-                        )
-                    break
-
-        self._record_event(
-            task_id=payload.task_id,
-            event_type="workspace.execution.state.changed",
-            event_data={"state": "verifying", "profile": profile},
-        )
-        self._workspace_verifier.ensure_required_verification_commands_run(
-            root=root,
-            command_results=state.command_results,
-            acceptance=self._workspace_verifier.merged_acceptance_criteria(
-                task_preferences=task_preferences,
-                contract=contract,
-                runbook=runbook,
-            ),
-            runner=runner,
-            policy=policy,
-        )
-        verification = self._workspace_verifier.verify_workspace_execution(
-            changed_files=state.changed_files,
-            command_results=state.command_results,
-            root=root,
-            task_preferences=task_preferences,
-            contract=contract,
-            runbook=runbook,
-            runner=runner,
-            policy=policy,
-        )
-        if str(verification.get("reason") or "") == "Required verification commands did not pass.":
-            self._workspace_verifier.run_all_runner_test_commands(
-                root=root,
-                command_results=state.command_results,
-                runner=runner,
-                policy=policy,
-            )
-            verification = self._workspace_verifier.verify_workspace_execution(
-                changed_files=state.changed_files,
-                command_results=state.command_results,
-                root=root,
-                task_preferences=task_preferences,
-                contract=contract,
-                runbook=runbook,
-                runner=runner,
-                policy=policy,
-            )
-        if (
-            verification["status"] != "ok"
-            and provider_name == "local_echo"
-            and str(verification.get("reason") or "")
-            == "No changes or verification commands were produced."
-        ):
-            verification = {
-                "status": "ok",
-                "reason": "local_echo_noop_execution_accepted",
-            }
-            state.completed_work.append(
-                "No-op local echo execution accepted for autonomy dry progression."
-            )
-        if verification["status"] != "ok":
-            classification = classify_workspace_issue(
-                stage="verification",
-                reason=str(verification.get("reason") or "verification failed"),
-            )
-            report_ref_id = self._workspace_finalizer.store_report(
-                task_id=payload.task_id,
-                status="failed",
-                summary_reason=str(verification.get("reason") or "verification failed"),
-                provider=provider_name,
-                target_model=payload.target_model,
-                profile=profile,
-                changed_files=state.changed_files,
-                diff_refs=state.diff_refs,
-                planned_actions=planned_actions,
-                command_results=state.command_results,
-                verification=verification,
-            )
-            self._workspace_finalizer.record_learning_failure(
-                workspace_id=task.workspace_id,
-                reason=str(verification.get("reason") or "verification failed"),
-                category=classification["category"],
-                strategy=classification["strategy"],
-            )
-            self._record_event(
-                task_id=payload.task_id,
-                event_type="workspace.execution.verification.failed",
-                event_data={
-                    "reason": str(verification.get("reason") or "verification failed"),
-                    "failure_category": classification["category"],
-                    "recommended_strategy": classification["strategy"],
-                    "provider": provider_name,
-                    "report_ref_id": report_ref_id,
-                },
-            )
-            raise RuntimeError(str(verification.get("reason") or "Workspace verification failed"))
-
-        candidate_validation = self._workspace_finalizer.validate_meaningful_candidate_change(
-            task_id=payload.task_id,
-            task_preferences=task_preferences,
-            changed_files=state.changed_files,
-        )
-        if candidate_validation["status"] != "ok":
-            classification = classify_workspace_issue(
-                stage="verification",
-                reason=str(candidate_validation.get("reason") or "candidate validation failed"),
-            )
-            report_ref_id = self._workspace_finalizer.store_report(
-                task_id=payload.task_id,
-                status="failed",
-                summary_reason=str(
-                    candidate_validation.get("reason") or "candidate validation failed"
-                ),
-                provider=provider_name,
-                target_model=payload.target_model,
-                profile=profile,
-                changed_files=state.changed_files,
-                diff_refs=state.diff_refs,
-                planned_actions=planned_actions,
-                command_results=state.command_results,
-                verification={
-                    **verification,
-                    "candidate_validation": candidate_validation,
-                },
-            )
-            self._record_event(
-                task_id=payload.task_id,
-                event_type="workspace.execution.meaningful_change.failed",
-                event_data={
-                    "reason": str(candidate_validation.get("reason") or ""),
-                    "failure_category": classification["category"],
-                    "recommended_strategy": classification["strategy"],
-                    "candidate_id": str(candidate_validation.get("candidate_id") or ""),
-                    "report_ref_id": report_ref_id,
-                },
-            )
-            raise RuntimeError(
-                str(candidate_validation.get("reason") or "Meaningful change gate failed")
-            )
-
-        return self._workspace_finalizer.finalize_success(
-            task_id=payload.task_id,
-            workspace_id=task.workspace_id,
-            from_agent=payload.target_agent,
-            objective=payload.prompt,
-            provider=provider_name,
-            target_model=payload.target_model,
-            profile=profile,
-            changed_files=state.changed_files,
-            diff_refs=state.diff_refs,
-            read_refs=state.read_refs,
-            planned_actions=planned_actions,
-            command_results=state.command_results,
-            verification=verification,
-            finish_summary=state.finish_summary,
-            completed_work=state.completed_work,
-            next_action=state.next_action,
-            policy=policy,
-            runner=runner,
+        return self._workspace_execution.execute_loop(
+            payload,
+            max_steps=max_steps,
+            policy_profile=policy_profile,
+            dry_run=dry_run,
+            require_approval=require_approval,
         )
 
     def stream_execute(self, payload: RunExecutionRequest) -> Iterator[RunStreamEvent]:
@@ -1043,38 +631,12 @@ class RunExecutionService:
         relative_path: str,
         content: str,
     ) -> str:
-        target = resolve_workspace_path(root, relative_path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        before = ""
-        if target.exists():
-            before = target.read_text(encoding="utf-8", errors="replace")
-        target.write_text(content, encoding="utf-8")
-        after = target.read_text(encoding="utf-8", errors="replace")
-        diff = "".join(
-            unified_diff(
-                before.splitlines(keepends=True),
-                after.splitlines(keepends=True),
-                fromfile=f"a/{relative_path}",
-                tofile=f"b/{relative_path}",
-            )
-        )
-        if not diff.strip():
-            diff = f"(no textual diff) {relative_path}"
-        ref = self._store.upsert_context_reference(
-            ref_id=build_ref_id(task_id, "workspace_diff", diff),
+        return self._workspace_operations.write_with_diff(
             task_id=task_id,
-            content_type="workspace_diff",
-            original_content=diff,
-            summary=shorten(" ".join(diff.split()), width=220, placeholder=" ..."),
-            retrieval_hint=f"Diff for workspace file {relative_path}",
+            root=root,
+            relative_path=relative_path,
+            content=content,
         )
-        ref_id = str(ref["ref_id"])
-        self._record_event(
-            task_id=task_id,
-            event_type="artifact.diff.stored",
-            event_data={"path": relative_path, "ref_id": ref_id},
-        )
-        return ref_id
 
     def _safe_patch_with_diff(
         self,
@@ -1085,18 +647,12 @@ class RunExecutionService:
         before_text: str,
         after_text: str,
     ) -> str:
-        target = resolve_workspace_path(root, relative_path)
-        if not target.exists():
-            raise FileNotFoundError(f"Patch target does not exist: {relative_path}")
-        existing = target.read_text(encoding="utf-8", errors="replace")
-        if before_text not in existing:
-            raise ValueError(f"Patch before-text not found in {relative_path}")
-        updated = existing.replace(before_text, after_text, 1)
-        return self._safe_write_with_diff(
+        return self._workspace_operations.patch_with_diff(
             task_id=task_id,
             root=root,
             relative_path=relative_path,
-            content=updated,
+            before_text=before_text,
+            after_text=after_text,
         )
 
     def _safe_delete_with_diff(
@@ -1106,39 +662,11 @@ class RunExecutionService:
         root: Path,
         relative_path: str,
     ) -> str:
-        target = resolve_workspace_path(root, relative_path)
-        if not target.exists():
-            raise FileNotFoundError(f"Delete target does not exist: {relative_path}")
-        before = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
-        if target.is_file():
-            target.unlink()
-        diff = "".join(
-            unified_diff(
-                before.splitlines(keepends=True),
-                [],
-                fromfile=f"a/{relative_path}",
-                tofile=f"b/{relative_path}",
-            )
-        )
-        ref = self._store.upsert_context_reference(
-            ref_id=build_ref_id(task_id, "workspace_diff", diff or relative_path),
+        return self._workspace_operations.delete_with_diff(
             task_id=task_id,
-            content_type="workspace_diff",
-            original_content=diff or f"Deleted {relative_path}",
-            summary=shorten(
-                " ".join((diff or f"Deleted {relative_path}").split()),
-                width=220,
-                placeholder=" ...",
-            ),
-            retrieval_hint=f"Diff for workspace file {relative_path}",
+            root=root,
+            relative_path=relative_path,
         )
-        ref_id = str(ref["ref_id"])
-        self._record_event(
-            task_id=task_id,
-            event_type="artifact.diff.stored",
-            event_data={"path": relative_path, "ref_id": ref_id},
-        )
-        return ref_id
 
     def _safe_move_with_diff(
         self,
@@ -1148,31 +676,12 @@ class RunExecutionService:
         source_path: str,
         destination_path: str,
     ) -> str:
-        source = resolve_workspace_path(root, source_path)
-        destination = resolve_workspace_path(root, destination_path)
-        if not source.exists():
-            raise FileNotFoundError(f"Move source does not exist: {source_path}")
-        before = source.read_text(encoding="utf-8", errors="replace") if source.is_file() else ""
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(destination)
-        diff = (
-            f"Moved {source_path} -> {destination_path}\nOriginal content preview:\n{before[:1000]}"
-        )
-        ref = self._store.upsert_context_reference(
-            ref_id=build_ref_id(task_id, "workspace_diff", diff),
+        return self._workspace_operations.move_with_diff(
             task_id=task_id,
-            content_type="workspace_diff",
-            original_content=diff,
-            summary=shorten(" ".join(diff.split()), width=220, placeholder=" ..."),
-            retrieval_hint=f"Move record for {source_path} to {destination_path}",
+            root=root,
+            source_path=source_path,
+            destination_path=destination_path,
         )
-        ref_id = str(ref["ref_id"])
-        self._record_event(
-            task_id=task_id,
-            event_type="artifact.diff.stored",
-            event_data={"path": destination_path, "ref_id": ref_id},
-        )
-        return ref_id
 
     def _safe_run_workspace_command(
         self,
@@ -1181,46 +690,13 @@ class RunExecutionService:
         *,
         policy: dict[str, object],
     ) -> dict[str, object]:
-        if not command_allowed(command, policy):
-            return {"command": command, "status": "blocked", "output": "Command not allowed"}
-        command = normalize_workspace_command(command)
-        timeout = int(policy.get("timeout_seconds", 120))
-        max_output = int(policy.get("max_output_chars", 4000))
-        completed = subprocess.run(
-            ["/bin/bash", "-lc", command],  # nosec B603
-            cwd=root,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-        )
-        output = (completed.stdout or "") + (("\n" + completed.stderr) if completed.stderr else "")
-        return {
-            "command": command,
-            "status": "ok" if completed.returncode == 0 else "failed",
-            "exit_code": completed.returncode,
-            "output": output[:max_output],
-        }
+        return self._workspace_operations.run_workspace_command(root, command, policy=policy)
 
     def _safe_read_file(self, *, root: Path, relative_path: str) -> str:
-        service = WorkspaceFilesService()
-        return service.read_file(str(root), relative_path)
+        return self._workspace_operations.read_file(root=root, relative_path=relative_path)
 
     def _safe_search_code(self, *, root: Path, pattern: str) -> list[str]:
-        service = WorkspaceFilesService()
-        files = service.list_files(str(root), ".", limit=500)
-        hits: list[str] = []
-        lowered_pattern = pattern.lower()
-        for rel in files:
-            try:
-                content = service.read_file(str(root), rel)
-            except (FileNotFoundError, PermissionError, ValueError):
-                continue
-            for line_no, line in enumerate(content.splitlines(), start=1):
-                if lowered_pattern in line.lower():
-                    hits.append(f"{rel}:{line_no}: {line[:240]}")
-                    if len(hits) >= 100:
-                        return hits
-        return hits
+        return self._workspace_operations.search_code(root=root, pattern=pattern)
 
     def _attempt_workspace_auto_repair(
         self,
@@ -1231,21 +707,33 @@ class RunExecutionService:
         runbook: dict[str, object],
         policy: dict[str, object],
     ) -> bool:
-        if not needs_dependency_bootstrap(root=root, runner=runner, runbook=runbook):
-            return False
-        setup_command = runner_default_command(runner, "setup", "")
-        if not setup_command:
-            return False
-        result = self._safe_run_workspace_command(root, setup_command, policy=policy)
-        self._record_event(
+        return self._workspace_operations.attempt_auto_repair(
             task_id=task_id,
-            event_type="workspace.auto_repair.attempted",
-            event_data={
-                "command": setup_command[:200],
-                "status": str(result.get("status") or ""),
-            },
+            root=root,
+            runner=runner,
+            runbook=runbook,
+            policy=policy,
         )
-        return str(result.get("status")) == "ok"
+
+    def _task_preferences(self, task_id: UUID) -> dict[str, str]:
+        list_events = getattr(self._store, "list_project_events", None)
+        if not callable(list_events):
+            return {}
+        events = list_events(task_id=task_id, limit=500)
+        for event in reversed(events):
+            if getattr(event, "event_type", "") != "task.preferences":
+                continue
+            merged: dict[str, str] = {}
+            event_data = getattr(event, "event_data", {}) or {}
+            if not isinstance(event_data, dict):
+                continue
+            for key, value in event_data.items():
+                if isinstance(value, str):
+                    merged[key] = value
+                elif isinstance(value, (int, float, bool)):
+                    merged[key] = str(value)
+            return merged
+        return {}
 
     def _effective_workspace_policy(
         self,
