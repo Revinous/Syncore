@@ -260,6 +260,20 @@ export type DiagnosticsConfig = {
   redis_url: string;
   postgres_dsn: string;
   sqlite_db_path: string;
+  codex_sidecar: {
+    provider: string | null;
+    enabled: boolean;
+    configured: boolean;
+    provider_registered: boolean;
+    api_key_configured: boolean;
+    base_url: string | null;
+    reachable: boolean;
+    detail: string | null;
+    mode: string | null;
+    warning: string | null;
+    recommended_action: string | null;
+    required_settings: string[];
+  };
 };
 
 export type DiagnosticsOverview = {
@@ -268,6 +282,7 @@ export type DiagnosticsOverview = {
   runtime_mode: string;
   db_backend: string;
   redis_required: boolean;
+  codex_sidecar: DiagnosticsConfig["codex_sidecar"];
 };
 
 export type DiagnosticsRoutes = {

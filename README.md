@@ -174,6 +174,15 @@ OpenAI model access in CLI/TUI:
   - `syncore auth openai login`
 - Inspect available models for your account:
   - `syncore auth openai models`
+- Official OpenAI Platform API mode remains API-key based:
+  - set `OPENAI_API_KEY`
+  - verify with `syncore providers`
+- Experimental local ChatGPT/Codex bridge mode is separate:
+  - set `CODEX_SIDECAR_ENABLED=true`
+  - set `CODEX_SIDECAR_BASE_URL`
+  - set `CODEX_SIDECAR_API_KEY`
+  - verify with `syncore diagnostics`
+  - when available, select provider `codex_sidecar` explicitly
 - In TUI:
   - press `i` to connect OpenAI
   - press `m` to refresh model list

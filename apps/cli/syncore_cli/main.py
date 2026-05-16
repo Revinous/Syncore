@@ -124,6 +124,7 @@ register_system_commands(
     print_error=print_error,
     print_json=print_json,
     print_kv_panel=print_kv_panel,
+    print_lines_panel=print_lines_panel,
     print_status_table=print_status_table,
     print_table=print_table,
 )

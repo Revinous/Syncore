@@ -26,6 +26,7 @@ def register_system_commands(
     print_error: Callable[[str], None],
     print_json: Callable[[object], None],
     print_kv_panel: Callable[[str, object], None],
+    print_lines_panel: Callable[[str, list[str]], None],
     print_status_table: Callable[[object, object], None],
     print_table: Callable[[str, list[str], list[list[str]]], None],
 ) -> None:
@@ -62,8 +63,21 @@ def register_system_commands(
             return
         print_kv_panel("Dashboard", summary)
 
-    @app.command("diagnostics")
-    def diagnostics() -> None:
+    @app.command(
+        "diagnostics",
+        help=(
+            "Inspect orchestrator health, runtime shape, and experimental provider posture. "
+            "Use this to verify whether official OpenAI API-key mode or the experimental "
+            "`codex_sidecar` bridge is actually available."
+        ),
+    )
+    def diagnostics(
+        json_output: bool = typer.Option(
+            False,
+            "--json",
+            help="Print the raw diagnostics payload for scripting instead of the operator view.",
+        )
+    ) -> None:
         client = build_client()
         try:
             payload = {
@@ -76,7 +90,55 @@ def register_system_commands(
         except SyncoreApiError as error:
             print_error(str(error))
             raise typer.Exit(code=1)
-        print_json(payload)
+        if json_output:
+            print_json(payload)
+            return
+        overview = payload["overview"]
+        config = payload["config"]
+        sidecar = overview.get("codex_sidecar", {})
+        print_kv_panel(
+            "Diagnostics Overview",
+            {
+                "service": overview.get("service"),
+                "environment": overview.get("environment"),
+                "runtime_mode": overview.get("runtime_mode"),
+                "db_backend": overview.get("db_backend"),
+                "redis_required": overview.get("redis_required"),
+            },
+        )
+        print_kv_panel(
+            "Experimental Codex Sidecar",
+            {
+                "provider": sidecar.get("provider"),
+                "enabled": sidecar.get("enabled"),
+                "configured": sidecar.get("configured"),
+                "provider_registered": sidecar.get("provider_registered"),
+                "reachable": sidecar.get("reachable"),
+                "base_url": sidecar.get("base_url"),
+                "detail": sidecar.get("detail"),
+            },
+        )
+        print_lines_panel(
+            "Auth Modes",
+            [
+                "Official OpenAI Platform access uses OPENAI_API_KEY.",
+                "codex_sidecar is an experimental local bridge and is distinct from official OpenAI API-key mode.",
+                str(sidecar.get("warning", "")),
+                f"Recommended action: {sidecar.get('recommended_action', 'Run `syncore diagnostics --json` for the full payload.')}",
+                "Verify available providers with `syncore providers`.",
+            ],
+        )
+        print_kv_panel(
+            "Config Snapshot",
+            {
+                "db_backend": config.get("db_backend"),
+                "runtime_mode": config.get("runtime_mode"),
+                "redis_required": config.get("redis_required"),
+                "sqlite_db_path": config.get("sqlite_db_path"),
+                "postgres_dsn": config.get("postgres_dsn"),
+                "redis_url": config.get("redis_url"),
+            },
+        )
 
     @app.command("providers")
     def providers(json_output: bool = typer.Option(False, "--json")) -> None:

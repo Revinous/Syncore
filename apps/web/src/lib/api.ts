@@ -32,6 +32,7 @@ import {
 } from "./types";
 import {
   parseContextReference,
+  parseDiagnosticsConfig,
   parseDashboardSummary,
   parseDiagnosticsOverview,
   parseHealthResponse,
@@ -296,7 +297,7 @@ export function getDiagnostics() {
 }
 
 export function getDiagnosticsConfig() {
-  return request<DiagnosticsConfig>("/diagnostics/config");
+  return request<DiagnosticsConfig>("/diagnostics/config", undefined, parseDiagnosticsConfig);
 }
 
 export function getDiagnosticsRoutes() {

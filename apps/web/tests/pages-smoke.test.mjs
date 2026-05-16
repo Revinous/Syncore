@@ -30,6 +30,7 @@ test("diagnostics page renders service health", () => {
   const page = read("../pages/diagnostics.tsx");
   assert.match(page, /Service Health/);
   assert.match(page, /getServicesHealth/);
+  assert.match(page, /Experimental Codex Sidecar/);
 });
 
 test("notifications page has empty state", () => {

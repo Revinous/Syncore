@@ -512,6 +512,19 @@ def test_workspace_preflight_fails_for_unconfigured_provider(tmp_path) -> None:
     assert "not configured" in result["reason"]
 
 
+def test_codex_sidecar_resolution_returns_actionable_setup_hint() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    service._provider_setup_hints["codex_sidecar"] = (  # type: ignore[attr-defined]
+        "Provider 'codex_sidecar' is not configured. Set CODEX_SIDECAR_ENABLED=true, "
+        "CODEX_SIDECAR_BASE_URL, CODEX_SIDECAR_API_KEY and verify with `syncore diagnostics`."
+    )
+    with pytest.raises(ValueError) as exc:
+        service._resolve_provider("codex_sidecar")
+    assert "CODEX_SIDECAR_BASE_URL" in str(exc.value)
+    assert "syncore diagnostics" in str(exc.value)
+
+
 def test_workspace_preflight_fails_for_missing_binary(tmp_path) -> None:
     task_id = uuid4()
     service, _, _ = _service(task_id)

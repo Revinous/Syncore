@@ -139,5 +139,7 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     assert execution_report.status_code == 200
     assert execution_report.json()["task_id"] == task_id
     assert client.get("/diagnostics").status_code == 200
+    diagnostics = client.get("/diagnostics").json()
+    assert "codex_sidecar" in diagnostics
     assert client.get("/diagnostics/config").status_code == 200
     assert client.get("/diagnostics/routes").status_code == 200

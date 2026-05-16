@@ -24,7 +24,6 @@ import { LoadingState } from "../src/components/LoadingState";
 import { PageHeader } from "../src/components/PageHeader";
 import { StatusBadge } from "../src/components/StatusBadge";
 import { Surface } from "../src/components/Surface";
-
 export default function DiagnosticsPage() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [servicesHealth, setServicesHealth] = useState<ServicesHealthResponse | null>(null);
@@ -36,7 +35,6 @@ export default function DiagnosticsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   async function load(background = false) {
     if (background) {
       setRefreshing(true);
@@ -73,7 +71,6 @@ export default function DiagnosticsPage() {
       }
     }
   }
-
   useEffect(() => {
     void load();
     const timer = window.setInterval(() => {
@@ -92,7 +89,6 @@ export default function DiagnosticsPage() {
         ? "fresh"
         : "stale";
   const isOfflineError = error?.includes("Could not reach Syncore API");
-
   return (
     <Layout title="Diagnostics">
       <div className="page-shell">
@@ -106,7 +102,6 @@ export default function DiagnosticsPage() {
             { label: "Health", value: health?.status ?? "unknown" },
           ]}
         />
-
         <div className="operator-strip">
           <div className="operator-strip-block">
             <span className="operator-strip-label">Freshness</span>
@@ -136,7 +131,6 @@ export default function DiagnosticsPage() {
             }
           />
         )}
-
         {overview && config && health && servicesHealth ? (
           <div className="content-grid two-column">
             <div className="stack">
@@ -160,7 +154,6 @@ export default function DiagnosticsPage() {
                   ))}
                 </div>
               </Surface>
-
               <Surface title="Runtime Shape" description="Backend runtime flags relevant to local operation.">
                 <div className="meta-grid">
                   <div className="meta-card"><span className="meta-label">Runtime Mode</span><div className="meta-value">{overview.runtime_mode}</div></div>
@@ -168,7 +161,37 @@ export default function DiagnosticsPage() {
                   <div className="meta-card"><span className="meta-label">Redis Required</span><div className="meta-value">{String(overview.redis_required)}</div></div>
                 </div>
               </Surface>
-
+              <Surface title="Experimental Codex Sidecar" description="Local CLIProxyAPI-style bridge status for ChatGPT/Codex-backed execution. This is experimental and distinct from official OpenAI API key mode.">
+                <div className="meta-grid">
+                  <div className="meta-card"><span className="meta-label">Provider</span><div className="meta-value">{overview.codex_sidecar.provider ?? "codex_sidecar"}</div></div>
+                  <div className="meta-card"><span className="meta-label">Enabled</span><div className="meta-value">{String(overview.codex_sidecar.enabled)}</div></div>
+                  <div className="meta-card"><span className="meta-label">Configured</span><div className="meta-value">{String(overview.codex_sidecar.configured)}</div></div>
+                  <div className="meta-card"><span className="meta-label">Registered</span><div className="meta-value">{String(overview.codex_sidecar.provider_registered)}</div></div>
+                  <div className="meta-card"><span className="meta-label">Reachable</span><div className="meta-value"><StatusBadge status={overview.codex_sidecar.reachable ? "completed" : overview.codex_sidecar.enabled ? "blocked" : "pending"} /></div></div>
+                  <div className="meta-card"><span className="meta-label">Mode</span><div className="meta-value">{overview.codex_sidecar.mode ?? "none"}</div></div>
+                </div>
+                <div className="meta-card" style={{ marginTop: 16 }}>
+                  <span className="meta-label">Warning</span>
+                  <div className="meta-value">{overview.codex_sidecar.warning ?? "none"}</div>
+                </div>
+                <div className="meta-card" style={{ marginTop: 16 }}>
+                  <span className="meta-label">Detail</span>
+                  <div className="meta-value">{overview.codex_sidecar.detail ?? "none"}</div>
+                  <div className="helper-text" style={{ marginTop: 8 }}>
+                    Base URL: {overview.codex_sidecar.base_url ?? "not configured"}
+                  </div>
+                </div>
+                <div className="meta-card" style={{ marginTop: 16 }}>
+                  <span className="meta-label">Recommended Action</span>
+                  <div className="meta-value">{overview.codex_sidecar.recommended_action ?? "none"}</div>
+                  <div className="helper-text" style={{ marginTop: 8 }}>
+                    Required settings: {overview.codex_sidecar.required_settings.join(", ")}
+                  </div>
+                  <div className="helper-text" style={{ marginTop: 8 }}>
+                    Official OpenAI Platform access remains separate and still uses `OPENAI_API_KEY`.
+                  </div>
+                </div>
+              </Surface>
               <Surface title="Benchmark Proof" description="Latest repeatable benchmark suite result captured against public repos.">
                 {!benchmark?.available ? (
                   <EmptyState
@@ -202,7 +225,6 @@ export default function DiagnosticsPage() {
                 )}
               </Surface>
             </div>
-
             <div className="stack">
               <Surface title="Config Snapshot" description="Current orchestrator config as exposed by diagnostics.">
                 <div className="code-block">{JSON.stringify(config, null, 2)}</div>

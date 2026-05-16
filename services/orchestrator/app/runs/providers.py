@@ -223,6 +223,25 @@ class OpenAIChatCompletionsProvider:
         )
 
 
+class CodexSidecarProvider(OpenAIChatCompletionsProvider):
+    name = "codex_sidecar"
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            provider=self.name,
+            supports_streaming=True,
+            supports_system_prompt=True,
+            supports_temperature=True,
+            supports_max_tokens=True,
+            model_hint="codex",
+            max_context_tokens=128_000,
+            quality_tier=4,
+            speed_tier=3,
+            cost_tier=2,
+            strengths=("experimental", "local-sidecar", "chatgpt-oauth-bridge"),
+        )
+
+
 class AnthropicMessagesProvider:
     name = "anthropic"
 

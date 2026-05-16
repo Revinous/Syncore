@@ -198,10 +198,54 @@ class FakeClient:
         return payload | {"summary": "digest"}
 
     def diagnostics(self):
-        return {"service": "orchestrator"}
+        return {
+            "service": "orchestrator",
+            "environment": "development",
+            "runtime_mode": "native",
+            "db_backend": "sqlite",
+            "redis_required": False,
+            "codex_sidecar": {
+                "provider": "codex_sidecar",
+                "enabled": False,
+                "configured": False,
+                "provider_registered": False,
+                "api_key_configured": False,
+                "base_url": None,
+                "reachable": False,
+                "detail": "disabled",
+                "mode": "experimental",
+                "warning": "Experimental local ChatGPT/Codex sidecar bridge.",
+                "recommended_action": "Leave disabled unless you intentionally want a local sidecar bridge.",
+                "required_settings": [
+                    "CODEX_SIDECAR_ENABLED",
+                    "CODEX_SIDECAR_BASE_URL",
+                    "CODEX_SIDECAR_API_KEY",
+                ],
+            },
+        }
 
     def diagnostics_config(self):
-        return {"db_backend": "sqlite"}
+        return {
+            "db_backend": "sqlite",
+            "codex_sidecar": {
+                "provider": "codex_sidecar",
+                "enabled": False,
+                "configured": False,
+                "provider_registered": False,
+                "api_key_configured": False,
+                "base_url": None,
+                "reachable": False,
+                "detail": "disabled",
+                "mode": "experimental",
+                "warning": "Experimental local ChatGPT/Codex sidecar bridge.",
+                "recommended_action": "Leave disabled unless you intentionally want a local sidecar bridge.",
+                "required_settings": [
+                    "CODEX_SIDECAR_ENABLED",
+                    "CODEX_SIDECAR_BASE_URL",
+                    "CODEX_SIDECAR_API_KEY",
+                ],
+            },
+        }
 
     def diagnostics_routes(self):
         return {"routes": ["GET /health"]}
@@ -401,6 +445,16 @@ def test_metrics_layering_json_output(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert "implementation|high|gpt-4.1-mini|coder" in payload
+
+
+def test_diagnostics_human_output_includes_codex_sidecar_guidance(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["diagnostics"])
+    assert result.exit_code == 0
+    assert "Experimental Codex Sidecar" in result.stdout
+    assert "Official OpenAI Platform access uses OPENAI_API_KEY." in result.stdout
+    assert "Verify available providers with `syncore providers`." in result.stdout
 
 
 def test_open_command_resolves_workspace_and_launches_tui(monkeypatch) -> None:

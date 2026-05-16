@@ -1,5 +1,6 @@
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -25,6 +26,7 @@ class DiagnosticsConfig(BaseModel):
     redis_url: str
     postgres_dsn: str
     sqlite_db_path: str
+    codex_sidecar: dict[str, str | bool | list[str] | None]
 
 
 class DiagnosticsOverview(BaseModel):
@@ -33,6 +35,7 @@ class DiagnosticsOverview(BaseModel):
     runtime_mode: str
     db_backend: str
     redis_required: bool
+    codex_sidecar: dict[str, str | bool | list[str] | None]
 
 
 class DiagnosticsRoutes(BaseModel):
@@ -70,6 +73,7 @@ def diagnostics_overview(settings: Settings = Depends(get_settings)) -> Diagnost
         runtime_mode=settings.syncore_runtime_mode,
         db_backend=settings.syncore_db_backend,
         redis_required=settings.redis_required,
+        codex_sidecar=_codex_sidecar_status(settings),
     )
 
 
@@ -83,6 +87,7 @@ def diagnostics_config(settings: Settings = Depends(get_settings)) -> Diagnostic
         redis_url=_redact_connection_value(settings.redis_url),
         postgres_dsn=_redact_connection_value(settings.postgres_dsn),
         sqlite_db_path=settings.sqlite_db_path,
+        codex_sidecar=_codex_sidecar_status(settings),
     )
 
 
@@ -105,3 +110,79 @@ def _redact_connection_value(value: str) -> str:
             scheme, _ = head.split("://", 1)
             return f"{scheme}://***@{tail}"
     return "***"
+
+
+def _codex_sidecar_status(settings: Settings) -> dict[str, str | bool | list[str] | None]:
+    base_url = settings.codex_sidecar_base_url.strip() or None
+    api_key = (settings.codex_sidecar_api_key or "").strip()
+    enabled = settings.codex_sidecar_enabled
+    configured = enabled and bool(base_url) and bool(api_key)
+    reachable = False
+    detail = "disabled"
+    recommended_action = (
+        "Keep this disabled unless you intentionally want Syncore to route through a local "
+        "CLIProxyAPI-style bridge."
+    )
+    if enabled and not base_url:
+        detail = "enabled but base URL is missing"
+        recommended_action = (
+            "Set CODEX_SIDECAR_BASE_URL and re-run `syncore diagnostics`. Official OpenAI "
+            "Platform usage still relies on OPENAI_API_KEY instead."
+        )
+    elif enabled and not api_key:
+        detail = "enabled but API key is missing"
+        recommended_action = (
+            "Set CODEX_SIDECAR_API_KEY and re-run `syncore diagnostics`. Do not treat this as "
+            "a replacement for official OpenAI API-key mode."
+        )
+    elif configured and base_url:
+        reachable, detail = _probe_codex_sidecar(base_url, api_key)
+        if reachable:
+            recommended_action = (
+                "The sidecar is reachable. Select provider `codex_sidecar` explicitly for tasks "
+                "that should use the experimental bridge."
+            )
+        else:
+            recommended_action = (
+                "Start the local sidecar and verify CODEX_SIDECAR_BASE_URL and "
+                "CODEX_SIDECAR_API_KEY, then re-run `syncore diagnostics`."
+            )
+    return {
+        "provider": "codex_sidecar",
+        "enabled": enabled,
+        "configured": configured,
+        "provider_registered": configured,
+        "api_key_configured": bool(api_key),
+        "base_url": base_url,
+        "reachable": reachable,
+        "detail": detail,
+        "mode": "experimental",
+        "warning": (
+            "Experimental local ChatGPT/Codex sidecar bridge. This is distinct from official "
+            "OpenAI Platform API authentication."
+        ),
+        "recommended_action": recommended_action,
+        "required_settings": [
+            "CODEX_SIDECAR_ENABLED",
+            "CODEX_SIDECAR_BASE_URL",
+            "CODEX_SIDECAR_API_KEY",
+        ],
+    }
+
+
+def _probe_codex_sidecar(base_url: str, api_key: str) -> tuple[bool, str]:
+    candidate_paths = ("/health", "/v1/models")
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    for path in candidate_paths:
+        url = f"{base_url.rstrip('/')}{path}"
+        try:
+            response = httpx.get(url, headers=headers, timeout=2.0)
+            if response.status_code in {200, 204, 400, 401, 403, 404, 405}:
+                return True, f"reachable via {path} ({response.status_code})"
+            return False, f"sidecar responded with HTTP {response.status_code}"
+        except httpx.HTTPError as exc:
+            detail = str(exc)
+            continue
+    return False, f"unreachable: {detail}" if 'detail' in locals() else "unreachable"

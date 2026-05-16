@@ -2,6 +2,7 @@ import type {
   ApiError,
   ContextReference,
   DashboardSummary,
+  DiagnosticsConfig,
   DiagnosticsOverview,
   HealthResponse,
   ProjectEvent,
@@ -203,12 +204,55 @@ export const parseTaskExecutionReport: Parser<TaskExecutionReport> = (value) => 
 
 export const parseDiagnosticsOverview: Parser<DiagnosticsOverview> = (value) => {
   const obj = expectObject(value, "DiagnosticsOverview");
+  const sidecar = expectObject(obj.codex_sidecar ?? {}, "DiagnosticsOverview.codex_sidecar");
   return {
     service: expectString(obj.service, "DiagnosticsOverview.service"),
     environment: expectString(obj.environment, "DiagnosticsOverview.environment"),
     runtime_mode: expectString(obj.runtime_mode, "DiagnosticsOverview.runtime_mode"),
     db_backend: expectString(obj.db_backend, "DiagnosticsOverview.db_backend"),
-    redis_required: expectBoolean(obj.redis_required, "DiagnosticsOverview.redis_required")
+    redis_required: expectBoolean(obj.redis_required, "DiagnosticsOverview.redis_required"),
+    codex_sidecar: {
+      provider: expectNullableString(sidecar.provider, "DiagnosticsOverview.codex_sidecar.provider"),
+      enabled: expectBoolean(sidecar.enabled, "DiagnosticsOverview.codex_sidecar.enabled"),
+      configured: expectBoolean(sidecar.configured, "DiagnosticsOverview.codex_sidecar.configured"),
+      provider_registered: expectBoolean(sidecar.provider_registered, "DiagnosticsOverview.codex_sidecar.provider_registered"),
+      api_key_configured: expectBoolean(sidecar.api_key_configured, "DiagnosticsOverview.codex_sidecar.api_key_configured"),
+      base_url: expectNullableString(sidecar.base_url, "DiagnosticsOverview.codex_sidecar.base_url"),
+      reachable: expectBoolean(sidecar.reachable, "DiagnosticsOverview.codex_sidecar.reachable"),
+      detail: expectNullableString(sidecar.detail, "DiagnosticsOverview.codex_sidecar.detail"),
+      mode: expectNullableString(sidecar.mode, "DiagnosticsOverview.codex_sidecar.mode"),
+      warning: expectNullableString(sidecar.warning, "DiagnosticsOverview.codex_sidecar.warning"),
+      recommended_action: expectNullableString(sidecar.recommended_action, "DiagnosticsOverview.codex_sidecar.recommended_action"),
+      required_settings: expectStringArray(sidecar.required_settings ?? [], "DiagnosticsOverview.codex_sidecar.required_settings")
+    }
+  };
+};
+
+export const parseDiagnosticsConfig: Parser<DiagnosticsConfig> = (value) => {
+  const obj = expectObject(value, "DiagnosticsConfig");
+  const sidecar = expectObject(obj.codex_sidecar ?? {}, "DiagnosticsConfig.codex_sidecar");
+  return {
+    environment: expectString(obj.environment, "DiagnosticsConfig.environment"),
+    runtime_mode: expectString(obj.runtime_mode, "DiagnosticsConfig.runtime_mode"),
+    db_backend: expectString(obj.db_backend, "DiagnosticsConfig.db_backend"),
+    redis_required: expectBoolean(obj.redis_required, "DiagnosticsConfig.redis_required"),
+    redis_url: expectString(obj.redis_url, "DiagnosticsConfig.redis_url"),
+    postgres_dsn: expectString(obj.postgres_dsn, "DiagnosticsConfig.postgres_dsn"),
+    sqlite_db_path: expectString(obj.sqlite_db_path, "DiagnosticsConfig.sqlite_db_path"),
+    codex_sidecar: {
+      provider: expectNullableString(sidecar.provider, "DiagnosticsConfig.codex_sidecar.provider"),
+      enabled: expectBoolean(sidecar.enabled, "DiagnosticsConfig.codex_sidecar.enabled"),
+      configured: expectBoolean(sidecar.configured, "DiagnosticsConfig.codex_sidecar.configured"),
+      provider_registered: expectBoolean(sidecar.provider_registered, "DiagnosticsConfig.codex_sidecar.provider_registered"),
+      api_key_configured: expectBoolean(sidecar.api_key_configured, "DiagnosticsConfig.codex_sidecar.api_key_configured"),
+      base_url: expectNullableString(sidecar.base_url, "DiagnosticsConfig.codex_sidecar.base_url"),
+      reachable: expectBoolean(sidecar.reachable, "DiagnosticsConfig.codex_sidecar.reachable"),
+      detail: expectNullableString(sidecar.detail, "DiagnosticsConfig.codex_sidecar.detail"),
+      mode: expectNullableString(sidecar.mode, "DiagnosticsConfig.codex_sidecar.mode"),
+      warning: expectNullableString(sidecar.warning, "DiagnosticsConfig.codex_sidecar.warning"),
+      recommended_action: expectNullableString(sidecar.recommended_action, "DiagnosticsConfig.codex_sidecar.recommended_action"),
+      required_settings: expectStringArray(sidecar.required_settings ?? [], "DiagnosticsConfig.codex_sidecar.required_settings")
+    }
   };
 };
 

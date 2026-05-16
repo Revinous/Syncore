@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com"
     openai_timeout_seconds: int = 60
+    codex_sidecar_enabled: bool = False
+    codex_sidecar_base_url: str = ""
+    codex_sidecar_api_key: str | None = None
+    codex_sidecar_timeout_seconds: int = 60
     anthropic_api_key: str | None = None
     anthropic_base_url: str = "https://api.anthropic.com"
     anthropic_api_version: str = "2023-06-01"

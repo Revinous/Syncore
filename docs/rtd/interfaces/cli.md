@@ -119,6 +119,21 @@ syncore auth openai models
 syncore metrics context
 ```
 
+Official OpenAI Platform access remains API-key based.
+
+- Set `OPENAI_API_KEY` for the supported OpenAI provider path.
+- Use `syncore auth openai login` and `syncore auth openai models` for local CLI/TUI convenience around that API-key flow.
+
+Experimental ChatGPT/Codex sidecar mode is separate.
+
+- Set `CODEX_SIDECAR_ENABLED=true`
+- Set `CODEX_SIDECAR_BASE_URL`
+- Set `CODEX_SIDECAR_API_KEY`
+- Verify with `syncore diagnostics`
+- Select provider `codex_sidecar` explicitly when you want the local sidecar bridge
+
+Do not treat `codex_sidecar` as a replacement for official OpenAI Platform API-key mode.
+
 ## Open Shortcut
 
 ```bash

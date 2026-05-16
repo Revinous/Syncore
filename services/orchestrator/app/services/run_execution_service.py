@@ -28,6 +28,7 @@ from app.context.retrieval_refs import build_ref_id, estimate_tokens
 from app.observability import record_run_outcome
 from app.runs.providers import (
     AnthropicMessagesProvider,
+    CodexSidecarProvider,
     GeminiGenerateContentProvider,
     LlmProvider,
     LocalEchoProvider,
@@ -70,6 +71,7 @@ class RunExecutionService:
         default_timeout_seconds: int,
         max_concurrent_runs_per_task: int,
         max_concurrent_runs_per_workspace: int,
+        provider_setup_hints: dict[str, str] | None = None,
     ) -> None:
         self._store = store
         self._context_service = context_service
@@ -80,6 +82,7 @@ class RunExecutionService:
         self._default_timeout_seconds = max(default_timeout_seconds, 5)
         self._max_concurrent_runs_per_task = max(max_concurrent_runs_per_task, 1)
         self._max_concurrent_runs_per_workspace = max(max_concurrent_runs_per_workspace, 1)
+        self._provider_setup_hints = provider_setup_hints or {}
         self._digest_service = AnalystDigestService()
         self._policy_resolver = ExecutionPolicyResolver(self.WORKSPACE_POLICY_PROFILES)
         self._workspace_learning = WorkspaceLearningService(self._store)
@@ -156,12 +159,27 @@ class RunExecutionService:
         providers: dict[str, LlmProvider] = {
             "local_echo": LocalEchoProvider(),
         }
+        provider_setup_hints: dict[str, str] = {}
         openai_api_key = _resolve_openai_api_key(settings.openai_api_key)
         if openai_api_key:
             providers["openai"] = OpenAIChatCompletionsProvider(
                 api_key=openai_api_key,
                 base_url=settings.openai_base_url,
                 timeout_seconds=settings.openai_timeout_seconds,
+            )
+        codex_sidecar_api_key = (settings.codex_sidecar_api_key or "").strip()
+        codex_sidecar_base_url = settings.codex_sidecar_base_url.strip()
+        if settings.codex_sidecar_enabled and codex_sidecar_api_key and codex_sidecar_base_url:
+            providers["codex_sidecar"] = CodexSidecarProvider(
+                api_key=codex_sidecar_api_key,
+                base_url=codex_sidecar_base_url,
+                timeout_seconds=settings.codex_sidecar_timeout_seconds,
+            )
+        else:
+            provider_setup_hints["codex_sidecar"] = _build_codex_sidecar_setup_hint(
+                enabled=settings.codex_sidecar_enabled,
+                has_base_url=bool(codex_sidecar_base_url),
+                has_api_key=bool(codex_sidecar_api_key),
             )
         anthropic_api_key = (settings.anthropic_api_key or "").strip()
         if anthropic_api_key:
@@ -191,6 +209,7 @@ class RunExecutionService:
             default_timeout_seconds=settings.run_default_timeout_seconds,
             max_concurrent_runs_per_task=settings.max_concurrent_runs_per_task,
             max_concurrent_runs_per_workspace=settings.max_concurrent_runs_per_workspace,
+            provider_setup_hints=provider_setup_hints,
         )
 
     def execute(self, payload: RunExecutionRequest) -> RunExecutionResponse:
@@ -482,6 +501,9 @@ class RunExecutionService:
         provider_name = requested_provider or self._default_provider
         provider = self._providers.get(provider_name)
         if provider is None:
+            setup_hint = self._provider_setup_hints.get(provider_name)
+            if setup_hint:
+                raise ValueError(setup_hint)
             available = ", ".join(sorted(self._providers.keys()))
             raise ValueError(
                 f"Provider '{provider_name}' is not configured. Available providers: {available}."
@@ -1062,6 +1084,25 @@ def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:
     if not file_key:
         return None
     return file_key
+
+
+def _build_codex_sidecar_setup_hint(
+    *, enabled: bool, has_base_url: bool, has_api_key: bool
+) -> str:
+    missing: list[str] = []
+    if not enabled:
+        missing.append("CODEX_SIDECAR_ENABLED=true")
+    if not has_base_url:
+        missing.append("CODEX_SIDECAR_BASE_URL")
+    if not has_api_key:
+        missing.append("CODEX_SIDECAR_API_KEY")
+    missing_rendered = ", ".join(missing) if missing else "sidecar settings"
+    return (
+        "Provider 'codex_sidecar' is not configured. "
+        f"Set {missing_rendered} and verify the bridge with `syncore diagnostics` or "
+        "`GET /diagnostics`. This experimental path is distinct from official OpenAI "
+        "Platform API-key mode."
+    )
 
 
 def _parse_uuid(raw: str | None) -> UUID | None:
