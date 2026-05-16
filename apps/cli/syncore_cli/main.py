@@ -4,6 +4,7 @@ import typer
 
 from .commands.metrics import register_metrics_commands
 from .commands.notifications import register_notification_commands
+from .commands.codex_auth import register_codex_auth_commands
 from .commands.openai_auth import register_openai_auth_commands
 from .commands.run import register_run_commands
 from .commands.system import register_system_commands
@@ -12,6 +13,7 @@ from .commands.workspace import register_workspace_commands
 from .config import load_config
 from .dependencies import (
     build_client,
+    codex_auth_provider,
     openai_models_client,
     openai_store,
     start_api,
@@ -51,6 +53,9 @@ notifications_app = typer.Typer(
     name="notifications", help="Notification inbox commands", **TYPER_KWARGS
 )
 auth_app = typer.Typer(name="auth", help="Authentication commands", **TYPER_KWARGS)
+codex_auth_app = typer.Typer(
+    name="codex", help="Experimental Codex auth commands", **TYPER_KWARGS
+)
 openai_auth_app = typer.Typer(
     name="openai", help="OpenAI auth commands", **TYPER_KWARGS
 )
@@ -60,6 +65,7 @@ app.add_typer(run_app, name="run")
 app.add_typer(metrics_app, name="metrics")
 app.add_typer(notifications_app, name="notifications")
 app.add_typer(auth_app, name="auth")
+auth_app.add_typer(codex_auth_app, name="codex")
 auth_app.add_typer(openai_auth_app, name="openai")
 
 
@@ -100,6 +106,10 @@ def _openai_store() -> OpenAIAuthStore:
 
 def _openai_models_client(config=None) -> OpenAIModelClient:
     return openai_models_client(config)
+
+
+def _codex_auth_provider():
+    return codex_auth_provider()
 
 
 register_workspace_commands(
@@ -180,6 +190,13 @@ register_openai_auth_commands(
     print_error=print_error,
     print_json=print_json,
     print_table=print_table,
+)
+
+register_codex_auth_commands(
+    codex_auth_app,
+    provider_factory=lambda: _codex_auth_provider(),
+    print_error=print_error,
+    print_json=print_json,
 )
 
 

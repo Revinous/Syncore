@@ -626,6 +626,48 @@ def test_openai_auth_models_command(monkeypatch) -> None:
     assert payload["count"] == 2
 
 
+def test_codex_auth_status_command(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class _Provider:
+        provider_name = "codex_oauth_experimental"
+        token_path = "/tmp/codex-token.json"
+
+        def status(self):
+            return type(
+                "Status",
+                (),
+                {
+                    "provider": "codex_oauth_experimental",
+                    "mode": "experimental",
+                    "implementation_state": "not_implemented",
+                    "authenticated": False,
+                    "can_refresh": False,
+                    "token_path": "/tmp/codex-token.json",
+                    "expires_at": None,
+                    "detail": "Use codex_sidecar for execution.",
+                    "metadata": {},
+                },
+            )()
+
+        def clear(self):
+            return None
+
+    monkeypatch.setattr("syncore_cli.main._codex_auth_provider", lambda: _Provider())
+    result = runner.invoke(app, ["auth", "codex", "status"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["provider"] == "codex_oauth_experimental"
+    assert payload["implementation_state"] == "not_implemented"
+
+
+def test_codex_auth_login_command_returns_not_implemented() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["auth", "codex", "login"])
+    assert result.exit_code == 1
+    assert "not implemented" in result.stdout
+
+
 def test_run_result_json(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())

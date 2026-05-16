@@ -5,6 +5,7 @@ from .config import load_config
 from .local_runtime import ensure_api_running, ensure_web_running, open_browser
 from .openai_auth import OpenAIAuthStore, OpenAIModelClient
 from .tui import SyncoreTuiApp
+from services.orchestrator.app.experimental_auth import ExperimentalCodexAuthProvider
 
 
 def build_client(config=None) -> SyncoreApiClient:
@@ -47,3 +48,7 @@ def openai_models_client(config=None) -> OpenAIModelClient:
     if config is None:
         config = load_config()
     return OpenAIModelClient(timeout_seconds=config.timeout_seconds)
+
+
+def codex_auth_provider() -> ExperimentalCodexAuthProvider:
+    return ExperimentalCodexAuthProvider()
