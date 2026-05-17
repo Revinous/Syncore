@@ -4,6 +4,7 @@ from services.orchestrator.app.experimental_auth import (
     ExperimentalCodexAuthProvider,
     FileTokenStore,
     TokenBundle,
+    storage_is_secure,
 )
 from services.orchestrator.app.experimental_auth.codex_client import _extract_id_token_metadata
 from services.orchestrator.app.experimental_auth.pkce import generate_pkce_codes, generate_state
@@ -27,6 +28,7 @@ def test_file_token_store_round_trip(tmp_path) -> None:
     assert loaded.access_token == "token-123"
     assert loaded.refresh_token == "refresh-456"
     assert loaded.metadata["plan"] == "plus"
+    assert storage_is_secure(path) is True
 
 
 def test_pkce_codes_are_generated() -> None:
@@ -47,6 +49,7 @@ def test_codex_auth_status_reports_prototype(tmp_path) -> None:
     assert status.provider == "codex_oauth_experimental"
     assert status.implementation_state == "prototype"
     assert status.authenticated is False
+    assert status.storage_secure is False
     assert "codex_sidecar" in status.detail
 
 
@@ -82,3 +85,20 @@ def test_codex_auth_refresh_uses_saved_refresh_token(tmp_path) -> None:
 
 def test_extract_id_token_metadata_handles_invalid_token() -> None:
     assert _extract_id_token_metadata("not-a-jwt") == {}
+
+
+def test_codex_auth_status_reports_secure_storage_after_save(tmp_path) -> None:
+    path = tmp_path / "codex-token.json"
+    provider = ExperimentalCodexAuthProvider(store=FileTokenStore(path))
+    provider.save(
+        TokenBundle(
+            provider="codex_oauth_experimental",
+            access_token="token-123",
+            refresh_token="refresh-456",
+        )
+    )
+
+    status = provider.status()
+
+    assert status.authenticated is True
+    assert status.storage_secure is True

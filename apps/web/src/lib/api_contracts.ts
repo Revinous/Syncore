@@ -132,6 +132,7 @@ function expectDiagnosticsProviderStatus(value: unknown, label: string): Diagnos
     implementation_state: expectNullableString(obj.implementation_state, `${label}.implementation_state`),
     authenticated: obj.authenticated === undefined ? null : expectBoolean(obj.authenticated, `${label}.authenticated`),
     can_refresh: obj.can_refresh === undefined ? null : expectBoolean(obj.can_refresh, `${label}.can_refresh`),
+    storage_secure: obj.storage_secure === undefined ? null : expectBoolean(obj.storage_secure, `${label}.storage_secure`),
     token_path: expectNullableString(obj.token_path, `${label}.token_path`),
     expires_at: expectNullableString(obj.expires_at, `${label}.expires_at`)
   };

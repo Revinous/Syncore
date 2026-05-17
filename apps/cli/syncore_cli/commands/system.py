@@ -128,6 +128,7 @@ def register_system_commands(
                 "executable": native.get("executable"),
                 "authenticated": native.get("authenticated"),
                 "can_refresh": native.get("can_refresh"),
+                "storage_secure": native.get("storage_secure"),
                 "token_path": native.get("token_path"),
                 "detail": native.get("detail"),
             },

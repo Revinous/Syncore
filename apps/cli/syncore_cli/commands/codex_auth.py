@@ -29,6 +29,7 @@ def register_codex_auth_commands(
                 "implementation_state": status.implementation_state,
                 "authenticated": status.authenticated,
                 "can_refresh": status.can_refresh,
+                "storage_secure": status.storage_secure,
                 "token_path": status.token_path,
                 "expires_at": status.expires_at,
                 "detail": status.detail,

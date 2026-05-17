@@ -34,6 +34,9 @@ export default function ExperimentalProviderPanel({
         {provider.authenticated !== null ? (
           <div className="meta-card"><span className="meta-label">Authenticated</span><div className="meta-value">{String(provider.authenticated)}</div></div>
         ) : null}
+        {provider.storage_secure !== null ? (
+          <div className="meta-card"><span className="meta-label">Storage Secure</span><div className="meta-value">{String(provider.storage_secure)}</div></div>
+        ) : null}
       </div>
       <div className="meta-card" style={{ marginTop: 16 }}>
         <span className="meta-label">Warning</span>

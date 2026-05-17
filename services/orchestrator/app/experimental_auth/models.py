@@ -21,6 +21,7 @@ class ExperimentalAuthStatus:
     implementation_state: str
     authenticated: bool
     can_refresh: bool
+    storage_secure: bool
     token_path: str
     expires_at: str | None
     detail: str

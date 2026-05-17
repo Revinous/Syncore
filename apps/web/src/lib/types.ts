@@ -291,6 +291,7 @@ export type DiagnosticsProviderStatus = {
   implementation_state: string | null;
   authenticated: boolean | null;
   can_refresh: boolean | null;
+  storage_secure: boolean | null;
   token_path: string | null;
   expires_at: string | null;
 };

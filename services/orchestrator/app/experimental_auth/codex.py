@@ -14,7 +14,7 @@ from .codex_client import (
 )
 from .models import ExperimentalAuthStatus, TokenBundle
 from .oauth_server import OAuthCallbackServer
-from .store import FileTokenStore, TokenStore
+from .store import FileTokenStore, TokenStore, storage_is_secure
 
 
 class ExperimentalAuthProvider(Protocol):
@@ -116,6 +116,7 @@ class ExperimentalCodexAuthProvider:
             implementation_state="prototype",
             authenticated=bundle is not None,
             can_refresh=bundle is not None and bool(bundle.refresh_token),
+            storage_secure=storage_is_secure(self._store.path),
             token_path=str(self._store.path),
             expires_at=bundle.expires_at if bundle is not None else None,
             detail=(

@@ -235,6 +235,7 @@ class FakeClient:
                 "implementation_state": "prototype",
                 "authenticated": False,
                 "can_refresh": False,
+                "storage_secure": False,
                 "token_path": "/home/demo/.syncore/auth/codex/token.json",
                 "expires_at": None,
             },
@@ -274,6 +275,7 @@ class FakeClient:
                 "implementation_state": "prototype",
                 "authenticated": False,
                 "can_refresh": False,
+                "storage_secure": False,
                 "token_path": "/home/demo/.syncore/auth/codex/token.json",
                 "expires_at": None,
             },
@@ -684,6 +686,7 @@ def test_codex_auth_status_command(monkeypatch) -> None:
                     "implementation_state": "prototype",
                     "authenticated": False,
                     "can_refresh": False,
+                    "storage_secure": False,
                     "token_path": "/tmp/codex-token.json",
                     "expires_at": None,
                     "detail": "Use codex_sidecar for execution.",
@@ -700,6 +703,7 @@ def test_codex_auth_status_command(monkeypatch) -> None:
     payload = json.loads(result.stdout)
     assert payload["provider"] == "codex_oauth_experimental"
     assert payload["implementation_state"] == "prototype"
+    assert payload["storage_secure"] is False
 
 
 def test_codex_auth_login_command_uses_browser_flow(monkeypatch) -> None:

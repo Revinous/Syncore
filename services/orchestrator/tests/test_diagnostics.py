@@ -45,6 +45,7 @@ def test_diagnostics_config_redacts_connection_values(monkeypatch, tmp_path) -> 
     assert payload["codex_oauth_experimental"]["provider_registered"] is False
     assert payload["codex_oauth_experimental"]["executable"] is False
     assert payload["codex_oauth_experimental"]["authenticated"] is False
+    assert payload["codex_oauth_experimental"]["storage_secure"] is False
     assert payload["codex_oauth_experimental"]["implementation_state"] == "prototype"
 
 

@@ -10,7 +10,6 @@ from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
-
 class TaskDiagnostics(BaseModel):
     task_id: UUID
     task_exists: bool
@@ -36,6 +35,7 @@ class ExperimentalProviderDiagnostics(BaseModel):
     implementation_state: str | None = None
     authenticated: bool | None = None
     can_refresh: bool | None = None
+    storage_secure: bool | None = None
     token_path: str | None = None
     expires_at: str | None = None
 
@@ -226,6 +226,7 @@ def _codex_oauth_experimental_status() -> ExperimentalProviderDiagnostics:
         implementation_state=status.implementation_state,
         authenticated=status.authenticated,
         can_refresh=status.can_refresh,
+        storage_secure=status.storage_secure,
         token_path=status.token_path,
         expires_at=status.expires_at,
     )
