@@ -15,6 +15,7 @@ All control surfaces use the same API:
 - **Workflows**: workspace, task/run, context optimization, and autonomy lifecycles.
 - **Reference**: endpoint list, command reference, and hotkeys.
 - **Operations**: troubleshooting and version/branch docs strategy for Read the Docs.
+- **Experimental**: sidecar and native Codex auth modes with explicit support boundaries.
 
 ## Which Path Should You Use?
 

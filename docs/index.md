@@ -29,6 +29,7 @@ If you are new to Syncore, begin with:
 | Use the browser control panel | [Web UI Guide](rtd/interfaces/webui.md) |
 | Integrate directly with HTTP | [API Reference](rtd/reference/api.md) |
 | Debug a problem | [Troubleshooting](rtd/operations/troubleshooting.md) |
+| Configure experimental Codex auth modes | [Experimental Codex Sidecar](experimental/codex-sidecar.md), [Experimental Native Codex OAuth](experimental/codex-oauth.md) |
 
 ## Manual Structure
 

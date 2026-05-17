@@ -18,7 +18,13 @@ def register_codex_auth_commands(
     print_error: Callable[[str], None],
     print_json: Callable[[object], None],
 ) -> None:
-    @codex_auth_app.command("status")
+    @codex_auth_app.command(
+        "status",
+        help=(
+            "Show local experimental Codex OAuth credential state. "
+            "This reports auth posture only; execution should still use codex_sidecar."
+        ),
+    )
     def codex_status() -> None:
         provider = provider_factory()
         status = provider.status()
@@ -37,7 +43,13 @@ def register_codex_auth_commands(
             }
         )
 
-    @codex_auth_app.command("login")
+    @codex_auth_app.command(
+        "login",
+        help=(
+            "Start the experimental native Codex OAuth flow. "
+            "This creates local credentials only and does not enable native execution yet."
+        ),
+    )
     def codex_login(
         device: bool = typer.Option(
             False,
@@ -96,7 +108,10 @@ def register_codex_auth_commands(
             }
         )
 
-    @codex_auth_app.command("refresh")
+    @codex_auth_app.command(
+        "refresh",
+        help="Refresh stored experimental Codex OAuth credentials if a refresh token is present.",
+    )
     def codex_refresh() -> None:
         provider = provider_factory()
         try:
@@ -114,7 +129,10 @@ def register_codex_auth_commands(
             }
         )
 
-    @codex_auth_app.command("logout")
+    @codex_auth_app.command(
+        "logout",
+        help="Delete locally stored experimental Codex OAuth credentials.",
+    )
     def codex_logout() -> None:
         provider = provider_factory()
         provider.clear()

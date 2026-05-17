@@ -134,13 +134,21 @@ Experimental ChatGPT/Codex sidecar mode is separate.
 
 Do not treat `codex_sidecar` as a replacement for official OpenAI Platform API-key mode.
 
+See also:
+- `docs/experimental/codex-sidecar.md`
+
 Native experimental Codex OAuth is available as a local prototype.
 
 - Inspect current auth state with `syncore auth codex status`
 - Start browser login with `syncore auth codex login`
 - Use device fallback with `syncore auth codex login --device`
 - Refresh stored tokens with `syncore auth codex refresh`
+- Delete stored tokens with `syncore auth codex logout`
+- Verify storage posture with `syncore diagnostics`
 - Native execution is still not wired; use `codex_sidecar` for actual execution today
+
+See also:
+- `docs/experimental/codex-oauth.md`
 
 ## Open Shortcut
 
