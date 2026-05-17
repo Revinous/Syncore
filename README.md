@@ -184,8 +184,11 @@ OpenAI model access in CLI/TUI:
   - verify with `syncore diagnostics`
   - when available, select provider `codex_sidecar` explicitly
 - Native experimental Codex OAuth is not implemented yet:
-  - inspect placeholder status with `syncore auth codex status`
-  - use `codex_sidecar` for execution today
+  - inspect auth status with `syncore auth codex status`
+  - start browser login with `syncore auth codex login`
+  - use device fallback with `syncore auth codex login --device`
+  - refresh stored tokens with `syncore auth codex refresh`
+  - execution should still prefer `codex_sidecar` until a native executor is added
 - In TUI:
   - press `i` to connect OpenAI
   - press `m` to refresh model list

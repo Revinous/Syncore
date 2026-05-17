@@ -5,6 +5,8 @@ from services.orchestrator.app.experimental_auth import (
     FileTokenStore,
     TokenBundle,
 )
+from services.orchestrator.app.experimental_auth.codex_client import _extract_id_token_metadata
+from services.orchestrator.app.experimental_auth.pkce import generate_pkce_codes, generate_state
 
 
 def test_file_token_store_round_trip(tmp_path) -> None:
@@ -27,13 +29,56 @@ def test_file_token_store_round_trip(tmp_path) -> None:
     assert loaded.metadata["plan"] == "plus"
 
 
-def test_codex_auth_status_reports_not_implemented(tmp_path) -> None:
+def test_pkce_codes_are_generated() -> None:
+    codes = generate_pkce_codes()
+    state = generate_state()
+
+    assert len(codes.code_verifier) >= 43
+    assert len(codes.code_challenge) >= 43
+    assert state
+
+
+def test_codex_auth_status_reports_prototype(tmp_path) -> None:
     path = tmp_path / "codex-token.json"
     provider = ExperimentalCodexAuthProvider(store=FileTokenStore(path))
 
     status = provider.status()
 
     assert status.provider == "codex_oauth_experimental"
-    assert status.implementation_state == "not_implemented"
+    assert status.implementation_state == "prototype"
     assert status.authenticated is False
     assert "codex_sidecar" in status.detail
+
+
+def test_codex_auth_refresh_uses_saved_refresh_token(tmp_path) -> None:
+    path = tmp_path / "codex-token.json"
+
+    class _Client:
+        def refresh_tokens(self, refresh_token: str) -> TokenBundle:
+            assert refresh_token == "refresh-456"
+            return TokenBundle(
+                provider="codex_oauth_experimental",
+                access_token="token-789",
+                refresh_token="refresh-456",
+                expires_at="2026-05-20T12:00:00Z",
+                metadata={"plan": "plus"},
+            )
+
+    provider = ExperimentalCodexAuthProvider(store=FileTokenStore(path), client=_Client())
+    provider.save(
+        TokenBundle(
+            provider="codex_oauth_experimental",
+            access_token="token-123",
+            refresh_token="refresh-456",
+        )
+    )
+
+    refreshed = provider.refresh()
+
+    assert refreshed.access_token == "token-789"
+    assert provider.load() is not None
+    assert provider.load().access_token == "token-789"  # type: ignore[union-attr]
+
+
+def test_extract_id_token_metadata_handles_invalid_token() -> None:
+    assert _extract_id_token_metadata("not-a-jwt") == {}

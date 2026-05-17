@@ -8,9 +8,13 @@
   position: sticky;
   top: 0;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
   padding: 28px 22px;
   border-right: 1px solid var(--border);
   background: linear-gradient(180deg, rgba(255, 250, 241, 0.98), rgba(250, 244, 235, 0.94));
+  overflow: hidden;
 }
 
 .brand {
@@ -64,9 +68,12 @@
 }
 
 .nav-group {
-  margin-top: 28px;
   display: grid;
   gap: 10px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .nav-link {
@@ -102,12 +109,12 @@
 }
 
 .sidebar-footnote {
-  margin-top: 24px;
   padding: 16px;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
   font-size: 0.88rem;
   line-height: 1.5;
+  flex: 0 0 auto;
 }
 
 .main-shell {

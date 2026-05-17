@@ -640,7 +640,7 @@ def test_codex_auth_status_command(monkeypatch) -> None:
                 {
                     "provider": "codex_oauth_experimental",
                     "mode": "experimental",
-                    "implementation_state": "not_implemented",
+                    "implementation_state": "prototype",
                     "authenticated": False,
                     "can_refresh": False,
                     "token_path": "/tmp/codex-token.json",
@@ -658,14 +658,93 @@ def test_codex_auth_status_command(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["provider"] == "codex_oauth_experimental"
-    assert payload["implementation_state"] == "not_implemented"
+    assert payload["implementation_state"] == "prototype"
 
 
-def test_codex_auth_login_command_returns_not_implemented() -> None:
+def test_codex_auth_login_command_uses_browser_flow(monkeypatch) -> None:
     runner = CliRunner()
+
+    class _Provider:
+        provider_name = "codex_oauth_experimental"
+        token_path = "/tmp/codex-token.json"
+
+        def login_browser(self, *, callback_port: int, no_browser: bool):
+            assert callback_port == 1455
+            assert no_browser is False
+            return (
+                type(
+                    "Bundle",
+                    (),
+                    {
+                        "expires_at": "2026-05-20T12:00:00Z",
+                        "metadata": {"plan": "plus"},
+                    },
+                )(),
+                "http://localhost:1455/auth/callback",
+            )
+
+    monkeypatch.setattr("syncore_cli.main._codex_auth_provider", lambda: _Provider())
     result = runner.invoke(app, ["auth", "codex", "login"])
-    assert result.exit_code == 1
-    assert "not implemented" in result.stdout
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["login_flow"] == "browser"
+    assert payload["provider"] == "codex_oauth_experimental"
+
+
+def test_codex_auth_login_command_uses_device_flow(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class _Provider:
+        provider_name = "codex_oauth_experimental"
+        token_path = "/tmp/codex-token.json"
+
+        def login_device(self):
+            return (
+                type(
+                    "Bundle",
+                    (),
+                    {
+                        "expires_at": "2026-05-20T12:00:00Z",
+                        "metadata": {"plan": "plus"},
+                    },
+                )(),
+                {
+                    "verification_url": "https://auth.openai.com/codex/device",
+                    "user_code": "ABCD-EFGH",
+                    "interval_seconds": 5,
+                },
+            )
+
+    monkeypatch.setattr("syncore_cli.main._codex_auth_provider", lambda: _Provider())
+    result = runner.invoke(app, ["auth", "codex", "login", "--device"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["login_flow"] == "device"
+    assert payload["user_code"] == "ABCD-EFGH"
+
+
+def test_codex_auth_refresh_command(monkeypatch) -> None:
+    runner = CliRunner()
+
+    class _Provider:
+        provider_name = "codex_oauth_experimental"
+        token_path = "/tmp/codex-token.json"
+
+        def refresh(self):
+            return type(
+                "Bundle",
+                (),
+                {
+                    "expires_at": "2026-05-21T12:00:00Z",
+                    "metadata": {"plan": "plus"},
+                },
+            )()
+
+    monkeypatch.setattr("syncore_cli.main._codex_auth_provider", lambda: _Provider())
+    result = runner.invoke(app, ["auth", "codex", "refresh"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refreshed"
 
 
 def test_run_result_json(monkeypatch) -> None:
