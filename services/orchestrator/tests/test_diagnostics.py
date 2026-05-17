@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
+from app.experimental_auth import FileTokenStore, TokenBundle
 from app.main import create_app
 
 
@@ -67,3 +68,53 @@ def test_diagnostics_sidecar_reports_missing_api_key(monkeypatch, tmp_path) -> N
     assert payload["codex_oauth_experimental"]["recommended_action"].startswith(
         "Run `syncore auth codex login`"
     )
+
+
+def test_diagnostics_sidecar_reports_reachable_when_probe_succeeds(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_SIDECAR_ENABLED", "true")
+    monkeypatch.setenv("CODEX_SIDECAR_BASE_URL", "http://127.0.0.1:4010")
+    monkeypatch.setenv("CODEX_SIDECAR_API_KEY", "sidecar-secret")
+
+    class _Response:
+        status_code = 200
+
+    def _fake_get(url: str, *, headers: dict[str, str], timeout: float):
+        assert url == "http://127.0.0.1:4010/health"
+        assert headers["Authorization"] == "Bearer sidecar-secret"
+        assert timeout == 2.0
+        return _Response()
+
+    monkeypatch.setattr("app.api.routes.diagnostics.httpx.get", _fake_get)
+
+    client = TestClient(create_app())
+    response = client.get("/diagnostics")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["codex_sidecar"]["reachable"] is True
+    assert payload["codex_sidecar"]["executable"] is True
+    assert payload["codex_sidecar"]["detail"] == "reachable via /health (200)"
+
+
+def test_diagnostics_native_auth_reports_secure_storage_when_token_exists(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    store = FileTokenStore(tmp_path / ".syncore" / "auth" / "codex" / "token.json")
+    store.save(
+        TokenBundle(
+            provider="codex_oauth_experimental",
+            access_token="token-123",
+            refresh_token="refresh-456",
+        )
+    )
+
+    client = TestClient(create_app())
+    response = client.get("/diagnostics")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["codex_oauth_experimental"]["authenticated"] is True
+    assert payload["codex_oauth_experimental"]["provider_registered"] is True
+    assert payload["codex_oauth_experimental"]["storage_secure"] is True

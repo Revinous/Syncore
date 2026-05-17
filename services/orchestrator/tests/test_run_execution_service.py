@@ -15,6 +15,7 @@ from packages.contracts.python.models import (
     Task,
 )
 
+from app.config import Settings
 from app.context.schemas import OptimizedContextBundle
 from app.services.run_execution_service import RunExecutionService
 
@@ -523,6 +524,45 @@ def test_codex_sidecar_resolution_returns_actionable_setup_hint() -> None:
         service._resolve_provider("codex_sidecar")
     assert "CODEX_SIDECAR_BASE_URL" in str(exc.value)
     assert "syncore diagnostics" in str(exc.value)
+
+
+def test_codex_oauth_resolution_returns_actionable_setup_hint() -> None:
+    task_id = uuid4()
+    service, _, _ = _service(task_id)
+    service._provider_setup_hints["codex_oauth_experimental"] = (  # type: ignore[attr-defined]
+        "Provider 'codex_oauth_experimental' is not ready for execution. "
+        "Authenticate with `syncore auth codex login` or "
+        "`syncore auth codex login --device`, "
+        "then use `codex_sidecar` for live execution until a native executor is added."
+    )
+    with pytest.raises(ValueError) as exc:
+        service._resolve_provider("codex_oauth_experimental")
+    assert "syncore auth codex login" in str(exc.value)
+    assert "codex_sidecar" in str(exc.value)
+
+
+def test_from_settings_registers_native_auth_provider_when_token_present(
+    monkeypatch, tmp_path
+) -> None:
+    class _AuthProvider:
+        def current_access_token(self) -> str | None:
+            return "token-123"
+
+    monkeypatch.setattr(
+        "app.services.run_execution_service.ExperimentalCodexAuthProvider",
+        lambda: _AuthProvider(),
+    )
+    settings = Settings(
+        syncore_db_backend="sqlite",
+        sqlite_db_path=str(tmp_path / "syncore.db"),
+        redis_required=False,
+        codex_sidecar_enabled=False,
+    )
+
+    service = RunExecutionService.from_settings(settings)
+    providers = [item.provider for item in service.list_provider_capabilities()]
+
+    assert "codex_oauth_experimental" in providers
 
 
 def test_workspace_preflight_fails_for_missing_binary(tmp_path) -> None:
