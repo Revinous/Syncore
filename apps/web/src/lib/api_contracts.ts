@@ -4,6 +4,7 @@ import type {
   DashboardSummary,
   DiagnosticsConfig,
   DiagnosticsOverview,
+  DiagnosticsProviderStatus,
   HealthResponse,
   ProjectEvent,
   ServicesHealthResponse,
@@ -112,6 +113,30 @@ function expectTaskExecutionRunOutput(value: unknown, label: string): TaskExecut
   };
 }
 
+function expectDiagnosticsProviderStatus(value: unknown, label: string): DiagnosticsProviderStatus {
+  const obj = expectObject(value, label);
+  return {
+    provider: expectNullableString(obj.provider, `${label}.provider`),
+    mode: expectNullableString(obj.mode, `${label}.mode`),
+    warning: expectNullableString(obj.warning, `${label}.warning`),
+    recommended_action: expectNullableString(obj.recommended_action, `${label}.recommended_action`),
+    provider_registered: expectBoolean(obj.provider_registered, `${label}.provider_registered`),
+    executable: expectBoolean(obj.executable, `${label}.executable`),
+    detail: expectNullableString(obj.detail, `${label}.detail`),
+    required_settings: expectStringArray(obj.required_settings ?? [], `${label}.required_settings`),
+    enabled: obj.enabled === undefined ? null : expectBoolean(obj.enabled, `${label}.enabled`),
+    configured: obj.configured === undefined ? null : expectBoolean(obj.configured, `${label}.configured`),
+    api_key_configured: obj.api_key_configured === undefined ? null : expectBoolean(obj.api_key_configured, `${label}.api_key_configured`),
+    base_url: expectNullableString(obj.base_url, `${label}.base_url`),
+    reachable: obj.reachable === undefined ? null : expectBoolean(obj.reachable, `${label}.reachable`),
+    implementation_state: expectNullableString(obj.implementation_state, `${label}.implementation_state`),
+    authenticated: obj.authenticated === undefined ? null : expectBoolean(obj.authenticated, `${label}.authenticated`),
+    can_refresh: obj.can_refresh === undefined ? null : expectBoolean(obj.can_refresh, `${label}.can_refresh`),
+    token_path: expectNullableString(obj.token_path, `${label}.token_path`),
+    expires_at: expectNullableString(obj.expires_at, `${label}.expires_at`)
+  };
+}
+
 function contractError(message: string, detail: unknown): ApiError {
   return { status: -1, message: `API contract error: ${message}`, detail };
 }
@@ -204,33 +229,22 @@ export const parseTaskExecutionReport: Parser<TaskExecutionReport> = (value) => 
 
 export const parseDiagnosticsOverview: Parser<DiagnosticsOverview> = (value) => {
   const obj = expectObject(value, "DiagnosticsOverview");
-  const sidecar = expectObject(obj.codex_sidecar ?? {}, "DiagnosticsOverview.codex_sidecar");
   return {
     service: expectString(obj.service, "DiagnosticsOverview.service"),
     environment: expectString(obj.environment, "DiagnosticsOverview.environment"),
     runtime_mode: expectString(obj.runtime_mode, "DiagnosticsOverview.runtime_mode"),
     db_backend: expectString(obj.db_backend, "DiagnosticsOverview.db_backend"),
     redis_required: expectBoolean(obj.redis_required, "DiagnosticsOverview.redis_required"),
-    codex_sidecar: {
-      provider: expectNullableString(sidecar.provider, "DiagnosticsOverview.codex_sidecar.provider"),
-      enabled: expectBoolean(sidecar.enabled, "DiagnosticsOverview.codex_sidecar.enabled"),
-      configured: expectBoolean(sidecar.configured, "DiagnosticsOverview.codex_sidecar.configured"),
-      provider_registered: expectBoolean(sidecar.provider_registered, "DiagnosticsOverview.codex_sidecar.provider_registered"),
-      api_key_configured: expectBoolean(sidecar.api_key_configured, "DiagnosticsOverview.codex_sidecar.api_key_configured"),
-      base_url: expectNullableString(sidecar.base_url, "DiagnosticsOverview.codex_sidecar.base_url"),
-      reachable: expectBoolean(sidecar.reachable, "DiagnosticsOverview.codex_sidecar.reachable"),
-      detail: expectNullableString(sidecar.detail, "DiagnosticsOverview.codex_sidecar.detail"),
-      mode: expectNullableString(sidecar.mode, "DiagnosticsOverview.codex_sidecar.mode"),
-      warning: expectNullableString(sidecar.warning, "DiagnosticsOverview.codex_sidecar.warning"),
-      recommended_action: expectNullableString(sidecar.recommended_action, "DiagnosticsOverview.codex_sidecar.recommended_action"),
-      required_settings: expectStringArray(sidecar.required_settings ?? [], "DiagnosticsOverview.codex_sidecar.required_settings")
-    }
+    codex_sidecar: expectDiagnosticsProviderStatus(obj.codex_sidecar ?? {}, "DiagnosticsOverview.codex_sidecar"),
+    codex_oauth_experimental: expectDiagnosticsProviderStatus(
+      obj.codex_oauth_experimental ?? {},
+      "DiagnosticsOverview.codex_oauth_experimental"
+    )
   };
 };
 
 export const parseDiagnosticsConfig: Parser<DiagnosticsConfig> = (value) => {
   const obj = expectObject(value, "DiagnosticsConfig");
-  const sidecar = expectObject(obj.codex_sidecar ?? {}, "DiagnosticsConfig.codex_sidecar");
   return {
     environment: expectString(obj.environment, "DiagnosticsConfig.environment"),
     runtime_mode: expectString(obj.runtime_mode, "DiagnosticsConfig.runtime_mode"),
@@ -239,20 +253,11 @@ export const parseDiagnosticsConfig: Parser<DiagnosticsConfig> = (value) => {
     redis_url: expectString(obj.redis_url, "DiagnosticsConfig.redis_url"),
     postgres_dsn: expectString(obj.postgres_dsn, "DiagnosticsConfig.postgres_dsn"),
     sqlite_db_path: expectString(obj.sqlite_db_path, "DiagnosticsConfig.sqlite_db_path"),
-    codex_sidecar: {
-      provider: expectNullableString(sidecar.provider, "DiagnosticsConfig.codex_sidecar.provider"),
-      enabled: expectBoolean(sidecar.enabled, "DiagnosticsConfig.codex_sidecar.enabled"),
-      configured: expectBoolean(sidecar.configured, "DiagnosticsConfig.codex_sidecar.configured"),
-      provider_registered: expectBoolean(sidecar.provider_registered, "DiagnosticsConfig.codex_sidecar.provider_registered"),
-      api_key_configured: expectBoolean(sidecar.api_key_configured, "DiagnosticsConfig.codex_sidecar.api_key_configured"),
-      base_url: expectNullableString(sidecar.base_url, "DiagnosticsConfig.codex_sidecar.base_url"),
-      reachable: expectBoolean(sidecar.reachable, "DiagnosticsConfig.codex_sidecar.reachable"),
-      detail: expectNullableString(sidecar.detail, "DiagnosticsConfig.codex_sidecar.detail"),
-      mode: expectNullableString(sidecar.mode, "DiagnosticsConfig.codex_sidecar.mode"),
-      warning: expectNullableString(sidecar.warning, "DiagnosticsConfig.codex_sidecar.warning"),
-      recommended_action: expectNullableString(sidecar.recommended_action, "DiagnosticsConfig.codex_sidecar.recommended_action"),
-      required_settings: expectStringArray(sidecar.required_settings ?? [], "DiagnosticsConfig.codex_sidecar.required_settings")
-    }
+    codex_sidecar: expectDiagnosticsProviderStatus(obj.codex_sidecar ?? {}, "DiagnosticsConfig.codex_sidecar"),
+    codex_oauth_experimental: expectDiagnosticsProviderStatus(
+      obj.codex_oauth_experimental ?? {},
+      "DiagnosticsConfig.codex_oauth_experimental"
+    )
   };
 };
 

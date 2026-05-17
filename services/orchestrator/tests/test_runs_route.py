@@ -60,6 +60,19 @@ class FakeRunExecutionService:
                 speed_tier=5,
                 cost_tier=1,
                 strengths=("deterministic",),
+            ),
+            ProviderCapabilities(
+                provider="codex_oauth_experimental",
+                supports_streaming=False,
+                supports_system_prompt=True,
+                supports_temperature=True,
+                supports_max_tokens=True,
+                model_hint="codex",
+                max_context_tokens=128_000,
+                quality_tier=4,
+                speed_tier=3,
+                cost_tier=2,
+                strengths=("experimental", "native-oauth-prototype", "auth-only"),
             )
         ]
 
@@ -107,8 +120,9 @@ def test_execute_run_stream_route_returns_streaming_response() -> None:
 
 def test_list_provider_capabilities_route_returns_rows() -> None:
     payload = list_provider_capabilities(service=FakeRunExecutionService())  # type: ignore[arg-type]
-    assert len(payload) == 1
+    assert len(payload) == 2
     assert payload[0].provider == "local_echo"
+    assert payload[1].provider == "codex_oauth_experimental"
 
 
 def test_enqueue_run_job_route_returns_queue_row() -> None:

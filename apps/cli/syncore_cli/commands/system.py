@@ -96,6 +96,7 @@ def register_system_commands(
         overview = payload["overview"]
         config = payload["config"]
         sidecar = overview.get("codex_sidecar", {})
+        native = overview.get("codex_oauth_experimental", {})
         print_kv_panel(
             "Diagnostics Overview",
             {
@@ -113,9 +114,22 @@ def register_system_commands(
                 "enabled": sidecar.get("enabled"),
                 "configured": sidecar.get("configured"),
                 "provider_registered": sidecar.get("provider_registered"),
+                "executable": sidecar.get("executable"),
                 "reachable": sidecar.get("reachable"),
                 "base_url": sidecar.get("base_url"),
                 "detail": sidecar.get("detail"),
+            },
+        )
+        print_kv_panel(
+            "Native Experimental Codex OAuth",
+            {
+                "provider": native.get("provider"),
+                "provider_registered": native.get("provider_registered"),
+                "executable": native.get("executable"),
+                "authenticated": native.get("authenticated"),
+                "can_refresh": native.get("can_refresh"),
+                "token_path": native.get("token_path"),
+                "detail": native.get("detail"),
             },
         )
         print_lines_panel(
@@ -123,8 +137,11 @@ def register_system_commands(
             [
                 "Official OpenAI Platform access uses OPENAI_API_KEY.",
                 "codex_sidecar is an experimental local bridge and is distinct from official OpenAI API-key mode.",
+                "codex_oauth_experimental is a native local auth prototype and is currently auth-only.",
                 str(sidecar.get("warning", "")),
+                str(native.get("warning", "")),
                 f"Recommended action: {sidecar.get('recommended_action', 'Run `syncore diagnostics --json` for the full payload.')}",
+                f"Native auth action: {native.get('recommended_action', 'Run `syncore auth codex status` for more detail.')}",
                 "Verify available providers with `syncore providers`.",
             ],
         )
@@ -157,12 +174,17 @@ def register_system_commands(
                 str(item.get("model_hint")),
                 str(item.get("supports_streaming")),
                 str(item.get("supports_system_prompt")),
+                (
+                    "auth-only"
+                    if "auth-only" in (item.get("strengths") or [])
+                    else "executable"
+                ),
             ]
             for item in rows
         ]
         print_table(
             "Run Providers",
-            ["provider", "model_hint", "streaming", "system_prompt"],
+            ["provider", "model_hint", "streaming", "system_prompt", "execution"],
             table_rows,
         )
 

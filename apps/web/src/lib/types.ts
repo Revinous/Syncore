@@ -260,20 +260,8 @@ export type DiagnosticsConfig = {
   redis_url: string;
   postgres_dsn: string;
   sqlite_db_path: string;
-  codex_sidecar: {
-    provider: string | null;
-    enabled: boolean;
-    configured: boolean;
-    provider_registered: boolean;
-    api_key_configured: boolean;
-    base_url: string | null;
-    reachable: boolean;
-    detail: string | null;
-    mode: string | null;
-    warning: string | null;
-    recommended_action: string | null;
-    required_settings: string[];
-  };
+  codex_sidecar: DiagnosticsProviderStatus;
+  codex_oauth_experimental: DiagnosticsProviderStatus;
 };
 
 export type DiagnosticsOverview = {
@@ -282,7 +270,29 @@ export type DiagnosticsOverview = {
   runtime_mode: string;
   db_backend: string;
   redis_required: boolean;
-  codex_sidecar: DiagnosticsConfig["codex_sidecar"];
+  codex_sidecar: DiagnosticsProviderStatus;
+  codex_oauth_experimental: DiagnosticsProviderStatus;
+};
+
+export type DiagnosticsProviderStatus = {
+  provider: string | null;
+  mode: string | null;
+  warning: string | null;
+  recommended_action: string | null;
+  provider_registered: boolean;
+  executable: boolean;
+  detail: string | null;
+  required_settings: string[];
+  enabled: boolean | null;
+  configured: boolean | null;
+  api_key_configured: boolean | null;
+  base_url: string | null;
+  reachable: boolean | null;
+  implementation_state: string | null;
+  authenticated: boolean | null;
+  can_refresh: boolean | null;
+  token_path: string | null;
+  expires_at: string | null;
 };
 
 export type DiagnosticsRoutes = {

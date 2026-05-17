@@ -19,6 +19,7 @@ import {
 } from "../src/lib/types";
 import { EmptyState } from "../src/components/EmptyState";
 import { ErrorState } from "../src/components/ErrorState";
+import ExperimentalProviderPanel from "../src/components/ExperimentalProviderPanel";
 import { Layout } from "../src/components/Layout";
 import { LoadingState } from "../src/components/LoadingState";
 import { PageHeader } from "../src/components/PageHeader";
@@ -161,37 +162,18 @@ export default function DiagnosticsPage() {
                   <div className="meta-card"><span className="meta-label">Redis Required</span><div className="meta-value">{String(overview.redis_required)}</div></div>
                 </div>
               </Surface>
-              <Surface title="Experimental Codex Sidecar" description="Local CLIProxyAPI-style bridge status for ChatGPT/Codex-backed execution. This is experimental and distinct from official OpenAI API key mode.">
-                <div className="meta-grid">
-                  <div className="meta-card"><span className="meta-label">Provider</span><div className="meta-value">{overview.codex_sidecar.provider ?? "codex_sidecar"}</div></div>
-                  <div className="meta-card"><span className="meta-label">Enabled</span><div className="meta-value">{String(overview.codex_sidecar.enabled)}</div></div>
-                  <div className="meta-card"><span className="meta-label">Configured</span><div className="meta-value">{String(overview.codex_sidecar.configured)}</div></div>
-                  <div className="meta-card"><span className="meta-label">Registered</span><div className="meta-value">{String(overview.codex_sidecar.provider_registered)}</div></div>
-                  <div className="meta-card"><span className="meta-label">Reachable</span><div className="meta-value"><StatusBadge status={overview.codex_sidecar.reachable ? "completed" : overview.codex_sidecar.enabled ? "blocked" : "pending"} /></div></div>
-                  <div className="meta-card"><span className="meta-label">Mode</span><div className="meta-value">{overview.codex_sidecar.mode ?? "none"}</div></div>
-                </div>
-                <div className="meta-card" style={{ marginTop: 16 }}>
-                  <span className="meta-label">Warning</span>
-                  <div className="meta-value">{overview.codex_sidecar.warning ?? "none"}</div>
-                </div>
-                <div className="meta-card" style={{ marginTop: 16 }}>
-                  <span className="meta-label">Detail</span>
-                  <div className="meta-value">{overview.codex_sidecar.detail ?? "none"}</div>
-                  <div className="helper-text" style={{ marginTop: 8 }}>
-                    Base URL: {overview.codex_sidecar.base_url ?? "not configured"}
-                  </div>
-                </div>
-                <div className="meta-card" style={{ marginTop: 16 }}>
-                  <span className="meta-label">Recommended Action</span>
-                  <div className="meta-value">{overview.codex_sidecar.recommended_action ?? "none"}</div>
-                  <div className="helper-text" style={{ marginTop: 8 }}>
-                    Required settings: {overview.codex_sidecar.required_settings.join(", ")}
-                  </div>
-                  <div className="helper-text" style={{ marginTop: 8 }}>
-                    Official OpenAI Platform access remains separate and still uses `OPENAI_API_KEY`.
-                  </div>
-                </div>
-              </Surface>
+              <ExperimentalProviderPanel
+                title="Experimental Codex Sidecar"
+                description="Local CLIProxyAPI-style bridge status for ChatGPT/Codex-backed execution."
+                provider={overview.codex_sidecar}
+                footerNote="Official OpenAI Platform access remains separate and still uses OPENAI_API_KEY."
+              />
+              <ExperimentalProviderPanel
+                title="Native Experimental Codex OAuth"
+                description="Local auth prototype status for ChatGPT/Codex OAuth credentials."
+                provider={overview.codex_oauth_experimental}
+                footerNote="This provider is auth-only today. Use codex_sidecar for live execution until a native executor exists."
+              />
               <Surface title="Benchmark Proof" description="Latest repeatable benchmark suite result captured against public repos.">
                 {!benchmark?.available ? (
                   <EmptyState

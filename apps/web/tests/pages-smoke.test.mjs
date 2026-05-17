@@ -28,9 +28,11 @@ test("tasks page has empty state", () => {
 
 test("diagnostics page renders service health", () => {
   const page = read("../pages/diagnostics.tsx");
+  const providerPanel = read("../src/components/ExperimentalProviderPanel.tsx");
   assert.match(page, /Service Health/);
   assert.match(page, /getServicesHealth/);
-  assert.match(page, /Experimental Codex Sidecar/);
+  assert.match(providerPanel, /Recommended Action/);
+  assert.match(page, /Native Experimental Codex OAuth/);
 });
 
 test("notifications page has empty state", () => {

@@ -242,6 +242,55 @@ class CodexSidecarProvider(OpenAIChatCompletionsProvider):
         )
 
 
+class CodexOAuthExperimentalProvider:
+    name = "codex_oauth_experimental"
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            provider=self.name,
+            supports_streaming=False,
+            supports_system_prompt=True,
+            supports_temperature=True,
+            supports_max_tokens=True,
+            model_hint="codex",
+            max_context_tokens=128_000,
+            quality_tier=4,
+            speed_tier=3,
+            cost_tier=2,
+            strengths=("experimental", "native-oauth-prototype", "auth-only"),
+        )
+
+    def complete(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> ProviderResult:
+        del model, prompt, system_prompt, max_output_tokens, temperature
+        raise RuntimeError(
+            "Provider 'codex_oauth_experimental' is an auth prototype only. "
+            "Use 'codex_sidecar' for live execution until a native executor is added."
+        )
+
+    def stream(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> Iterator[str]:
+        del model, prompt, system_prompt, max_output_tokens, temperature
+        raise RuntimeError(
+            "Provider 'codex_oauth_experimental' does not support streaming execution yet. "
+            "Use 'codex_sidecar' for live execution."
+        )
+
+
 class AnthropicMessagesProvider:
     name = "anthropic"
 

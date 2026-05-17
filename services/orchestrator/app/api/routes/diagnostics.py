@@ -2,9 +2,10 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.experimental_auth import ExperimentalCodexAuthProvider
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
@@ -18,6 +19,27 @@ class TaskDiagnostics(BaseModel):
     event_count: int
 
 
+class ExperimentalProviderDiagnostics(BaseModel):
+    provider: str
+    mode: str
+    warning: str
+    recommended_action: str
+    provider_registered: bool
+    executable: bool
+    detail: str | None = None
+    required_settings: list[str] = Field(default_factory=list)
+    enabled: bool | None = None
+    configured: bool | None = None
+    api_key_configured: bool | None = None
+    base_url: str | None = None
+    reachable: bool | None = None
+    implementation_state: str | None = None
+    authenticated: bool | None = None
+    can_refresh: bool | None = None
+    token_path: str | None = None
+    expires_at: str | None = None
+
+
 class DiagnosticsConfig(BaseModel):
     environment: str
     runtime_mode: str
@@ -26,7 +48,8 @@ class DiagnosticsConfig(BaseModel):
     redis_url: str
     postgres_dsn: str
     sqlite_db_path: str
-    codex_sidecar: dict[str, str | bool | list[str] | None]
+    codex_sidecar: ExperimentalProviderDiagnostics
+    codex_oauth_experimental: ExperimentalProviderDiagnostics
 
 
 class DiagnosticsOverview(BaseModel):
@@ -35,7 +58,8 @@ class DiagnosticsOverview(BaseModel):
     runtime_mode: str
     db_backend: str
     redis_required: bool
-    codex_sidecar: dict[str, str | bool | list[str] | None]
+    codex_sidecar: ExperimentalProviderDiagnostics
+    codex_oauth_experimental: ExperimentalProviderDiagnostics
 
 
 class DiagnosticsRoutes(BaseModel):
@@ -74,6 +98,7 @@ def diagnostics_overview(settings: Settings = Depends(get_settings)) -> Diagnost
         db_backend=settings.syncore_db_backend,
         redis_required=settings.redis_required,
         codex_sidecar=_codex_sidecar_status(settings),
+        codex_oauth_experimental=_codex_oauth_experimental_status(),
     )
 
 
@@ -88,6 +113,7 @@ def diagnostics_config(settings: Settings = Depends(get_settings)) -> Diagnostic
         postgres_dsn=_redact_connection_value(settings.postgres_dsn),
         sqlite_db_path=settings.sqlite_db_path,
         codex_sidecar=_codex_sidecar_status(settings),
+        codex_oauth_experimental=_codex_oauth_experimental_status(),
     )
 
 
@@ -112,7 +138,7 @@ def _redact_connection_value(value: str) -> str:
     return "***"
 
 
-def _codex_sidecar_status(settings: Settings) -> dict[str, str | bool | list[str] | None]:
+def _codex_sidecar_status(settings: Settings) -> ExperimentalProviderDiagnostics:
     base_url = settings.codex_sidecar_base_url.strip() or None
     api_key = (settings.codex_sidecar_api_key or "").strip()
     enabled = settings.codex_sidecar_enabled
@@ -147,27 +173,62 @@ def _codex_sidecar_status(settings: Settings) -> dict[str, str | bool | list[str
                 "Start the local sidecar and verify CODEX_SIDECAR_BASE_URL and "
                 "CODEX_SIDECAR_API_KEY, then re-run `syncore diagnostics`."
             )
-    return {
-        "provider": "codex_sidecar",
-        "enabled": enabled,
-        "configured": configured,
-        "provider_registered": configured,
-        "api_key_configured": bool(api_key),
-        "base_url": base_url,
-        "reachable": reachable,
-        "detail": detail,
-        "mode": "experimental",
-        "warning": (
+    return ExperimentalProviderDiagnostics(
+        provider="codex_sidecar",
+        mode="experimental",
+        warning=(
             "Experimental local ChatGPT/Codex sidecar bridge. This is distinct from official "
             "OpenAI Platform API authentication."
         ),
-        "recommended_action": recommended_action,
-        "required_settings": [
+        recommended_action=recommended_action,
+        provider_registered=configured,
+        executable=configured and reachable,
+        detail=detail,
+        required_settings=[
             "CODEX_SIDECAR_ENABLED",
             "CODEX_SIDECAR_BASE_URL",
             "CODEX_SIDECAR_API_KEY",
         ],
-    }
+        enabled=enabled,
+        configured=configured,
+        api_key_configured=bool(api_key),
+        base_url=base_url,
+        reachable=reachable,
+    )
+
+
+def _codex_oauth_experimental_status() -> ExperimentalProviderDiagnostics:
+    provider = ExperimentalCodexAuthProvider()
+    status = provider.status()
+    if status.authenticated:
+        recommended_action = (
+            "Native experimental Codex OAuth credentials are present. This provider is auth-only "
+            "for now; use `codex_sidecar` for live execution until a native executor is added."
+        )
+        detail = status.detail
+    else:
+        recommended_action = (
+            "Run `syncore auth codex login` or `syncore auth codex login --device` to create "
+            "local experimental credentials, then use `codex_sidecar` for execution."
+        )
+        detail = "no native experimental Codex OAuth credentials stored"
+    return ExperimentalProviderDiagnostics(
+        provider=status.provider,
+        mode=status.mode,
+        warning=(
+            "Experimental native ChatGPT/Codex OAuth prototype. This is separate from official "
+            "OpenAI Platform API-key mode and is not executable yet."
+        ),
+        recommended_action=recommended_action,
+        provider_registered=status.authenticated,
+        executable=False,
+        detail=detail,
+        implementation_state=status.implementation_state,
+        authenticated=status.authenticated,
+        can_refresh=status.can_refresh,
+        token_path=status.token_path,
+        expires_at=status.expires_at,
+    )
 
 
 def _probe_codex_sidecar(base_url: str, api_key: str) -> tuple[bool, str]:

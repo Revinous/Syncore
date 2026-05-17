@@ -25,9 +25,11 @@ from services.memory import MemoryStoreProtocol, create_memory_store
 
 from app.config import Settings
 from app.context.retrieval_refs import build_ref_id, estimate_tokens
+from app.experimental_auth import ExperimentalCodexAuthProvider
 from app.observability import record_run_outcome
 from app.runs.providers import (
     AnthropicMessagesProvider,
+    CodexOAuthExperimentalProvider,
     CodexSidecarProvider,
     GeminiGenerateContentProvider,
     LlmProvider,
@@ -180,6 +182,16 @@ class RunExecutionService:
                 enabled=settings.codex_sidecar_enabled,
                 has_base_url=bool(codex_sidecar_base_url),
                 has_api_key=bool(codex_sidecar_api_key),
+            )
+        codex_oauth_provider = ExperimentalCodexAuthProvider()
+        if codex_oauth_provider.current_access_token():
+            providers["codex_oauth_experimental"] = CodexOAuthExperimentalProvider()
+        else:
+            provider_setup_hints["codex_oauth_experimental"] = (
+                "Provider 'codex_oauth_experimental' is not ready for execution. "
+                "Authenticate with `syncore auth codex login` or "
+                "`syncore auth codex login --device`, "
+                "then use `codex_sidecar` for live execution until a native executor is added."
             )
         anthropic_api_key = (settings.anthropic_api_key or "").strip()
         if anthropic_api_key:

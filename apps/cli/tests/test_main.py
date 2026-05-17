@@ -209,6 +209,7 @@ class FakeClient:
                 "enabled": False,
                 "configured": False,
                 "provider_registered": False,
+                "executable": False,
                 "api_key_configured": False,
                 "base_url": None,
                 "reachable": False,
@@ -222,6 +223,21 @@ class FakeClient:
                     "CODEX_SIDECAR_API_KEY",
                 ],
             },
+            "codex_oauth_experimental": {
+                "provider": "codex_oauth_experimental",
+                "mode": "experimental",
+                "warning": "Experimental native ChatGPT/Codex OAuth prototype.",
+                "recommended_action": "Run `syncore auth codex login` or use codex_sidecar for execution.",
+                "provider_registered": False,
+                "executable": False,
+                "detail": "no native experimental Codex OAuth credentials stored",
+                "required_settings": [],
+                "implementation_state": "prototype",
+                "authenticated": False,
+                "can_refresh": False,
+                "token_path": "/home/demo/.syncore/auth/codex/token.json",
+                "expires_at": None,
+            },
         }
 
     def diagnostics_config(self):
@@ -232,6 +248,7 @@ class FakeClient:
                 "enabled": False,
                 "configured": False,
                 "provider_registered": False,
+                "executable": False,
                 "api_key_configured": False,
                 "base_url": None,
                 "reachable": False,
@@ -244,6 +261,21 @@ class FakeClient:
                     "CODEX_SIDECAR_BASE_URL",
                     "CODEX_SIDECAR_API_KEY",
                 ],
+            },
+            "codex_oauth_experimental": {
+                "provider": "codex_oauth_experimental",
+                "mode": "experimental",
+                "warning": "Experimental native ChatGPT/Codex OAuth prototype.",
+                "recommended_action": "Run `syncore auth codex login` or use codex_sidecar for execution.",
+                "provider_registered": False,
+                "executable": False,
+                "detail": "no native experimental Codex OAuth credentials stored",
+                "required_settings": [],
+                "implementation_state": "prototype",
+                "authenticated": False,
+                "can_refresh": False,
+                "token_path": "/home/demo/.syncore/auth/codex/token.json",
+                "expires_at": None,
             },
         }
 
@@ -257,6 +289,14 @@ class FakeClient:
                 "model_hint": "local_echo",
                 "supports_streaming": True,
                 "supports_system_prompt": True,
+                "strengths": ["local"],
+            },
+            {
+                "provider": "codex_oauth_experimental",
+                "model_hint": "codex",
+                "supports_streaming": False,
+                "supports_system_prompt": True,
+                "strengths": ["experimental", "auth-only"],
             }
         ]
 
@@ -453,6 +493,7 @@ def test_diagnostics_human_output_includes_codex_sidecar_guidance(monkeypatch) -
     result = runner.invoke(app, ["diagnostics"])
     assert result.exit_code == 0
     assert "Experimental Codex Sidecar" in result.stdout
+    assert "Native Experimental Codex OAuth" in result.stdout
     assert "Official OpenAI Platform access uses OPENAI_API_KEY." in result.stdout
     assert "Verify available providers with `syncore providers`." in result.stdout
 
@@ -813,6 +854,15 @@ def test_providers_json(monkeypatch) -> None:
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload[0]["provider"] == "local_echo"
+    assert payload[1]["provider"] == "codex_oauth_experimental"
+
+
+def test_providers_table_marks_auth_only(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
+    result = runner.invoke(app, ["providers"])
+    assert result.exit_code == 0
+    assert "auth-only" in result.stdout
 
 
 def test_task_model_policy_json(monkeypatch) -> None:
