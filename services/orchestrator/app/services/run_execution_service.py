@@ -185,13 +185,15 @@ class RunExecutionService:
             )
         codex_oauth_provider = ExperimentalCodexAuthProvider()
         if codex_oauth_provider.current_access_token():
-            providers["codex_oauth_experimental"] = CodexOAuthExperimentalProvider()
+            providers["codex_oauth_experimental"] = CodexOAuthExperimentalProvider(
+                auth_provider=codex_oauth_provider,
+            )
         else:
             provider_setup_hints["codex_oauth_experimental"] = (
                 "Provider 'codex_oauth_experimental' is not ready for execution. "
                 "Authenticate with `syncore auth codex login` or "
                 "`syncore auth codex login --device`, "
-                "then use `codex_sidecar` for live execution until a native executor is added."
+                "or use the Auth page to create native credentials."
             )
         anthropic_api_key = (settings.anthropic_api_key or "").strip()
         if anthropic_api_key:

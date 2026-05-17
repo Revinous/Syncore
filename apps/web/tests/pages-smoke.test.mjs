@@ -35,6 +35,16 @@ test("diagnostics page renders service health", () => {
   assert.match(page, /Native Experimental Codex OAuth/);
 });
 
+test("auth page renders provider setup controls", () => {
+  const page = read("../pages/auth.tsx");
+  const panels = read("../src/components/AuthPanels.tsx");
+  assert.match(page, /OpenAIAuthPanel/);
+  assert.match(page, /CodexAuthPanel/);
+  assert.match(panels, /Official OpenAI API Key/);
+  assert.match(panels, /Native Experimental Codex OAuth/);
+  assert.match(panels, /Start Browser OAuth/);
+});
+
 test("notifications page has empty state", () => {
   const page = read("../pages/notifications.tsx");
   assert.match(page, /No unread notifications/);

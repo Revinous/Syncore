@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import queue
+import socket
 import threading
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,7 +20,7 @@ class OAuthCallbackServer:
     def __init__(self, port: int) -> None:
         self._port = port
         self._results: queue.Queue[OAuthCallbackResult] = queue.Queue(maxsize=1)
-        self._server = ThreadingHTTPServer(("127.0.0.1", port), self._build_handler())
+        self._server = _ReusableThreadingHTTPServer(("127.0.0.1", port), self._build_handler())
         self._thread: threading.Thread | None = None
 
     @property
@@ -106,3 +107,20 @@ def _first(values: list[str] | None) -> str | None:
         return None
     value = values[0].strip()
     return value or None
+
+
+class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
+def find_available_callback_port(preferred_port: int, attempts: int = 20) -> int:
+    for offset in range(attempts):
+        candidate = preferred_port + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return candidate
+    raise OSError(f"No local callback port available near {preferred_port}.")

@@ -50,7 +50,7 @@ def test_codex_auth_status_reports_prototype(tmp_path) -> None:
     assert status.implementation_state == "prototype"
     assert status.authenticated is False
     assert status.storage_secure is False
-    assert "codex_sidecar" in status.detail
+    assert "direct execution" in status.detail
 
 
 def test_codex_auth_refresh_uses_saved_refresh_token(tmp_path) -> None:
@@ -102,3 +102,30 @@ def test_codex_auth_status_reports_secure_storage_after_save(tmp_path) -> None:
 
     assert status.authenticated is True
     assert status.storage_secure is True
+
+
+def test_start_browser_login_reuses_pending_flow(tmp_path) -> None:
+    path = tmp_path / "codex-token.json"
+
+    class _Client:
+        pass
+
+    provider = ExperimentalCodexAuthProvider(store=FileTokenStore(path), client=_Client())
+    original_complete = provider._complete_browser_login
+
+    def _fake_complete(flow) -> None:
+        return None
+
+    provider._complete_browser_login = _fake_complete  # type: ignore[method-assign]
+    try:
+        first = provider.start_browser_login(callback_port=1457)
+        second = provider.start_browser_login(callback_port=1457)
+    finally:
+        provider._complete_browser_login = original_complete  # type: ignore[method-assign]
+        pending = type(provider)._browser_flow
+        if pending is not None:
+            pending.server.stop()
+            type(provider)._browser_flow = None
+
+    assert first == second
+    assert "auth.openai.com/oauth/authorize" in first

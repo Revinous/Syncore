@@ -190,7 +190,8 @@ OpenAI model access in CLI/TUI:
   - refresh stored tokens with `syncore auth codex refresh`
   - remove stored tokens with `syncore auth codex logout`
   - verify storage posture with `syncore diagnostics`
-  - execution should still prefer `codex_sidecar` until a native executor is added
+  - direct execution is available through `codex_oauth_experimental`
+  - `codex_sidecar` remains available if you prefer the local bridge path
   - see `docs/experimental/codex-oauth.md`
 - In TUI:
   - press `i` to connect OpenAI

@@ -172,7 +172,7 @@ export default function DiagnosticsPage() {
                 title="Native Experimental Codex OAuth"
                 description="Local auth prototype status for ChatGPT/Codex OAuth credentials."
                 provider={overview.codex_oauth_experimental}
-                footerNote="This provider is auth-only today. Use codex_sidecar for live execution until a native executor exists."
+                footerNote="This provider now supports direct experimental execution. Use codex_sidecar instead if you prefer the local bridge path."
               />
               <Surface title="Benchmark Proof" description="Latest repeatable benchmark suite result captured against public repos.">
                 {!benchmark?.available ? (

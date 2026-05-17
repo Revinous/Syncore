@@ -533,12 +533,12 @@ def test_codex_oauth_resolution_returns_actionable_setup_hint() -> None:
         "Provider 'codex_oauth_experimental' is not ready for execution. "
         "Authenticate with `syncore auth codex login` or "
         "`syncore auth codex login --device`, "
-        "then use `codex_sidecar` for live execution until a native executor is added."
+        "or use the Auth page to create native credentials."
     )
     with pytest.raises(ValueError) as exc:
         service._resolve_provider("codex_oauth_experimental")
     assert "syncore auth codex login" in str(exc.value)
-    assert "codex_sidecar" in str(exc.value)
+    assert "Auth page" in str(exc.value)
 
 
 def test_from_settings_registers_native_auth_provider_when_token_present(

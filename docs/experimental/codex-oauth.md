@@ -10,7 +10,7 @@ Today this mode is:
 
 - local-only
 - experimental
-- auth-only
+- directly executable through `codex_oauth_experimental`
 
 That means:
 
@@ -81,7 +81,7 @@ Diagnostics will show:
 - `codex_oauth_experimental`
 - whether credentials are present
 - whether storage is secure
-- that the provider is auth-only, not executable
+- that the provider is authenticated and executable
 
 ## Boundary
 

@@ -6,6 +6,7 @@ from textwrap import shorten
 from typing import Iterator, Protocol
 from urllib import request
 
+from app.experimental_auth import ExperimentalCodexAuthProvider
 from app.runs.provider_transport import ProviderHttpTransport
 
 
@@ -245,19 +246,33 @@ class CodexSidecarProvider(OpenAIChatCompletionsProvider):
 class CodexOAuthExperimentalProvider:
     name = "codex_oauth_experimental"
 
+    def __init__(
+        self,
+        *,
+        auth_provider: ExperimentalCodexAuthProvider | None = None,
+        base_url: str = "https://chatgpt.com/backend-api/codex",
+        timeout_seconds: int = 60,
+    ) -> None:
+        self._auth_provider = auth_provider or ExperimentalCodexAuthProvider()
+        self._base_url = base_url.rstrip("/")
+        self._transport = ProviderHttpTransport(
+            provider="Codex OAuth Experimental",
+            timeout_seconds=timeout_seconds,
+        )
+
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities(
             provider=self.name,
-            supports_streaming=False,
+            supports_streaming=True,
             supports_system_prompt=True,
-            supports_temperature=True,
-            supports_max_tokens=True,
-            model_hint="codex",
+            supports_temperature=False,
+            supports_max_tokens=False,
+            model_hint="gpt-5.5",
             max_context_tokens=128_000,
             quality_tier=4,
             speed_tier=3,
             cost_tier=2,
-            strengths=("experimental", "native-oauth-prototype", "auth-only"),
+            strengths=("experimental", "native-oauth", "direct-chatgpt-codex"),
         )
 
     def complete(
@@ -269,11 +284,16 @@ class CodexOAuthExperimentalProvider:
         max_output_tokens: int,
         temperature: float,
     ) -> ProviderResult:
-        del model, prompt, system_prompt, max_output_tokens, temperature
-        raise RuntimeError(
-            "Provider 'codex_oauth_experimental' is an auth prototype only. "
-            "Use 'codex_sidecar' for live execution until a native executor is added."
+        output_parts = list(
+            self.stream(
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                max_output_tokens=max_output_tokens,
+                temperature=temperature,
+            )
         )
+        return ProviderResult(output_text="".join(output_parts), finish_reason="stop")
 
     def stream(
         self,
@@ -284,10 +304,65 @@ class CodexOAuthExperimentalProvider:
         max_output_tokens: int,
         temperature: float,
     ) -> Iterator[str]:
-        del model, prompt, system_prompt, max_output_tokens, temperature
-        raise RuntimeError(
-            "Provider 'codex_oauth_experimental' does not support streaming execution yet. "
-            "Use 'codex_sidecar' for live execution."
+        payload = self._build_payload(
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_output_tokens=max_output_tokens,
+            temperature=temperature,
+        )
+        yield from self._transport.stream_sse_json(
+            self._request(payload),
+            _codex_stream_chunk,
+        )
+
+    def _build_payload(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        system_prompt: str | None,
+        max_output_tokens: int,
+        temperature: float,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "model": model,
+            "instructions": system_prompt or "You are Syncore. Follow the user exactly.",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt,
+                        }
+                    ],
+                }
+            ],
+            "stream": True,
+            "store": False,
+        }
+        del max_output_tokens, temperature
+        return payload
+
+    def _request(self, payload: dict[str, object]) -> request.Request:
+        access_token = self._auth_provider.current_access_token()
+        if not access_token:
+            raise RuntimeError(
+                "Provider 'codex_oauth_experimental' has no current access token. "
+                "Authenticate from the Auth page or `syncore auth codex login`."
+            )
+        return request.Request(
+            url=f"{self._base_url}/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "User-Agent": "codex_cli_rs/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9",
+                "originator": "codex_cli_rs",
+            },
+            method="POST",
         )
 
 
@@ -477,3 +552,12 @@ def _openai_stream_chunk(event: dict[str, object]) -> str | None:
         return content if isinstance(content, str) and content else None
     except (KeyError, TypeError):
         return None
+
+
+def _codex_stream_chunk(event: dict[str, object]) -> str | None:
+    event_type = event.get("type")
+    if event_type == "response.output_text.delta":
+        delta = event.get("delta")
+        if isinstance(delta, str):
+            return delta
+    return None

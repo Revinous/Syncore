@@ -4,6 +4,8 @@ import {
   ApiError,
   BatonPacket,
   BenchmarkReport,
+  CodexBrowserLoginStartResponse,
+  CodexAuthStatus,
   ContextReference,
   DashboardSummary,
   ContextEfficiencyMetrics,
@@ -11,6 +13,7 @@ import {
   DiagnosticsOverview,
   DiagnosticsRoutes,
   HealthResponse,
+  OpenAIAuthStatus,
   ProjectEvent,
   RoutingDecision,
   NotificationItem,
@@ -31,11 +34,14 @@ import {
   WorkspaceUpdatePayload,
 } from "./types";
 import {
+  parseCodexAuthStatus,
+  parseCodexBrowserLoginStartResponse,
   parseContextReference,
   parseDiagnosticsConfig,
   parseDashboardSummary,
   parseDiagnosticsOverview,
   parseHealthResponse,
+  parseOpenAIAuthStatus,
   parseServicesHealthResponse,
   parseTaskDetail,
   parseTaskExecutionReport
@@ -96,6 +102,54 @@ export function getHealth() {
 
 export function getServicesHealth() {
   return request<ServicesHealthResponse>("/health/services", undefined, parseServicesHealthResponse);
+}
+
+export function getOpenAIAuthStatus() {
+  return request<OpenAIAuthStatus>("/auth/openai/status", undefined, parseOpenAIAuthStatus);
+}
+
+export function saveOpenAIAuth(apiKey: string) {
+  return request<OpenAIAuthStatus>(
+    "/auth/openai/login",
+    { method: "POST", body: JSON.stringify({ api_key: apiKey }) },
+    parseOpenAIAuthStatus
+  );
+}
+
+export function clearOpenAIAuth() {
+  return request<OpenAIAuthStatus>(
+    "/auth/openai/logout",
+    { method: "POST" },
+    parseOpenAIAuthStatus
+  );
+}
+
+export function getCodexAuthStatus() {
+  return request<CodexAuthStatus>("/auth/codex/status", undefined, parseCodexAuthStatus);
+}
+
+export function startCodexBrowserLogin() {
+  return request<CodexBrowserLoginStartResponse>(
+    "/auth/codex/login/browser",
+    { method: "POST" },
+    parseCodexBrowserLoginStartResponse
+  );
+}
+
+export function refreshCodexAuth() {
+  return request<CodexAuthStatus>(
+    "/auth/codex/refresh",
+    { method: "POST" },
+    parseCodexAuthStatus
+  );
+}
+
+export function clearCodexAuth() {
+  return request<CodexAuthStatus>(
+    "/auth/codex/logout",
+    { method: "POST" },
+    parseCodexAuthStatus
+  );
 }
 
 export function getDashboardSummary() {

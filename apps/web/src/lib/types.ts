@@ -300,6 +300,33 @@ export type DiagnosticsRoutes = {
   routes: string[];
 };
 
+export type OpenAIAuthStatus = {
+  configured: boolean;
+  storage_secure: boolean;
+  token_path: string;
+  detail: string;
+  models: string[];
+};
+
+export type CodexAuthStatus = {
+  provider: string;
+  mode: string;
+  implementation_state: string;
+  authenticated: boolean;
+  can_refresh: boolean;
+  storage_secure: boolean;
+  token_path: string;
+  expires_at: string | null;
+  detail: string;
+  metadata: Record<string, string | number | boolean | null>;
+};
+
+export type CodexBrowserLoginStartResponse = {
+  auth_url: string;
+  pending: boolean;
+  detail: string;
+};
+
 export type BenchmarkCaseResult = {
   name: string;
   repo_url: string;

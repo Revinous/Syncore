@@ -1,11 +1,14 @@
 import type {
   ApiError,
+  CodexBrowserLoginStartResponse,
+  CodexAuthStatus,
   ContextReference,
   DashboardSummary,
   DiagnosticsConfig,
   DiagnosticsOverview,
   DiagnosticsProviderStatus,
   HealthResponse,
+  OpenAIAuthStatus,
   ProjectEvent,
   ServicesHealthResponse,
   Task,
@@ -272,5 +275,48 @@ export const parseContextReference: Parser<ContextReference> = (value) => {
     summary: expectString(obj.summary, "ContextReference.summary"),
     retrieval_hint: expectString(obj.retrieval_hint, "ContextReference.retrieval_hint"),
     created_at: expectString(obj.created_at, "ContextReference.created_at")
+  };
+};
+
+export const parseOpenAIAuthStatus: Parser<OpenAIAuthStatus> = (value) => {
+  const obj = expectObject(value, "OpenAIAuthStatus");
+  return {
+    configured: expectBoolean(obj.configured, "OpenAIAuthStatus.configured"),
+    storage_secure: expectBoolean(obj.storage_secure, "OpenAIAuthStatus.storage_secure"),
+    token_path: expectString(obj.token_path, "OpenAIAuthStatus.token_path"),
+    detail: expectString(obj.detail, "OpenAIAuthStatus.detail"),
+    models: expectStringArray(obj.models ?? [], "OpenAIAuthStatus.models"),
+  };
+};
+
+export const parseCodexAuthStatus: Parser<CodexAuthStatus> = (value) => {
+  const obj = expectObject(value, "CodexAuthStatus");
+  return {
+    provider: expectString(obj.provider, "CodexAuthStatus.provider"),
+    mode: expectString(obj.mode, "CodexAuthStatus.mode"),
+    implementation_state: expectString(
+      obj.implementation_state,
+      "CodexAuthStatus.implementation_state"
+    ),
+    authenticated: expectBoolean(obj.authenticated, "CodexAuthStatus.authenticated"),
+    can_refresh: expectBoolean(obj.can_refresh, "CodexAuthStatus.can_refresh"),
+    storage_secure: expectBoolean(obj.storage_secure, "CodexAuthStatus.storage_secure"),
+    token_path: expectString(obj.token_path, "CodexAuthStatus.token_path"),
+    expires_at: expectNullableString(obj.expires_at, "CodexAuthStatus.expires_at"),
+    detail: expectString(obj.detail, "CodexAuthStatus.detail"),
+    metadata: isObject(obj.metadata)
+      ? (obj.metadata as Record<string, string | number | boolean | null>)
+      : {},
+  };
+};
+
+export const parseCodexBrowserLoginStartResponse: Parser<CodexBrowserLoginStartResponse> = (
+  value
+) => {
+  const obj = expectObject(value, "CodexBrowserLoginStartResponse");
+  return {
+    auth_url: expectString(obj.auth_url, "CodexBrowserLoginStartResponse.auth_url"),
+    pending: expectBoolean(obj.pending, "CodexBrowserLoginStartResponse.pending"),
+    detail: expectString(obj.detail, "CodexBrowserLoginStartResponse.detail"),
   };
 };

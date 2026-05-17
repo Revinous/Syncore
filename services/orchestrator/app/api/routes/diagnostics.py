@@ -9,7 +9,6 @@ from app.experimental_auth import ExperimentalCodexAuthProvider
 from app.store_factory import build_memory_store
 
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
-
 class TaskDiagnostics(BaseModel):
     task_id: UUID
     task_exists: bool
@@ -64,8 +63,6 @@ class DiagnosticsOverview(BaseModel):
 
 class DiagnosticsRoutes(BaseModel):
     routes: list[str]
-
-
 @router.get("/task/{task_id}", response_model=TaskDiagnostics)
 def diagnostics_for_task(
     task_id: UUID,
@@ -100,8 +97,6 @@ def diagnostics_overview(settings: Settings = Depends(get_settings)) -> Diagnost
         codex_sidecar=_codex_sidecar_status(settings),
         codex_oauth_experimental=_codex_oauth_experimental_status(),
     )
-
-
 @router.get("/config", response_model=DiagnosticsConfig)
 def diagnostics_config(settings: Settings = Depends(get_settings)) -> DiagnosticsConfig:
     return DiagnosticsConfig(
@@ -115,8 +110,6 @@ def diagnostics_config(settings: Settings = Depends(get_settings)) -> Diagnostic
         codex_sidecar=_codex_sidecar_status(settings),
         codex_oauth_experimental=_codex_oauth_experimental_status(),
     )
-
-
 @router.get("/routes", response_model=DiagnosticsRoutes)
 def diagnostics_routes(request: Request) -> DiagnosticsRoutes:
     paths = sorted(
@@ -202,26 +195,28 @@ def _codex_oauth_experimental_status() -> ExperimentalProviderDiagnostics:
     status = provider.status()
     if status.authenticated:
         recommended_action = (
-            "Native experimental Codex OAuth credentials are present. This provider is auth-only "
-            "for now; use `codex_sidecar` for live execution until a native executor is added."
+            "Native experimental Codex OAuth credentials are present. Select "
+            "`codex_oauth_experimental` explicitly for direct execution, or use "
+            "`codex_sidecar` if you prefer the local bridge path."
         )
         detail = status.detail
     else:
         recommended_action = (
             "Run `syncore auth codex login` or `syncore auth codex login --device` to create "
-            "local experimental credentials, then use `codex_sidecar` for execution."
+            "local experimental credentials, then select `codex_oauth_experimental` for "
+            "direct execution or configure `codex_sidecar`."
         )
         detail = "no native experimental Codex OAuth credentials stored"
     return ExperimentalProviderDiagnostics(
         provider=status.provider,
         mode=status.mode,
         warning=(
-            "Experimental native ChatGPT/Codex OAuth prototype. This is separate from official "
-            "OpenAI Platform API-key mode and is not executable yet."
+            "Experimental native ChatGPT/Codex OAuth path. This is separate from official "
+            "OpenAI Platform API-key mode and may break if the upstream Codex backend changes."
         ),
         recommended_action=recommended_action,
         provider_registered=status.authenticated,
-        executable=False,
+        executable=status.authenticated,
         detail=detail,
         implementation_state=status.implementation_state,
         authenticated=status.authenticated,

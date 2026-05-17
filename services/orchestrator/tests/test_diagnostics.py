@@ -117,4 +117,5 @@ def test_diagnostics_native_auth_reports_secure_storage_when_token_exists(
 
     assert payload["codex_oauth_experimental"]["authenticated"] is True
     assert payload["codex_oauth_experimental"]["provider_registered"] is True
+    assert payload["codex_oauth_experimental"]["executable"] is True
     assert payload["codex_oauth_experimental"]["storage_secure"] is True

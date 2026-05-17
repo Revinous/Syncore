@@ -138,7 +138,7 @@ def register_system_commands(
             [
                 "Official OpenAI Platform access uses OPENAI_API_KEY.",
                 "codex_sidecar is an experimental local bridge and is distinct from official OpenAI API-key mode.",
-                "codex_oauth_experimental is a native local auth prototype and is currently auth-only.",
+                "codex_oauth_experimental is a native local OAuth path and now supports direct experimental execution.",
                 str(sidecar.get("warning", "")),
                 str(native.get("warning", "")),
                 f"Recommended action: {sidecar.get('recommended_action', 'Run `syncore diagnostics --json` for the full payload.')}",
@@ -175,11 +175,7 @@ def register_system_commands(
                 str(item.get("model_hint")),
                 str(item.get("supports_streaming")),
                 str(item.get("supports_system_prompt")),
-                (
-                    "auth-only"
-                    if "auth-only" in (item.get("strengths") or [])
-                    else "executable"
-                ),
+                "executable",
             ]
             for item in rows
         ]

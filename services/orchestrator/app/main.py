@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.agent_runs import router as agent_runs_router
 from app.api.routes.analyst import router as analyst_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.autonomy import router as autonomy_router
 from app.api.routes.baton_packets import router as baton_packets_router
 from app.api.routes.benchmarks import router as benchmarks_router
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.middleware("http")(request_observability_middleware)
 
     app.include_router(health_router)
+    app.include_router(auth_router)
     app.include_router(metrics_router)
     app.include_router(notifications_router)
     app.include_router(benchmarks_router)

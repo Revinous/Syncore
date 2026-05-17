@@ -63,16 +63,16 @@ class FakeRunExecutionService:
             ),
             ProviderCapabilities(
                 provider="codex_oauth_experimental",
-                supports_streaming=False,
+                supports_streaming=True,
                 supports_system_prompt=True,
-                supports_temperature=True,
-                supports_max_tokens=True,
-                model_hint="codex",
+                supports_temperature=False,
+                supports_max_tokens=False,
+                model_hint="gpt-5.5",
                 max_context_tokens=128_000,
                 quality_tier=4,
                 speed_tier=3,
                 cost_tier=2,
-                strengths=("experimental", "native-oauth-prototype", "auth-only"),
+                strengths=("experimental", "native-oauth", "direct-chatgpt-codex"),
             )
         ]
 

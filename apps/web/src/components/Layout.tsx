@@ -34,6 +34,11 @@ const navItems = [
     caption: "Research findings, alerts, and actionable inbox items.",
   },
   {
+    href: "/auth",
+    label: "Auth",
+    caption: "Local provider credentials, OAuth posture, and setup actions.",
+  },
+  {
     href: "/diagnostics",
     label: "Diagnostics",
     caption: "Route registry, config, and service-level operational state.",

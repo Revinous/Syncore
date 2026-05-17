@@ -295,10 +295,10 @@ class FakeClient:
             },
             {
                 "provider": "codex_oauth_experimental",
-                "model_hint": "codex",
-                "supports_streaming": False,
+                "model_hint": "gpt-5.5",
+                "supports_streaming": True,
                 "supports_system_prompt": True,
-                "strengths": ["experimental", "auth-only"],
+                "strengths": ["experimental", "native-oauth", "direct-chatgpt-codex"],
             }
         ]
 
@@ -861,12 +861,12 @@ def test_providers_json(monkeypatch) -> None:
     assert payload[1]["provider"] == "codex_oauth_experimental"
 
 
-def test_providers_table_marks_auth_only(monkeypatch) -> None:
+def test_providers_table_marks_executable(monkeypatch) -> None:
     runner = CliRunner()
     monkeypatch.setattr("syncore_cli.main._client", lambda: FakeClient())
     result = runner.invoke(app, ["providers"])
     assert result.exit_code == 0
-    assert "auth-only" in result.stdout
+    assert "executable" in result.stdout
 
 
 def test_task_model_policy_json(monkeypatch) -> None:
