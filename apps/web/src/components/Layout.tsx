@@ -39,6 +39,11 @@ const navItems = [
     caption: "Local provider credentials, OAuth posture, and setup actions.",
   },
   {
+    href: "/settings",
+    label: "Settings",
+    caption: "Global runtime defaults for provider and execution mode.",
+  },
+  {
     href: "/diagnostics",
     label: "Diagnostics",
     caption: "Route registry, config, and service-level operational state.",

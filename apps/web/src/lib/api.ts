@@ -15,6 +15,7 @@ import {
   HealthResponse,
   OpenAIAuthStatus,
   ProjectEvent,
+  RuntimeSettings,
   RoutingDecision,
   NotificationItem,
   NotificationListResponse,
@@ -42,6 +43,7 @@ import {
   parseDiagnosticsOverview,
   parseHealthResponse,
   parseOpenAIAuthStatus,
+  parseRuntimeSettings,
   parseServicesHealthResponse,
   parseTaskDetail,
   parseTaskExecutionReport
@@ -149,6 +151,20 @@ export function clearCodexAuth() {
     "/auth/codex/logout",
     { method: "POST" },
     parseCodexAuthStatus
+  );
+}
+
+export function getRuntimeSettings() {
+  return request<RuntimeSettings>("/settings", undefined, parseRuntimeSettings);
+}
+
+export function updateRuntimeSettings(payload: {
+  default_provider_preference: string | null;
+}) {
+  return request<RuntimeSettings>(
+    "/settings",
+    { method: "PUT", body: JSON.stringify(payload) },
+    parseRuntimeSettings
   );
 }
 

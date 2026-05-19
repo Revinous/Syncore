@@ -22,10 +22,17 @@ class TaskModelPolicyService:
         *,
         configured_providers: set[str],
         provider_model_hints: dict[str, str],
+        default_provider: str = "local_echo",
     ) -> None:
         self._store = store
         self._configured_providers = configured_providers
         self._provider_model_hints = provider_model_hints
+        if default_provider in configured_providers:
+            self._default_provider = default_provider
+        elif "local_echo" in configured_providers:
+            self._default_provider = "local_echo"
+        else:
+            self._default_provider = next(iter(configured_providers))
 
     def switch_model(
         self,
@@ -152,8 +159,10 @@ class TaskModelPolicyService:
         stage_name = stage.strip().lower()
         stage_provider = (current_prefs.get(f"preferred_provider_{stage_name}") or "").strip()
         stage_model = (current_prefs.get(f"preferred_model_{stage_name}") or "").strip()
-        resolved_provider = stage_provider or provider or "local_echo"
-        resolved_model = model or self._provider_model_hints.get(resolved_provider, "local_echo")
+        resolved_provider = stage_provider or provider or self._default_provider
+        resolved_model = model or self._provider_model_hints.get(
+            resolved_provider, resolved_provider
+        )
         if stage_model:
             resolved_model = stage_model
         if resolved_provider not in self._configured_providers:
@@ -167,8 +176,8 @@ class TaskModelPolicyService:
             raise LookupError("Task not found")
         events = self._store.list_project_events(task_id=task_id, limit=500)
         provider, model, prefs = self._latest_preferences(events)
-        default_provider = provider or "local_echo"
-        default_model = model or self._provider_model_hints.get(default_provider, "local_echo")
+        default_provider = provider or self._default_provider
+        default_model = model or self._provider_model_hints.get(default_provider, default_provider)
         fallback_order_raw = (prefs.get("provider_fallback_order") or "").strip()
         fallback_order = [item.strip() for item in fallback_order_raw.split(",") if item.strip()]
         return TaskModelPolicy(
@@ -282,10 +291,13 @@ class TaskModelPolicyService:
     def _latest_preferences(
         self, events
     ) -> tuple[str | None, str | None, dict[str, str | int | float | bool | None]]:
-        for event in reversed(events):
+        prefs: dict[str, str | int | float | bool | None] = {}
+        for event in events:
             if event.event_type != "task.preferences":
                 continue
-            prefs = dict(event.event_data)
+            data = dict(event.event_data or {})
+            prefs.update(data)
+        if prefs:
             provider = str(prefs.get("preferred_provider") or "").strip().lower() or None
             model = str(prefs.get("preferred_model") or "").strip() or None
             return provider, model, prefs

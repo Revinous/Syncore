@@ -184,25 +184,47 @@ class WorkspaceExecutionCoordinator:
         )
 
         for step in range(1, max_steps + 1):
-            actions = self._planner.parse_worker_actions(
-                provider.complete(
+            worker_prompt = self._planner.build_worker_prompt(
+                base_prompt=payload.prompt,
+                file_snapshot=self._planner.workspace_snapshot(root),
+                working_memory="\n\n".join(
+                    (state.read_context + state.verification_context)[-10:]
+                ),
+                step=step,
+                max_steps=max_steps,
+                contract=contract,
+                runner=runner,
+                policy=policy,
+            )
+            worker_output = provider.complete(
+                model=payload.target_model,
+                prompt=worker_prompt,
+                system_prompt=payload.system_prompt,
+                max_output_tokens=payload.max_output_tokens,
+                temperature=payload.temperature,
+            ).output_text
+            actions = self._planner.parse_worker_actions(worker_output)
+            if not actions and worker_output.strip():
+                repaired_output = provider.complete(
                     model=payload.target_model,
-                    prompt=self._planner.build_worker_prompt(
-                        base_prompt=payload.prompt,
-                        file_snapshot=self._planner.workspace_snapshot(root),
-                        step=step,
-                        max_steps=max_steps,
-                        contract=contract,
-                        runner=runner,
-                        policy=policy,
+                    prompt=self._planner.build_worker_repair_prompt(
+                        prior_output=worker_output,
                     ),
                     system_prompt=payload.system_prompt,
-                    max_output_tokens=payload.max_output_tokens,
-                    temperature=payload.temperature,
+                    max_output_tokens=max(256, min(payload.max_output_tokens, 1200)),
+                    temperature=0.0,
                 ).output_text
-            )
+                actions = self._planner.parse_worker_actions(repaired_output)
             if not actions:
+                state.completed_work.append(
+                    f"Step {step}: model returned no actionable JSON; continuing."
+                )
                 continue
+            has_mutation_action = any(
+                str(action.get("type", "")).strip().lower()
+                in {"write_file", "create_file", "patch_file", "move_file", "delete_file"}
+                for action in actions
+            )
             finished = self._dispatcher.dispatch_actions(
                 task_id=payload.task_id,
                 root=root,
@@ -211,8 +233,12 @@ class WorkspaceExecutionCoordinator:
                 runner=runner,
                 state=state,
             )
-            if finished:
+            if finished and (state.changed_files or has_mutation_action):
                 step = max_steps
+            elif finished:
+                state.completed_work.append(
+                    f"Step {step}: finish ignored because no repo mutation was produced yet."
+                )
             if state.changed_files or state.command_results:
                 self._verifier.ensure_required_verification_commands_run(
                     root=root,
@@ -241,6 +267,13 @@ class WorkspaceExecutionCoordinator:
                             "Workspace execution loop completed after verification passed."
                         )
                     break
+                state.verification_context.append(
+                    self._verification_feedback(
+                        step=step,
+                        verification=step_verification,
+                        command_results=state.command_results,
+                    )
+                )
 
         self._record_event(
             task_id=payload.task_id,
@@ -344,3 +377,24 @@ class WorkspaceExecutionCoordinator:
             policy=policy,
             runner=runner,
         )
+
+    def _verification_feedback(
+        self,
+        *,
+        step: int,
+        verification: dict[str, object],
+        command_results: list[dict[str, object]],
+    ) -> str:
+        lines = [f"VERIFICATION FEEDBACK AFTER STEP {step}"]
+        lines.append(f"Reason: {str(verification.get('reason') or 'Verification failed.')}")
+        lines.append("Fix the failing checks with concrete file edits before finishing.")
+        failing = [
+            item
+            for item in command_results
+            if str(item.get("status") or "").strip().lower() in {"failed", "blocked"}
+        ]
+        for item in failing[-3:]:
+            command = str(item.get("command") or "unknown").strip()
+            output = str(item.get("output") or item.get("output_preview") or "").strip()
+            lines.append(f"Command: {command}" + (f"\n{output[:2500]}" if output else ""))
+        return "\n".join(lines)

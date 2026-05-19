@@ -45,6 +45,13 @@ test("auth page renders provider setup controls", () => {
   assert.match(panels, /Start Browser OAuth/);
 });
 
+test("settings page renders runtime default controls", () => {
+  const page = read("../pages/settings.tsx");
+  assert.match(page, /Runtime Settings/);
+  assert.match(page, /Default provider path/);
+  assert.match(page, /Resolved Provider/);
+});
+
 test("notifications page has empty state", () => {
   const page = read("../pages/notifications.tsx");
   assert.match(page, /No unread notifications/);

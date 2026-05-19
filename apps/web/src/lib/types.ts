@@ -327,6 +327,18 @@ export type CodexBrowserLoginStartResponse = {
   detail: string;
 };
 
+export type RuntimeSettings = {
+  configured: boolean;
+  storage_secure: boolean;
+  settings_path: string;
+  default_provider_preference: string | null;
+  resolved_default_provider: string;
+  resolved_default_model: string;
+  detail: string;
+  updated_at: string | null;
+  available_provider_preferences: string[];
+};
+
 export type BenchmarkCaseResult = {
   name: string;
   repo_url: string;

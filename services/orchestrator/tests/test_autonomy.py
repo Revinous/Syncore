@@ -28,7 +28,9 @@ def _init_sqlite(db_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def clear_settings_cache():
+def clear_settings_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("SYNCORE_LOCAL_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    monkeypatch.setenv("SYNCORE_OPENAI_AUTH_PATH", str(tmp_path / "openai_credentials.json"))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

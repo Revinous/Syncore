@@ -27,6 +27,26 @@
   background: rgba(13, 122, 113, 0.04);
 }
 
+.data-table tbody tr.clickable-row {
+  cursor: pointer;
+}
+
+.data-table tbody tr.clickable-row:focus-visible {
+  outline: 2px solid rgba(13, 122, 113, 0.45);
+  outline-offset: -2px;
+}
+
+.row-primary-link {
+  font-weight: 700;
+  color: inherit;
+  text-decoration: none;
+}
+
+.row-primary-link:hover,
+.row-primary-link:focus-visible {
+  text-decoration: underline;
+}
+
 .list-reset {
   margin: 0;
   padding-left: 18px;

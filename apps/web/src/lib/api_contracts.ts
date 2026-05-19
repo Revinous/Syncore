@@ -10,6 +10,7 @@ import type {
   HealthResponse,
   OpenAIAuthStatus,
   ProjectEvent,
+  RuntimeSettings,
   ServicesHealthResponse,
   Task,
   TaskDetail,
@@ -318,5 +319,32 @@ export const parseCodexBrowserLoginStartResponse: Parser<CodexBrowserLoginStartR
     auth_url: expectString(obj.auth_url, "CodexBrowserLoginStartResponse.auth_url"),
     pending: expectBoolean(obj.pending, "CodexBrowserLoginStartResponse.pending"),
     detail: expectString(obj.detail, "CodexBrowserLoginStartResponse.detail"),
+  };
+};
+
+export const parseRuntimeSettings: Parser<RuntimeSettings> = (value) => {
+  const obj = expectObject(value, "RuntimeSettings");
+  return {
+    configured: expectBoolean(obj.configured, "RuntimeSettings.configured"),
+    storage_secure: expectBoolean(obj.storage_secure, "RuntimeSettings.storage_secure"),
+    settings_path: expectString(obj.settings_path, "RuntimeSettings.settings_path"),
+    default_provider_preference: expectNullableString(
+      obj.default_provider_preference,
+      "RuntimeSettings.default_provider_preference"
+    ),
+    resolved_default_provider: expectString(
+      obj.resolved_default_provider,
+      "RuntimeSettings.resolved_default_provider"
+    ),
+    resolved_default_model: expectString(
+      obj.resolved_default_model,
+      "RuntimeSettings.resolved_default_model"
+    ),
+    detail: expectString(obj.detail, "RuntimeSettings.detail"),
+    updated_at: expectNullableString(obj.updated_at, "RuntimeSettings.updated_at"),
+    available_provider_preferences: expectStringArray(
+      obj.available_provider_preferences ?? [],
+      "RuntimeSettings.available_provider_preferences"
+    ),
   };
 };

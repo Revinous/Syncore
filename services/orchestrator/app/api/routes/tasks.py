@@ -5,6 +5,11 @@ from packages.contracts.python.models import Task, TaskCreate, TaskDetail, TaskU
 from pydantic import BaseModel, Field
 
 from app.config import Settings, get_settings
+from app.services.local_settings_service import (
+    LocalExecutionSettingsService,
+    resolve_default_provider_settings,
+)
+from app.services.provider_config import configured_provider_hints
 from app.services.task_models import (
     ChildTaskStatusBoard,
     TaskExecutionReport,
@@ -20,21 +25,22 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 def get_task_service(settings: Settings = Depends(get_settings)) -> TaskService:
-    configured = {"local_echo"}
-    hints = {"local_echo": "local_echo"}
-    if (settings.openai_api_key or "").strip():
-        configured.add("openai")
-        hints["openai"] = "gpt-5.4"
-    if (settings.anthropic_api_key or "").strip():
-        configured.add("anthropic")
-        hints["anthropic"] = "claude-3-7-sonnet-latest"
-    if (settings.gemini_api_key or "").strip():
-        configured.add("gemini")
-        hints["gemini"] = "gemini-2.5-pro"
+    configured, hints = configured_provider_hints(settings)
+    local_settings = LocalExecutionSettingsService().load()
+    default_provider, _ = resolve_default_provider_settings(
+        configured_providers=configured,
+        provider_model_hints=hints,
+        fallback_provider=settings.default_llm_provider,
+        fallback_model=hints.get(settings.default_llm_provider, settings.default_llm_provider),
+        stored_preference=(
+            local_settings.default_provider_preference if local_settings else None
+        ),
+    )
     return TaskService(
         build_memory_store(settings),
         configured_providers=configured,
         provider_model_hints=hints,
+        default_provider=default_provider,
     )
 
 

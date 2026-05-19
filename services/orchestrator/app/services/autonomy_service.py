@@ -41,6 +41,10 @@ from app.services.autonomy_text_utils import (
     string_list,
 )
 from app.services.execute_plan_builder import ExecutePlanBuilder
+from app.services.local_settings_service import (
+    LocalExecutionSettingsService,
+    resolve_default_provider_settings,
+)
 from app.services.routing_service import RoutingService
 from app.services.run_execution_service import RunExecutionService
 from app.store_factory import build_memory_store
@@ -248,13 +252,29 @@ class AutonomyService:
     @classmethod
     def from_settings(cls, settings: Settings) -> "AutonomyService":
         store = build_memory_store(settings)
+        run_execution_service = RunExecutionService.from_settings(settings)
+        available_capabilities = run_execution_service.list_provider_capabilities()
+        configured_providers = {item.provider for item in available_capabilities}
+        provider_model_hints = {
+            item.provider: item.model_hint for item in available_capabilities
+        }
+        local_settings = LocalExecutionSettingsService().load()
+        default_provider, default_model = resolve_default_provider_settings(
+            configured_providers=configured_providers,
+            provider_model_hints=provider_model_hints,
+            fallback_provider=settings.default_llm_provider,
+            fallback_model=settings.autonomy_default_model,
+            stored_preference=(
+                local_settings.default_provider_preference if local_settings else None
+            ),
+        )
         return cls(
             store=store,
-            run_execution_service=RunExecutionService.from_settings(settings),
+            run_execution_service=run_execution_service,
             routing_service=RoutingService(),
             digest_service=AnalystDigestService(),
-            default_provider=settings.default_llm_provider,
-            default_model=settings.autonomy_default_model,
+            default_provider=default_provider,
+            default_model=default_model,
             default_max_retries=settings.autonomy_max_retries,
             retry_base_seconds=settings.autonomy_retry_base_seconds,
             max_cycles=settings.autonomy_max_cycles,
@@ -561,17 +581,16 @@ class AutonomyService:
         return execute_role, 1
 
     def _load_preferences(self, events: list[ProjectEvent]) -> dict[str, str]:
-        for event in reversed(events):
+        merged: dict[str, str] = {}
+        for event in events:
             if event.event_type != "task.preferences":
                 continue
-            merged: dict[str, str] = {}
             for key, value in event.event_data.items():
                 if isinstance(value, str):
                     merged[key] = value
                 elif isinstance(value, (int, float, bool)):
                     merged[key] = str(value)
-            return merged
-        return {}
+        return merged
 
     def _resolve_provider(
         self,

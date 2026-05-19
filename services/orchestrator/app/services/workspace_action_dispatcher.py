@@ -11,6 +11,8 @@ class WorkspaceLoopState:
     diff_refs: list[str] = field(default_factory=list)
     command_results: list[dict[str, object]] = field(default_factory=list)
     read_refs: list[str] = field(default_factory=list)
+    read_context: list[str] = field(default_factory=list)
+    verification_context: list[str] = field(default_factory=list)
     completed_work: list[str] = field(default_factory=list)
     next_action: str = "Run the repo's verification checks for the changed files."
     finish_summary: str = ""
@@ -132,6 +134,9 @@ class WorkspaceActionDispatcher:
                     continue
                 read = self._read_file(root=root, relative_path=rel)
                 if read:
+                    state.read_context.append(
+                        f"FILE {rel}\n{read[:4000]}"
+                    )
                     state.read_refs.append(
                         self._store_text_reference(
                             task_id=task_id,
@@ -146,6 +151,9 @@ class WorkspaceActionDispatcher:
                     continue
                 hits = self._search_code(root=root, pattern=pattern)
                 if hits:
+                    state.read_context.append(
+                        f"SEARCH {pattern}\n" + "\n".join(hits[:80])
+                    )
                     state.read_refs.append(
                         self._store_text_reference(
                             task_id=task_id,

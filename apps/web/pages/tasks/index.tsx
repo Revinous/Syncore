@@ -15,14 +15,12 @@ import { Surface } from "../../src/components/Surface";
 export default function TasksPage() {
   const router = useRouter();
   const workspaceQuery = typeof router.query.workspace === "string" ? router.query.workspace : "all";
-
   const [tasks, setTasks] = useState<Task[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   const [title, setTitle] = useState("Analyze auth flow");
   const [taskType, setTaskType] = useState("analysis");
   const [complexity, setComplexity] = useState("medium");
@@ -30,16 +28,8 @@ export default function TasksPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [workspaceFilter, setWorkspaceFilter] = useState("all");
 
-  useEffect(() => {
-    if (workspaceQuery && workspaceQuery !== workspaceFilter) {
-      setWorkspaceFilter(workspaceQuery);
-    }
-  }, [workspaceFilter, workspaceQuery]);
-
-  const filtered = useMemo(
-    () => tasks.filter((task) => statusFilter === "all" || task.status === statusFilter),
-    [tasks, statusFilter]
-  );
+  useEffect(() => { if (workspaceQuery && workspaceQuery !== workspaceFilter) setWorkspaceFilter(workspaceQuery); }, [workspaceFilter, workspaceQuery]);
+  const filtered = useMemo(() => tasks.filter((task) => statusFilter === "all" || task.status === statusFilter), [tasks, statusFilter]);
   const activeCount = filtered.filter((task) => task.status === "in_progress").length;
   const blockedCount = filtered.filter((task) => task.status === "blocked").length;
   const staleCount = filtered.filter((task) => {
@@ -50,12 +40,7 @@ export default function TasksPage() {
   const secondsSinceRefresh = lastLoadedAt
     ? Math.max(0, Math.round((Date.now() - lastLoadedAt.getTime()) / 1000))
     : null;
-  const freshnessState =
-    secondsSinceRefresh === null
-      ? "unknown"
-      : secondsSinceRefresh <= 20
-        ? "fresh"
-        : "stale";
+  const freshnessState = secondsSinceRefresh === null ? "unknown" : secondsSinceRefresh <= 20 ? "fresh" : "stale";
   const isOfflineError = error?.includes("Could not reach Syncore API");
 
   async function load(background = false) {
@@ -109,6 +94,8 @@ export default function TasksPage() {
     }
   }
 
+  function openTaskDetail(taskId: string) { void router.push(`/tasks/${taskId}`); }
+
   return (
     <Layout title="Tasks">
       <div className="page-shell">
@@ -124,7 +111,7 @@ export default function TasksPage() {
           }
           metrics={[
             { label: "Visible Tasks", value: filtered.length },
-            { label: "Workspace Scope", value: workspaceFilter === "all" ? "all" : (workspaces.find((w) => w.id === workspaceFilter)?.name ?? "filtered") },
+            { label: "Workspace Scope", value: workspaceFilter === "all" ? "all" : workspaces.find((w) => w.id === workspaceFilter)?.name ?? "filtered" },
           ]}
         />
 
@@ -255,9 +242,20 @@ export default function TasksPage() {
                 </thead>
                 <tbody>
                   {filtered.map((task) => (
-                    <tr key={task.id}>
+                    <tr
+                      key={task.id}
+                      className="clickable-row"
+                      tabIndex={0}
+                      onClick={() => openTaskDetail(task.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openTaskDetail(task.id);
+                        }
+                      }}
+                    >
                       <td>
-                        <div>{task.title}</div>
+                        <Link href={`/tasks/${task.id}`} className="row-primary-link" onClick={(event) => event.stopPropagation()}>{task.title}</Link>
                         <div className="helper-text">{task.id}</div>
                       </td>
                       <td>{task.task_type}</td>
@@ -265,7 +263,7 @@ export default function TasksPage() {
                       <td>{workspaces.find((workspace) => workspace.id === task.workspace_id)?.name || "none"}</td>
                       <td><StatusBadge status={task.status} /></td>
                       <td>{new Date(task.updated_at).toLocaleString()}</td>
-                      <td><Link href={`/tasks/${task.id}`}>Open detail</Link></td>
+                      <td><Link href={`/tasks/${task.id}`} onClick={(event) => event.stopPropagation()}>Open detail</Link></td>
                     </tr>
                   ))}
                 </tbody>

@@ -28,6 +28,7 @@ class TaskService:
         *,
         configured_providers: set[str] | None = None,
         provider_model_hints: dict[str, str] | None = None,
+        default_provider: str = "local_echo",
     ) -> None:
         self._store = store
         self._configured_providers = configured_providers or {"local_echo"}
@@ -37,6 +38,7 @@ class TaskService:
             store,
             configured_providers=self._configured_providers,
             provider_model_hints=self._provider_model_hints,
+            default_provider=default_provider,
         )
 
     def create_task(self, payload: TaskCreate) -> Task:

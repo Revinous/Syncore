@@ -18,6 +18,7 @@ from app.api.routes.notifications import router as notifications_router
 from app.api.routes.project_events import router as project_events_router
 from app.api.routes.routing import router as routing_router
 from app.api.routes.runs import router as runs_router
+from app.api.routes.settings import router as settings_router
 from app.api.routes.tasks import router as tasks_router
 from app.api.routes.workspaces import router as workspaces_router
 from app.config import get_settings
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(project_events_router)
     app.include_router(routing_router)
     app.include_router(runs_router)
+    app.include_router(settings_router)
     app.include_router(memory_router)
     app.include_router(context_router)
     app.include_router(analyst_router)

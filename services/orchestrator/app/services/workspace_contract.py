@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,14 @@ def load_workspace_contract(root: Path) -> dict[str, Any]:
     if not contract_path.exists() or not contract_path.is_file():
         return {}
     text = contract_path.read_text(encoding="utf-8", errors="replace")
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            parsed_json = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed_json = None
+        if isinstance(parsed_json, dict):
+            return normalize_workspace_contract(parsed_json)
     parsed = _parse_simple_yaml(text)
     if not isinstance(parsed, dict):
         return {}
@@ -23,6 +32,11 @@ def normalize_workspace_contract(contract: dict[str, Any]) -> dict[str, Any]:
     capabilities = _dict_value(contract.get("capabilities"))
     acceptance = _dict_value(contract.get("acceptance"))
     risk_rules = _dict_value(contract.get("risk_rules"))
+    verification = _dict_value(contract.get("verification"))
+    verification_commands = _string_list(
+        verification.get("commands")
+        or contract.get("verification_commands")
+    )
 
     normalized = {
         "schema_version": int(contract.get("schema_version") or contract.get("version") or 2),
@@ -47,7 +61,8 @@ def normalize_workspace_contract(contract: dict[str, Any]) -> dict[str, Any]:
         "commands": {
             "setup": _string_list(commands.get("setup") or contract.get("setup")),
             "build": _string_list(commands.get("build") or contract.get("build")),
-            "test": _string_list(commands.get("test") or contract.get("test")),
+            "test": _string_list(commands.get("test") or contract.get("test"))
+            or verification_commands,
             "lint": _string_list(commands.get("lint") or contract.get("lint")),
             "format": _string_list(commands.get("format") or contract.get("format")),
             "run": _string_list(commands.get("run") or contract.get("run")),
@@ -76,7 +91,8 @@ def normalize_workspace_contract(contract: dict[str, Any]) -> dict[str, Any]:
         },
         "entrypoints": _string_list(contract.get("entrypoints")),
         "acceptance": {
-            "must_pass_commands": _string_list(acceptance.get("must_pass_commands")),
+            "must_pass_commands": _string_list(acceptance.get("must_pass_commands"))
+            or verification_commands,
             "must_modify_paths": _string_list(acceptance.get("must_modify_paths")),
             "must_not_modify_paths": _string_list(acceptance.get("must_not_modify_paths")),
             "must_include_behavior": _string_list(acceptance.get("must_include_behavior")),

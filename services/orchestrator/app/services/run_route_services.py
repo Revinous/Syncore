@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.config import Settings
+from app.services.provider_config import configured_provider_hints
 from app.services.run_execution_service import RunExecutionService
 from app.services.run_queue_service import RunQueueService
 from app.services.task_service import TaskService
@@ -16,17 +17,7 @@ def build_run_queue_service(settings: Settings) -> RunQueueService:
 
 
 def build_task_service(settings: Settings) -> TaskService:
-    configured = {"local_echo"}
-    hints = {"local_echo": "local_echo"}
-    if (settings.openai_api_key or "").strip():
-        configured.add("openai")
-        hints["openai"] = "gpt-5.4"
-    if (settings.anthropic_api_key or "").strip():
-        configured.add("anthropic")
-        hints["anthropic"] = "claude-3-7-sonnet-latest"
-    if (settings.gemini_api_key or "").strip():
-        configured.add("gemini")
-        hints["gemini"] = "gemini-2.5-pro"
+    configured, hints = configured_provider_hints(settings)
     return TaskService(
         build_memory_store(settings),
         configured_providers=configured,

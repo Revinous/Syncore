@@ -35,6 +35,7 @@ def test_compat_routes_work(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("SYNCORE_OPENAI_AUTH_PATH", str(tmp_path / "openai_credentials.json"))
 
     client = TestClient(create_app())
 

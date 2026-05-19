@@ -39,6 +39,14 @@ from app.runs.providers import (
 )
 from app.services.context_service import ContextService
 from app.services.execution_policy import ExecutionPolicyResolver
+from app.services.local_settings_service import (
+    LocalExecutionSettingsService,
+    resolve_default_provider_settings,
+)
+from app.services.provider_config import (
+    is_configured_secret,
+    resolve_openai_api_key,
+)
 from app.services.workspace_acceptance_service import string_list
 from app.services.workspace_action_dispatcher import WorkspaceActionDispatcher
 from app.services.workspace_execution_coordinator import WorkspaceExecutionCoordinator
@@ -162,14 +170,18 @@ class RunExecutionService:
             "local_echo": LocalEchoProvider(),
         }
         provider_setup_hints: dict[str, str] = {}
-        openai_api_key = _resolve_openai_api_key(settings.openai_api_key)
+        openai_api_key = resolve_openai_api_key(settings.openai_api_key)
         if openai_api_key:
             providers["openai"] = OpenAIChatCompletionsProvider(
                 api_key=openai_api_key,
                 base_url=settings.openai_base_url,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
-        codex_sidecar_api_key = (settings.codex_sidecar_api_key or "").strip()
+        codex_sidecar_api_key = (
+            (settings.codex_sidecar_api_key or "").strip()
+            if is_configured_secret(settings.codex_sidecar_api_key)
+            else ""
+        )
         codex_sidecar_base_url = settings.codex_sidecar_base_url.strip()
         if settings.codex_sidecar_enabled and codex_sidecar_api_key and codex_sidecar_base_url:
             providers["codex_sidecar"] = CodexSidecarProvider(
@@ -195,7 +207,11 @@ class RunExecutionService:
                 "`syncore auth codex login --device`, "
                 "or use the Auth page to create native credentials."
             )
-        anthropic_api_key = (settings.anthropic_api_key or "").strip()
+        anthropic_api_key = (
+            (settings.anthropic_api_key or "").strip()
+            if is_configured_secret(settings.anthropic_api_key)
+            else ""
+        )
         if anthropic_api_key:
             providers["anthropic"] = AnthropicMessagesProvider(
                 api_key=anthropic_api_key,
@@ -203,13 +219,32 @@ class RunExecutionService:
                 api_version=settings.anthropic_api_version,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
-        gemini_api_key = (settings.gemini_api_key or "").strip()
+        gemini_api_key = (
+            (settings.gemini_api_key or "").strip()
+            if is_configured_secret(settings.gemini_api_key)
+            else ""
+        )
         if gemini_api_key:
             providers["gemini"] = GeminiGenerateContentProvider(
                 api_key=gemini_api_key,
                 base_url=settings.gemini_base_url,
                 timeout_seconds=settings.openai_timeout_seconds,
             )
+        provider_model_hints = {
+            name: item.capabilities().model_hint for name, item in providers.items()
+        }
+        local_settings = LocalExecutionSettingsService().load()
+        default_provider, _ = resolve_default_provider_settings(
+            configured_providers=set(providers),
+            provider_model_hints=provider_model_hints,
+            fallback_provider=settings.default_llm_provider,
+            fallback_model=provider_model_hints.get(
+                settings.default_llm_provider, settings.default_llm_provider
+            ),
+            stored_preference=(
+                local_settings.default_provider_preference if local_settings else None
+            ),
+        )
         fallback_order = [
             p.strip().lower() for p in settings.provider_fallback_order.split(",") if p.strip()
         ]
@@ -217,7 +252,7 @@ class RunExecutionService:
             store=store,
             context_service=context_service,
             providers=providers,
-            default_provider=settings.default_llm_provider,
+            default_provider=default_provider,
             failover_enabled=settings.provider_failover_enabled,
             fallback_order=fallback_order,
             default_timeout_seconds=settings.run_default_timeout_seconds,
@@ -756,10 +791,10 @@ class RunExecutionService:
         if not callable(list_events):
             return {}
         events = list_events(task_id=task_id, limit=500)
-        for event in reversed(events):
+        merged: dict[str, str] = {}
+        for event in events:
             if getattr(event, "event_type", "") != "task.preferences":
                 continue
-            merged: dict[str, str] = {}
             event_data = getattr(event, "event_data", {}) or {}
             if not isinstance(event_data, dict):
                 continue
@@ -768,8 +803,7 @@ class RunExecutionService:
                     merged[key] = value
                 elif isinstance(value, (int, float, bool)):
                     merged[key] = str(value)
-            return merged
-        return {}
+        return merged
 
     def _effective_workspace_policy(
         self,
@@ -1073,31 +1107,6 @@ class RunExecutionService:
             retrieval_hint=retrieval_hint,
         )
         return str(record["ref_id"])
-
-
-def _resolve_openai_api_key(configured_api_key: str | None) -> str | None:
-    configured = (configured_api_key or "").strip()
-    if configured and configured.lower() not in {"replace_me", "changeme", "your_api_key_here"}:
-        return configured
-
-    auth_path = os.getenv("SYNCORE_OPENAI_AUTH_PATH")
-    if auth_path:
-        path = Path(auth_path).expanduser()
-    else:
-        path = Path.home() / ".syncore" / "openai_credentials.json"
-
-    if not path.exists():
-        return None
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    file_key = str(payload.get("api_key", "")).strip()
-    if not file_key:
-        return None
-    return file_key
 
 
 def _build_codex_sidecar_setup_hint(
